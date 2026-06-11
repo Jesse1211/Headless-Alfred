@@ -11,36 +11,71 @@ import (
 
 var ErrNotFound = errors.New("record not found")
 
+// Store owns the filesystem layout:
+//
+//	<dir>/sessions/<sessionID>/commands/<cmdID>.json
+//	<dir>/sessions/<sessionID>/outputs/<cmdID>.log
+//
+// Every method takes a sessionID. Pass the same value used in
+// Record.SessionID; the store does no cross-validation (callers are
+// expected to know their own session).
 type Store struct {
 	dir string
 }
 
 func New(dir string) (*Store, error) {
-	for _, sub := range []string{"commands", "outputs"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
-			return nil, fmt.Errorf("mkdir %s: %w", sub, err)
-		}
+	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir sessions: %w", err)
 	}
 	return &Store{dir: dir}, nil
 }
 
 func (s *Store) Dir() string { return s.dir }
 
-func (s *Store) commandPath(id string) string {
-	return filepath.Join(s.dir, "commands", id+".json")
+// SessionDir returns the absolute path of the session's root directory.
+// The directory may not exist yet; callers ensure that via Save/WriteOutput
+// (both call ensureSessionDirs internally).
+func (s *Store) SessionDir(sessionID string) string {
+	return filepath.Join(s.dir, "sessions", sessionID)
 }
 
-func (s *Store) outputPath(id string) string {
-	return filepath.Join(s.dir, "outputs", id+".log")
+func (s *Store) commandPath(sessionID, id string) string {
+	return filepath.Join(s.SessionDir(sessionID), "commands", id+".json")
+}
+
+func (s *Store) outputPath(sessionID, id string) string {
+	return filepath.Join(s.SessionDir(sessionID), "outputs", id+".log")
+}
+
+func (s *Store) ensureSessionDirs(sessionID string) error {
+	for _, sub := range []string{"commands", "outputs"} {
+		if err := os.MkdirAll(filepath.Join(s.SessionDir(sessionID), sub), 0o700); err != nil {
+			return fmt.Errorf("mkdir %s: %w", sub, err)
+		}
+	}
+	return nil
+}
+
+// EnsureSessionDirs creates the session's commands/ and outputs/
+// subdirectories if absent. Exposed so callers can prepare the
+// session-rooted layout before any Save runs (Plan 4's Manager does
+// this just before launching the TmuxShell's read loop, which opens
+// the stream file inside the session dir).
+func (s *Store) EnsureSessionDirs(sessionID string) error {
+	return s.ensureSessionDirs(sessionID)
 }
 
 // Save writes or overwrites the metadata file atomically (tmp + rename).
-func (s *Store) Save(r Record) error {
+// The session's directory is created on demand.
+func (s *Store) Save(sessionID string, r Record) error {
+	if err := s.ensureSessionDirs(sessionID); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	final := s.commandPath(r.ID)
+	final := s.commandPath(sessionID, r.ID)
 	tmp := final + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
@@ -48,8 +83,8 @@ func (s *Store) Save(r Record) error {
 	return os.Rename(tmp, final)
 }
 
-func (s *Store) Get(id string) (Record, error) {
-	data, err := os.ReadFile(s.commandPath(id))
+func (s *Store) Get(sessionID, id string) (Record, error) {
+	data, err := os.ReadFile(s.commandPath(sessionID, id))
 	if errors.Is(err, os.ErrNotExist) {
 		return Record{}, ErrNotFound
 	}
@@ -64,32 +99,36 @@ func (s *Store) Get(id string) (Record, error) {
 }
 
 // WriteOutput writes the entire output buffer for a command to its log file.
-// It does NOT touch the record metadata; the caller manages the Record.
-func (s *Store) WriteOutput(id string, body []byte) error {
-	return os.WriteFile(s.outputPath(id), body, 0o600)
+func (s *Store) WriteOutput(sessionID, id string, body []byte) error {
+	if err := s.ensureSessionDirs(sessionID); err != nil {
+		return err
+	}
+	return os.WriteFile(s.outputPath(sessionID, id), body, 0o600)
 }
 
-// OutputPath returns the path that ReadOutput/WriteOutput use for the given
-// command. Exposed so callers can compose absolute paths for logging or for
-// external tools, without having to know the layout convention.
-func (s *Store) OutputPath(id string) string {
-	return s.outputPath(id)
+func (s *Store) OutputPath(sessionID, id string) string {
+	return s.outputPath(sessionID, id)
 }
 
 // ReadOutput reads the output file for a command. Returns (nil, nil) if no
 // output file exists yet (command may still be running or never had output).
-func (s *Store) ReadOutput(id string) ([]byte, error) {
-	data, err := os.ReadFile(s.outputPath(id))
+func (s *Store) ReadOutput(sessionID, id string) ([]byte, error) {
+	data, err := os.ReadFile(s.outputPath(sessionID, id))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	return data, err
 }
 
-// List returns records sorted by StartedAt descending. If before != "", only
-// records strictly older than the one with that ID are returned.
-func (s *Store) List(limit int, before string) ([]Record, error) {
-	entries, err := os.ReadDir(filepath.Join(s.dir, "commands"))
+// List returns records for the given session sorted by StartedAt descending.
+// If before != "", only records strictly older than the one with that ID are
+// returned. A session with no commands yet returns (nil, nil), not an error.
+func (s *Store) List(sessionID string, limit int, before string) ([]Record, error) {
+	dir := filepath.Join(s.SessionDir(sessionID), "commands")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +138,7 @@ func (s *Store) List(limit int, before string) ([]Record, error) {
 			continue
 		}
 		id := e.Name()[:len(e.Name())-len(".json")]
-		r, err := s.Get(id)
+		r, err := s.Get(sessionID, id)
 		if err != nil {
 			continue
 		}
@@ -132,21 +171,51 @@ func (s *Store) List(limit int, before string) ([]Record, error) {
 	return all, nil
 }
 
-// SweepRunningToInterrupted is called once at boot. Any record left in the
-// "running" state from a previous process belongs to a bash that no longer
-// exists, so it gets marked interrupted.
-func (s *Store) SweepRunningToInterrupted() error {
-	all, err := s.List(0, "")
-	if err != nil {
-		return err
+// SweepRunningToInterrupted scans every session and marks any record left
+// in the "running" state as interrupted. Called once at boot for sessions
+// whose bash is known to be gone (e.g., Pod-restart reconciliation).
+//
+// Pass an explicit list of sessionIDs to limit the sweep. An empty slice
+// sweeps every session whose directory exists under sessions/.
+func (s *Store) SweepRunningToInterrupted(sessionIDs []string) error {
+	if len(sessionIDs) == 0 {
+		// Discover every session directory currently on disk.
+		entries, err := os.ReadDir(filepath.Join(s.dir, "sessions"))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				sessionIDs = append(sessionIDs, e.Name())
+			}
+		}
 	}
-	for _, r := range all {
-		if r.Status == StatusRunning {
-			r.Status = StatusInterrupted
-			if err := s.Save(r); err != nil {
-				return fmt.Errorf("sweep %s: %w", r.ID, err)
+	for _, sid := range sessionIDs {
+		all, err := s.List(sid, 0, "")
+		if err != nil {
+			return fmt.Errorf("list %s: %w", sid, err)
+		}
+		for _, r := range all {
+			if r.Status == StatusRunning {
+				r.Status = StatusInterrupted
+				if err := s.Save(sid, r); err != nil {
+					return fmt.Errorf("sweep %s/%s: %w", sid, r.ID, err)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// DeleteSession removes the entire session directory (commands + outputs).
+// Idempotent: returns nil if the directory is already gone.
+func (s *Store) DeleteSession(sessionID string) error {
+	err := os.RemoveAll(s.SessionDir(sessionID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
