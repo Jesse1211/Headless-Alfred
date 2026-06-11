@@ -10,6 +10,9 @@
 # Node (for later plans, harmless now)
 /web/node_modules/
 /web/dist/
+/web/*.tsbuildinfo
+/web/*.js
+/web/*.d.ts
 
 # Editor
 .idea/
