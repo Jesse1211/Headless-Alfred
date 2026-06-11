@@ -1,0 +1,59 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alfred
+  namespace: alfred
+  annotations:
+    # cert-manager provisions a Let's Encrypt cert into the secret named
+    # in spec.tls[0].secretName. Requires the named ClusterIssuer
+    # to be pre-installed (see deploy/README.md).
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Traefik: force HTTPS by serving only on websecure (443).
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - agent.jesseliu.me
+      secretName: alfred-tls
+  rules:
+    - host: agent.jesseliu.me
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: alfred
+                port:
+                  number: 8080
+---
+# Traefik-specific: redirect plain HTTP (port 80) to HTTPS so bookmarks
+# without scheme still work.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: alfred-http-redirect
+  namespace: alfred
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`agent.jesseliu.me`)
+      kind: Rule
+      services:
+        - name: noop@internal
+          kind: TraefikService
+      middlewares:
+        - name: redirect-https
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: alfred
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
