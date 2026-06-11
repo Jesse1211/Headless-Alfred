@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web
+.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push
 
 test: test-unit test-integration
 
@@ -31,3 +31,9 @@ smoke: build
 # if you've changed frontend code.
 ws-smoke: build
 	go run ./scripts/ws-smoke
+
+image:
+	./scripts/build-image.sh
+
+image-push:
+	./scripts/build-image.sh --push

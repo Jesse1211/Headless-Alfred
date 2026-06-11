@@ -1,0 +1,36 @@
+# Don't ship local development artifacts.
+.git/
+.github/
+docs/
+deprecated/
+*.md
+LICENSE
+
+# Source artifacts — built fresh inside the image.
+**/node_modules/
+**/dist/
+/bin/
+/coverage.out
+/internal/static/dist/
+
+# Local test data
+/tmp/
+/data/
+
+# Secrets must never be in the build context.
+deploy/manifests/secret.yaml
+.env
+.env.*
+
+# Editor + OS
+.idea/
+.vscode/
+.DS_Store
+
+# Keep Go tests out of the image build (not needed at runtime).
+**/*_test.go
+**/*.test.ts
+**/*.test.tsx
+
+# The ws-smoke tool is dev-only.
+/scripts/ws-smoke/
