@@ -542,14 +542,39 @@ func TestStore_List_UnknownSession_ReturnsEmpty(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run all store tests, confirm green**
+- [ ] **Step 3: Add the SessionDir path-shape test**
 
-Run: `go test ./internal/store/ -count=1 -v`
-Expected: 11 tests PASS (the 8 from before, now session-scoped, plus 3 new: `ListIsolatedBySession`, `DeleteSession_RemovesAllArtifacts`, `List_UnknownSession_ReturnsEmpty`).
+Append to `internal/store/store_test.go`:
+
+```go
+func TestStore_SessionDir_LayoutIsStable(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := New(dir)
+	got := s.SessionDir("01HX...")
+	want := filepath.Join(dir, "sessions", "01HX...")
+	if got != want {
+		t.Fatalf("SessionDir = %q, want %q", got, want)
+	}
+}
+```
+
+This is a single line of behavior but guards against silent layout
+shifts (e.g., someone "tidies" the prefix from `sessions/` to
+`runtime/sessions/`); Plan 4 (Manager) constructs `pty.stream` paths
+relative to this — drift here = data loss there.
+
+- [ ] **Step 4: Run all store tests, confirm green**
+
+Run: `go test ./internal/store/ -count=1 -v 2>&1 | grep -c "^--- PASS"`
+Expected: 12 (the 8 pre-existing tests now session-scoped + 4 new:
+`ListIsolatedBySession`, `DeleteSession_RemovesAllArtifacts`,
+`List_UnknownSession_ReturnsEmpty`, `SessionDir_LayoutIsStable`).
 
 If `internal/api` or `cmd/alfred-server` fail to compile here, **leave them broken** — Plan 4 (Manager) and Plan 5 (API) will rewire them. We're verifying store in isolation.
 
-- [ ] **Step 4: Commit**
+Restrict your test runs to the store package for the rest of this plan: `go test ./internal/store/...`. Do **not** run `go build ./...` until Plan 5 completes.
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add internal/store/store.go internal/store/store_test.go
@@ -858,6 +883,16 @@ func TestMigrate_MalformedLegacyJSON_Skipped(t *testing.T) {
 
 func seedLegacyRecord(t *testing.T, dir, id, jsonBody string) {
 	t.Helper()
+	// Sanity-check the fixture: legacy records were valid JSON in the
+	// pre-multi-session schema. We accept malformed bytes too (for the
+	// "skip bad records" test), so this only validates when the fixture
+	// LOOKS like JSON (starts with '{').
+	if len(jsonBody) > 0 && jsonBody[0] == '{' {
+		var probe map[string]any
+		if err := json.Unmarshal([]byte(jsonBody), &probe); err != nil {
+			t.Fatalf("fixture is not valid JSON: %v", err)
+		}
+	}
 	cmdsDir := filepath.Join(dir, "commands")
 	if err := os.MkdirAll(cmdsDir, 0o700); err != nil {
 		t.Fatalf("mkdir legacy commands: %v", err)
@@ -877,10 +912,6 @@ func seedLegacyOutput(t *testing.T, dir, id, body string) {
 		t.Fatalf("write legacy output: %v", err)
 	}
 }
-
-// `json` is imported above; the empty reference here keeps goimports happy
-// if the test file is later edited without using json directly.
-var _ = json.Unmarshal
 ```
 
 - [ ] **Step 2: Run tests, confirm they fail to compile**
@@ -1004,13 +1035,11 @@ Expected: 4 PASS.
 
 - [ ] **Step 5: Run full store package test, confirm everything still green**
 
-Run: `go test ./internal/store/ -count=1`
-Expected: PASS (15 total: 8 store + 4 sessions + 4 migrate + 0 new in this task — wait, let me recount: the 8 from Task 2 + 3 new from Task 2 + 4 sessions from Task 3 + 4 migrate from Task 4 = 19 tests).
-
-Actually run with `-v` to confirm:
-
 Run: `go test ./internal/store/ -count=1 -v 2>&1 | grep -c "^=== RUN"`
-Expected: 19.
+Expected exactly 20 tests:
+- 12 from Task 2 (8 carried over + 4 new: `ListIsolatedBySession`, `DeleteSession_RemovesAllArtifacts`, `List_UnknownSession_ReturnsEmpty`, `SessionDir_LayoutIsStable`)
+- 4 from Task 3 SessionsFile (`LoadMissing_ReturnsEmpty`, `SaveAndLoad`, `SaveIsAtomic`, `LoadMalformed_ReturnsError`)
+- 4 from this task (`Migrate_NoLegacyDirs_NoOp`, `Migrate_LegacyDirsExist_FoldsIntoSession`, `Migrate_AlreadyMigrated_NoOp`, `Migrate_MalformedLegacyJSON_Skipped`)
 
 - [ ] **Step 6: Commit**
 
@@ -1025,11 +1054,22 @@ git commit -m "store: add MigrateLegacyLayout for one-shot import of pre-multi-s
 
 At the end of Plan 1:
 
-- `go test ./internal/store/ -race -count=1` passes (19 tests).
+- `go test -race -count=1 ./internal/store/` passes (20 tests).
 - `internal/store` no longer talks to a single command directory — every public method takes a `sessionID`.
 - `Record.SessionID` is part of the JSON schema.
 - `SessionsFile.Save/Load` round-trips `sessions.json` atomically.
-- `MigrateLegacyLayout(dir, id, time)` is idempotent, transactional in spirit (writes new layout before deleting old), and skips malformed records with a stderr line.
+- `MigrateLegacyLayout(dir, id, time)` is idempotent and skips malformed records with a stderr line.
+
+### Migration durability — accepted limitations
+
+`MigrateLegacyLayout` is **not** fully transactional. The sequence is:
+1. Copy every command JSON + output into the new per-session layout.
+2. Write `sessions.json` with the "Imported" entry.
+3. `RemoveAll` the legacy `commands/` and `outputs/` directories.
+
+A crash between step 2 and step 3 leaves `sessions.json` written + legacy dirs still present. On next boot the migration **skips** (because `sessions.json` exists) and the legacy dirs sit there orphaned, harming nothing. A crash between step 1 and step 2 wastes some disk on duplicated data; next boot re-migrates from scratch. A crash mid-step-1 (writing one command JSON) leaves a half-migrated layout that subsequent boot completes.
+
+This is acceptable for a single-user tool that runs migration exactly once per upgrade. We document the limitation here rather than building a real two-phase commit on top of a Linux filesystem.
 
 The rest of the codebase **does not compile** at the end of Plan 1, because callers of the old store API (`internal/api/commands.go`, `internal/api/ws.go`, etc.) still use the old signatures. That's expected — Plan 5 (REST) and Plan 6 (WS) rewire them. Other plans (2, 3, 4) work on `internal/shell` and `internal/session` and don't touch `internal/store` callers either.
 

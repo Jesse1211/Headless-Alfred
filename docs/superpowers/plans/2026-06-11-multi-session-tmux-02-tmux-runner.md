@@ -34,8 +34,22 @@ package.
 ## Task 1: TmuxRunner interface
 
 The minimal surface we'll need to drive tmux for one session: create,
-send keys, kill bash inside pane, respawn pane, list panes, kill
-session, set/unset pipe, list sessions, set-option.
+send literal text, send Enter, kill bash inside pane, respawn pane,
+list panes, kill session, set/unset pipe, list sessions, set-option.
+
+### Why SendText and SendEnter are separate methods
+
+`tmux send-keys -t <s> -l "<text>"` sends every byte literally,
+including `\n`, which means bash sees a literal newline character but
+**does not receive the Enter key** that actually executes the
+buffered line. Conversely `tmux send-keys -t <s> Enter` interprets
+`Enter` as the key, but in that mode `'`, `"`, `\` and `$` inside the
+wrapper script bytes would be interpreted as key names too.
+
+Two separate methods make the intent unambiguous: caller sends the
+wrapper text literally with `SendText`, then a single `SendEnter`
+to commit it. Plan 3's `TmuxShell.Write` will do exactly this in
+sequence.
 
 **Files:**
 - Create: `internal/shell/tmuxio/runner.go`
@@ -63,6 +77,10 @@ func TestExecRunner_ListSessions_NoServer_ReturnsEmpty(t *testing.T) {
 		t.Skip("tmux binary not on PATH")
 	}
 	// Use a brand-new socket path — guaranteed no server is running.
+	// On a tmux-less server the error stderr is one of
+	//   "no server running on /..."
+	//   "error connecting to /..."
+	// We treat both as "0 sessions, no error".
 	sock := t.TempDir() + "/tmux.sock"
 	r := NewExecRunner(sock)
 	sessions, err := r.ListSessions()
@@ -101,6 +119,52 @@ func TestExecRunner_CreateAndListSession_RoundTrip(t *testing.T) {
 		t.Fatalf("integration-test not in %v", sessions)
 	}
 }
+
+func TestExecRunner_SendTextThenEnter_ExecutesCommand(t *testing.T) {
+	if !tmuxAvailable() {
+		t.Skip("tmux binary not on PATH")
+	}
+	sock := t.TempDir() + "/tmux.sock"
+	r := NewExecRunner(sock)
+	t.Cleanup(func() { _ = r.KillSession("exec-test") })
+	if err := r.NewSession("exec-test", "bash", "--noprofile", "--norc"); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	// Capture pane output to a temp file via pipe-pane.
+	outFile := t.TempDir() + "/out"
+	if err := r.PipePane("exec-test", "cat >> "+outFile); err != nil {
+		t.Fatalf("PipePane: %v", err)
+	}
+	if err := r.SendText("exec-test", "echo HELLO-WORLD"); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	if err := r.SendEnter("exec-test"); err != nil {
+		t.Fatalf("SendEnter: %v", err)
+	}
+	// bash needs a tick to execute and tmux a tick to flush. Poll up to 2s.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(outFile)
+		if strings.Contains(string(data), "HELLO-WORLD") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(outFile)
+	t.Fatalf("HELLO-WORLD never appeared in pane output. got: %q", data)
+}
+```
+
+(Add these imports to the top of the file:)
+
+```go
+import (
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+)
 ```
 
 - [ ] **Step 2: Run — confirm build error (types don't exist yet)**
@@ -146,9 +210,18 @@ type TmuxRunner interface {
 	// nil if the session does not exist.
 	KillSession(name string) error
 
-	// SendKeys writes the literal string keys into the session's pane.
-	// keys is sent verbatim — the caller adds trailing newlines if needed.
-	SendKeys(session, keys string) error
+	// SendText writes the bytes in text into the session's pane
+	// LITERALLY. Special characters like ', ", \, $, and the key names
+	// Enter, Up, etc. are passed through as-is. The shell sees them as
+	// characters typed by a user. It does NOT execute the buffered line
+	// until Enter is sent separately.
+	SendText(session, text string) error
+
+	// SendEnter delivers a single Enter keypress. tmux interprets the
+	// literal token "Enter" as the key (NOT the four characters
+	// E-n-t-e-r), which makes bash execute the line that was previously
+	// typed via SendText.
+	SendEnter(session string) error
 
 	// PanePID returns the PID of the program currently running in the
 	// session's (only) pane.
@@ -192,12 +265,15 @@ func (e *ExecRunner) cmd(args ...string) *exec.Cmd {
 func (e *ExecRunner) ListSessions() ([]string, error) {
 	out, err := e.cmd("list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
-		// "no server running on <socket>" is a normal not-running state.
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "no server running") {
+		// Treat both "no server running on <sock>" and "error connecting
+		// to <sock>" (the latter happens when the socket file is absent
+		// on macOS) as "0 sessions, not an error".
+		stderr := exitStderr(err)
+		if strings.Contains(stderr, "no server running") ||
+			strings.Contains(stderr, "error connecting") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("tmux list-sessions: %w (stderr=%q)", err, exitStderr(err))
+		return nil, fmt.Errorf("tmux list-sessions: %w (stderr=%q)", err, stderr)
 	}
 	var names []string
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
@@ -234,11 +310,20 @@ func (e *ExecRunner) KillSession(name string) error {
 	return nil
 }
 
-func (e *ExecRunner) SendKeys(session, keys string) error {
-	// The -l flag sends keys literally (no key-name interpretation).
-	out, err := e.cmd("send-keys", "-t", session, "-l", keys).CombinedOutput()
+func (e *ExecRunner) SendText(session, text string) error {
+	// The -l flag sends bytes literally (no key-name interpretation).
+	out, err := e.cmd("send-keys", "-t", session, "-l", text).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("tmux send-keys %s: %w (out=%q)", session, err, out)
+		return fmt.Errorf("tmux send-keys -l %s: %w (out=%q)", session, err, out)
+	}
+	return nil
+}
+
+func (e *ExecRunner) SendEnter(session string) error {
+	// Without -l, tmux interprets "Enter" as the named key.
+	out, err := e.cmd("send-keys", "-t", session, "Enter").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux send-keys Enter %s: %w (out=%q)", session, err, out)
 	}
 	return nil
 }
@@ -332,19 +417,26 @@ Append to `internal/shell/tmuxio/runner_test.go`:
 func TestFakeRunner_RecordsCalls(t *testing.T) {
 	f := NewFakeRunner()
 	_ = f.NewSession("s1", "bash", "--noprofile", "--norc")
-	_ = f.SendKeys("s1", "echo hello\n")
+	_ = f.SendText("s1", "echo hello")
+	_ = f.SendEnter("s1")
 	_ = f.SetOption("s1", "remain-on-exit", "on")
 	_ = f.PipePane("s1", "cat >> /tmp/x")
 
 	got := f.Calls()
-	if len(got) != 4 {
-		t.Fatalf("want 4 calls, got %d: %+v", len(got), got)
+	if len(got) != 5 {
+		t.Fatalf("want 5 calls, got %d: %+v", len(got), got)
 	}
 	if got[0].Method != "NewSession" || got[0].Args[0] != "s1" {
 		t.Fatalf("call 0 = %+v", got[0])
 	}
-	if got[2].Method != "SetOption" || got[2].Args[2] != "on" {
+	if got[1].Method != "SendText" || got[1].Args[1] != "echo hello" {
+		t.Fatalf("call 1 = %+v", got[1])
+	}
+	if got[2].Method != "SendEnter" || got[2].Args[0] != "s1" {
 		t.Fatalf("call 2 = %+v", got[2])
+	}
+	if got[3].Method != "SetOption" || got[3].Args[2] != "on" {
+		t.Fatalf("call 3 = %+v", got[3])
 	}
 }
 
@@ -556,11 +648,18 @@ func (f *FakeRunner) KillSession(name string) error {
 	return nil
 }
 
-func (f *FakeRunner) SendKeys(session, keys string) error {
+func (f *FakeRunner) SendText(session, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record("SendKeys", session, keys)
-	return f.takeErr("SendKeys")
+	f.record("SendText", session, text)
+	return f.takeErr("SendText")
+}
+
+func (f *FakeRunner) SendEnter(session string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("SendEnter", session)
+	return f.takeErr("SendEnter")
 }
 
 func (f *FakeRunner) PanePID(session string) (int, error) {
@@ -771,8 +870,12 @@ func TestStreamReader_TruncateAtIdleBoundary(t *testing.T) {
 	sr, _ := NewStreamReader(stream, offsetFile, sink)
 	defer sr.Close()
 	_, _ = sr.ReadOnce()
-	// Caller asks for truncate: keep nothing (everything has been consumed).
-	if err := sr.TruncateConsumed(); err != nil {
+	// Run truncate with a FakeRunner so we can observe the pipe stop/restart
+	// sequence (spec §4.4: this is racy in principle; we narrow the window by
+	// always going stop-pipe → truncate → restart-pipe).
+	fr := NewFakeRunner()
+	_ = fr.NewSession("sess-1", "bash")
+	if err := sr.TruncateConsumed(fr, "sess-1", "cat >> "+stream); err != nil {
 		t.Fatalf("TruncateConsumed: %v", err)
 	}
 	info, err := os.Stat(stream)
@@ -784,6 +887,23 @@ func TestStreamReader_TruncateAtIdleBoundary(t *testing.T) {
 	}
 	if got := readOffset(t, offsetFile); got != 0 {
 		t.Fatalf("offset after truncate = %d, want 0", got)
+	}
+	// Verify the FakeRunner saw pipe-stop, then pipe-restart, in order.
+	calls := fr.Calls()
+	pipePaneCalls := []Call{}
+	for _, c := range calls {
+		if c.Method == "PipePane" {
+			pipePaneCalls = append(pipePaneCalls, c)
+		}
+	}
+	if len(pipePaneCalls) != 2 {
+		t.Fatalf("want 2 PipePane calls (stop+restart), got %d: %+v", len(pipePaneCalls), pipePaneCalls)
+	}
+	if pipePaneCalls[0].Args[1] != "" {
+		t.Fatalf("first PipePane should pass empty cmd to stop pipe, got %q", pipePaneCalls[0].Args[1])
+	}
+	if pipePaneCalls[1].Args[1] == "" {
+		t.Fatalf("second PipePane should restart with non-empty cmd, got empty")
 	}
 	// Next write through Append simulates tmux continuing to write.
 	f, _ := os.OpenFile(stream, os.O_WRONLY|os.O_APPEND, 0o600)
@@ -843,6 +963,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // ParserSink is the minimal interface StreamReader needs to deliver bytes
@@ -887,7 +1008,7 @@ func NewStreamReader(streamPath, offsetPath string, sink ParserSink) (*StreamRea
 	// Load offset.
 	var off int64
 	if data, err := os.ReadFile(offsetPath); err == nil {
-		parsed, perr := strconv.ParseInt(stringTrim(data), 10, 64)
+		parsed, perr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
 		if perr != nil {
 			return nil, fmt.Errorf("parse offset %q: %w", data, perr)
 		}
@@ -965,17 +1086,25 @@ func (s *StreamReader) ReadOnce() (int, error) {
 	return total, nil
 }
 
-// TruncateConsumed empties the stream file and resets the in-memory
-// and on-disk offsets to 0. Call only when the caller knows the
-// parser is at an idle boundary (between commands) — otherwise output
-// bytes can be lost.
+// TruncateConsumed performs the full safe-truncate dance documented in
+// spec §4.4: stop the pipe so tmux releases the file → truncate in
+// place → reopen our reader → restart the pipe with pipeCmd.
 //
-// Note: tmux's pipe-pane writer still has the file open. The caller
-// is responsible for sequencing this with PipePane(session, "") +
-// PipePane(session, "<cmd>") to flush+stop+restart the pipe across
-// the truncate, per spec §4.4. This function only handles the file +
-// offset bookkeeping.
-func (s *StreamReader) TruncateConsumed() error {
+// This MUST be called only when the parser is at an idle boundary
+// (between commands). Any bytes bash emits in the ~50ms window
+// between StopPipe and RestartPipe are lost; acceptable for a
+// single-user tool, documented in the spec.
+//
+// The runner + session form a tight pair because no other caller can
+// sensibly sequence this — if pipe-restart fails the next ReadOnce
+// would see zero bytes forever. Keeping it in one method makes the
+// contract impossible to mis-sequence.
+func (s *StreamReader) TruncateConsumed(runner TmuxRunner, session, pipeCmd string) error {
+	// 1. Stop the pipe so tmux closes its write fd.
+	if err := runner.PipePane(session, ""); err != nil {
+		return fmt.Errorf("stop pipe: %w", err)
+	}
+	// 2. Close our reader, truncate, reopen.
 	if err := s.file.Close(); err != nil {
 		return fmt.Errorf("close before truncate: %w", err)
 	}
@@ -988,7 +1117,14 @@ func (s *StreamReader) TruncateConsumed() error {
 	}
 	s.file = f
 	s.offset = 0
-	return s.persistOffset()
+	if err := s.persistOffset(); err != nil {
+		return err
+	}
+	// 3. Restart the pipe; subsequent bash output flows again.
+	if err := runner.PipePane(session, pipeCmd); err != nil {
+		return fmt.Errorf("restart pipe: %w", err)
+	}
+	return nil
 }
 
 func (s *StreamReader) persistOffset() error {
@@ -1003,16 +1139,6 @@ func (s *StreamReader) persistOffset() error {
 	return nil
 }
 
-func stringTrim(data []byte) string {
-	s := string(data)
-	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	return s
-}
 ```
 
 - [ ] **Step 4: Run StreamReader tests, confirm green**
@@ -1048,7 +1174,10 @@ Expected: empty.
 - [ ] **Step 3: Confirm test count**
 
 Run: `go test ./internal/shell/tmuxio/ -count=1 -v 2>&1 | grep -c "^--- PASS\|^--- SKIP"`
-Expected: 18 (2 ExecRunner that may SKIP without tmux + 9 FakeRunner + 6 StreamReader + 1 already counted via Step 4 of Task 3). Acceptable range: 16-18.
+Expected exactly 17:
+- 3 ExecRunner (`ListSessions_NoServer`, `CreateAndListSession_RoundTrip`, `SendTextThenEnter_ExecutesCommand`) — these may report SKIP on hosts without tmux
+- 8 FakeRunner (`RecordsCalls`, `ListSessions_Default_Empty`, `NewSession_AddsToListSessions`, `KillSession_RemovesFromList`, `KillSession_NonExistent_Idempotent`, `PanePID_DefaultsToSyntheticValue`, `PaneDeadFlag`, `ErrorInjection`)
+- 6 StreamReader (`ReadsFromOffsetZero_FreshFile`, `ResumesFromPersistedOffset`, `ReadOnceReturnsZeroWhenNoNewBytes`, `MissingStream_CreatesEmpty`, `TruncateAtIdleBoundary`, `OffsetFileAtomicallyWritten`)
 
 - [ ] **Step 4: No new commit — this is a verification pass**
 
