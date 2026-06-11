@@ -477,7 +477,7 @@ func (m *Manager) Create(name string) (store.SessionMeta, error) {
 	m.metas[id] = meta
 	m.mu.Unlock()
 
-	if err := m.startShellLocked(id); err != nil {
+	if err := m.startShell(id); err != nil {
 		m.mu.Lock()
 		delete(m.metas, id)
 		m.mu.Unlock()
@@ -500,12 +500,11 @@ func (m *Manager) Create(name string) (store.SessionMeta, error) {
 	return meta, nil
 }
 
-// startShellLocked spins up a TmuxShell for sessionID. m.mu MUST be
-// HELD if the caller is observing state under lock, BUT since
-// TmuxShell.Start() can take a non-trivial number of milliseconds we
-// release before calling Start to avoid stalling other Manager
-// methods. The name "Locked" here means "lock-aware".
-func (m *Manager) startShellLocked(sessionID string) error {
+// startShell spins up a brand-new TmuxShell for sessionID.
+// Caller must NOT hold m.mu — this method takes the lock internally
+// when registering the shell, and TmuxShell.Start can take tens of
+// milliseconds which we don't want under lock.
+func (m *Manager) startShell(sessionID string) error {
 	cfg := shell.TmuxShellConfig{
 		SessionID:  sessionID,
 		Nonce:      m.cfg.Nonce,
@@ -523,13 +522,11 @@ func (m *Manager) startShellLocked(sessionID string) error {
 	ts.OnUserExit = func() {
 		_ = m.Close(id)
 	}
-	// Make sure the session directory + commands/outputs subdirs exist
-	// before starting the read loop, so the StreamReader's stream file
-	// gets a real parent. The store ensures these on first Save, but
-	// the StreamReader opens its file BEFORE any Save runs, so we
-	// pre-create here.
-	if err := m.cfg.Store.WriteOutput(sessionID, "_init_dir", nil); err != nil {
-		return fmt.Errorf("init session dir: %w", err)
+	// Ensure the session dir + commands/outputs subdirs exist BEFORE
+	// the read loop opens pty.stream inside that dir. Plan 1's
+	// EnsureSessionDirs is idempotent.
+	if err := m.cfg.Store.EnsureSessionDirs(sessionID); err != nil {
+		return fmt.Errorf("ensure session dirs: %w", err)
 	}
 	if err := ts.Start(); err != nil {
 		return fmt.Errorf("Start tmux shell: %w", err)
@@ -553,13 +550,11 @@ func (m *Manager) persistMetas() error {
 }
 ```
 
-(Note: `WriteOutput(sessionID, "_init_dir", nil)` is a small hack to
-trigger `ensureSessionDirs` from Plan 1. An alternative would be to
-add a public `Store.EnsureDirs(sessionID)` method, but that's a Plan 1
-change we'd be doing in retrospect. The two-extra-bytes `_init_dir.log`
-file is harmless — `_init_dir` isn't a valid ULID so no API code can
-accidentally read it as a command output. The Plan 14 cleanup task
-will revisit and remove it if it ever bothers us.)
+(Plan 1's `Store.EnsureSessionDirs` is the public hook that creates
+the session dir + commands/outputs subdirs. The store opens
+`pty.stream` before any `Save` runs, so we ensure dirs explicitly.
+Idempotent — the StreamReader-opened file just goes into the
+already-existing dir.)
 
 - [ ] **Step 4: Run tests, confirm green**
 
@@ -905,6 +900,33 @@ func TestManager_Reconcile_EmptyBoth_IsNoop(t *testing.T) {
 		t.Fatalf("list non-empty: %+v", m.List())
 	}
 }
+
+func TestManager_Reconcile_Idempotent(t *testing.T) {
+	m, fr := newTestManager(t)
+	id := "01HXAA"
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	_ = m.cfg.SessionsFile.Save([]store.SessionMeta{
+		{ID: id, Name: "X", CreatedAt: createdAt},
+	})
+	_ = fr.NewSession(id, "bash")
+
+	if err := m.Reconcile(); err != nil {
+		t.Fatalf("first Reconcile: %v", err)
+	}
+	// Second call must not error and must not duplicate any state.
+	if err := m.Reconcile(); err != nil {
+		t.Fatalf("second Reconcile: %v", err)
+	}
+	if len(m.List()) != 1 {
+		t.Fatalf("after 2x Reconcile list = %+v, want 1 entry", m.List())
+	}
+	// The second resumeShell logs an "already started" error from
+	// TmuxShell.Resume and moves on — verify our shells map still
+	// holds exactly one entry for the id.
+	if got, _ := m.Get(id); got == nil {
+		t.Fatalf("session %s no longer accessible via Get", id)
+	}
+}
 ```
 
 Add the `time` import to the test file if not already there.
@@ -956,19 +978,16 @@ func (m *Manager) Reconcile() error {
 		m.mu.Unlock()
 
 		if live[meta.ID] {
-			// stored ∩ live: TmuxShell.Start would try to NewSession
-			// which would fail because the session is already there.
-			// We need a quieter resume path. For now, call startShellLocked
-			// AND swallow "session already exists" errors from NewSession
-			// — the runner's pipe-pane is still active from the previous
-			// process, so we simply need to re-launch the read loop.
-			if err := m.resumeShellLocked(meta.ID); err != nil {
+			// stored ∩ live: bash and pipe-pane are still running from
+			// the previous Go process. Just re-attach a TmuxShell with
+			// Resume (skips NewSession / PipePane setup).
+			if err := m.resumeShell(meta.ID); err != nil {
 				m.cfg.Logger.Error("resume tmux shell", "session", meta.ID, "err", err)
 			}
 			continue
 		}
 		// stored \ live: re-create.
-		if err := m.startShellLocked(meta.ID); err != nil {
+		if err := m.startShell(meta.ID); err != nil {
 			m.cfg.Logger.Error("recreate tmux shell", "session", meta.ID, "err", err)
 		}
 		// Mark any running commands as interrupted — the bash that was
@@ -990,11 +1009,13 @@ func (m *Manager) Reconcile() error {
 	return nil
 }
 
-// resumeShellLocked builds a TmuxShell for an already-live tmux session.
-// Unlike startShellLocked it does NOT call NewSession; the existing
+// resumeShell builds a TmuxShell for an already-live tmux session.
+// Unlike startShell it does NOT call NewSession; the existing
 // session and its pipe-pane are still running, so we just attach a
 // new readLoop + poller and pick up at pty.offset.
-func (m *Manager) resumeShellLocked(sessionID string) error {
+//
+// Caller must NOT hold m.mu (we take it ourselves when registering).
+func (m *Manager) resumeShell(sessionID string) error {
 	cfg := shell.TmuxShellConfig{
 		SessionID:  sessionID,
 		Nonce:      m.cfg.Nonce,
@@ -1064,7 +1085,7 @@ func (ts *TmuxShell) Resume() error {
 - [ ] **Step 4: Run, confirm green**
 
 Run: `go test ./internal/session/ -run TestManager_Reconcile -race -count=1 -v`
-Expected: 4 PASS.
+Expected: 5 PASS (`StoredIntersectLive_ResumesWithoutRecreate`, `StoredMinusLive_RecreatesAndMarksInterrupted`, `LiveMinusStored_KillsOrphan`, `EmptyBoth_IsNoop`, `Idempotent`).
 
 Also confirm Plan 3's shell tests still pass since we added Resume:
 
@@ -1146,8 +1167,8 @@ git commit -m "session: Manager.Reconcile + shell: TmuxShell.Resume for Go-resta
 
 ### Known limitations carried forward
 
-- `_init_dir.log` placeholder file is created in the store dir before the read loop starts. Plan 14 may revisit this with a cleaner `Store.EnsureDirs(sessionID)` method.
-- `Manager.Reconcile()` calling Resume twice on the same in-memory Manager returns "already started" from the second Resume. Production code only calls Reconcile once at boot, so this is fine.
+- `Manager.Reconcile()` calling Resume twice on the same in-memory Manager returns "already started" from the second Resume; the Manager logs and moves on. Production code only calls Reconcile once at boot, so this is purely defensive. Covered by `TestManager_Reconcile_Idempotent`.
+- Listener callbacks (`SetCloseListener`, `SetRenameListener`) fire synchronously, with `m.mu` released. For Close this includes disk I/O (DeleteSession) — total wall time of one Close is bounded by a few tens of milliseconds in practice. Acceptable for a single-user tool.
 
 ---
 

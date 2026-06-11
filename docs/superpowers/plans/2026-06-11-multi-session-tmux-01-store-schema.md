@@ -170,6 +170,15 @@ func (s *Store) ensureSessionDirs(sessionID string) error {
 
 // Save writes or overwrites the metadata file atomically (tmp + rename).
 // The session's directory is created on demand.
+// EnsureSessionDirs creates the session's commands/ and outputs/
+// subdirectories if absent. Exposed so callers can prepare the
+// session-rooted layout before any Save runs (Plan 4's Manager does
+// this just before launching the TmuxShell's read loop, which opens
+// the stream file inside the session dir).
+func (s *Store) EnsureSessionDirs(sessionID string) error {
+	return s.ensureSessionDirs(sessionID)
+}
+
 func (s *Store) Save(sessionID string, r Record) error {
 	if err := s.ensureSessionDirs(sessionID); err != nil {
 		return err
@@ -556,6 +565,24 @@ func TestStore_SessionDir_LayoutIsStable(t *testing.T) {
 		t.Fatalf("SessionDir = %q, want %q", got, want)
 	}
 }
+
+func TestStore_EnsureSessionDirs_CreatesCommandsAndOutputs(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := New(dir)
+	if err := s.EnsureSessionDirs("01HEX"); err != nil {
+		t.Fatalf("EnsureSessionDirs: %v", err)
+	}
+	for _, sub := range []string{"commands", "outputs"} {
+		path := filepath.Join(s.SessionDir("01HEX"), sub)
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("%s missing or not a dir: %v", sub, err)
+		}
+	}
+	// Idempotent — second call must not error.
+	if err := s.EnsureSessionDirs("01HEX"); err != nil {
+		t.Fatalf("second EnsureSessionDirs: %v", err)
+	}
+}
 ```
 
 This is a single line of behavior but guards against silent layout
@@ -566,9 +593,10 @@ relative to this — drift here = data loss there.
 - [ ] **Step 4: Run all store tests, confirm green**
 
 Run: `go test ./internal/store/ -count=1 -v 2>&1 | grep -c "^--- PASS"`
-Expected: 12 (the 8 pre-existing tests now session-scoped + 4 new:
+Expected: 13 (the 8 pre-existing tests now session-scoped + 5 new:
 `ListIsolatedBySession`, `DeleteSession_RemovesAllArtifacts`,
-`List_UnknownSession_ReturnsEmpty`, `SessionDir_LayoutIsStable`).
+`List_UnknownSession_ReturnsEmpty`, `SessionDir_LayoutIsStable`,
+`EnsureSessionDirs_CreatesCommandsAndOutputs`).
 
 If `internal/api` or `cmd/alfred-server` fail to compile here, **leave them broken** — Plan 4 (Manager) and Plan 5 (API) will rewire them. We're verifying store in isolation.
 
@@ -1036,8 +1064,8 @@ Expected: 4 PASS.
 - [ ] **Step 5: Run full store package test, confirm everything still green**
 
 Run: `go test ./internal/store/ -count=1 -v 2>&1 | grep -c "^=== RUN"`
-Expected exactly 20 tests:
-- 12 from Task 2 (8 carried over + 4 new: `ListIsolatedBySession`, `DeleteSession_RemovesAllArtifacts`, `List_UnknownSession_ReturnsEmpty`, `SessionDir_LayoutIsStable`)
+Expected exactly 21 tests:
+- 13 from Task 2 (8 carried over + 5 new: `ListIsolatedBySession`, `DeleteSession_RemovesAllArtifacts`, `List_UnknownSession_ReturnsEmpty`, `SessionDir_LayoutIsStable`, `EnsureSessionDirs_CreatesCommandsAndOutputs`)
 - 4 from Task 3 SessionsFile (`LoadMissing_ReturnsEmpty`, `SaveAndLoad`, `SaveIsAtomic`, `LoadMalformed_ReturnsError`)
 - 4 from this task (`Migrate_NoLegacyDirs_NoOp`, `Migrate_LegacyDirsExist_FoldsIntoSession`, `Migrate_AlreadyMigrated_NoOp`, `Migrate_MalformedLegacyJSON_Skipped`)
 
@@ -1054,7 +1082,7 @@ git commit -m "store: add MigrateLegacyLayout for one-shot import of pre-multi-s
 
 At the end of Plan 1:
 
-- `go test -race -count=1 ./internal/store/` passes (20 tests).
+- `go test -race -count=1 ./internal/store/` passes (21 tests).
 - `internal/store` no longer talks to a single command directory — every public method takes a `sessionID`.
 - `Record.SessionID` is part of the JSON schema.
 - `SessionsFile.Save/Load` round-trips `sessions.json` atomically.
