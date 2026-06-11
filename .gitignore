@@ -17,5 +17,8 @@
 *.swp
 .DS_Store
 
+# Claude Code local state (settings, scheduled task locks, etc.)
+.claude/
+
 # Local-only secrets
 deploy/manifests/secret.yaml
