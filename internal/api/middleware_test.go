@@ -65,6 +65,25 @@ func TestRecoverMiddleware_TurnsPanicInto500(t *testing.T) {
 	}
 }
 
+func TestRequestLogger_PreservesHijacker(t *testing.T) {
+	// Regression: RequestLogger wraps the ResponseWriter in a statusRecorder.
+	// If statusRecorder doesn't expose http.Hijacker, WebSocket upgrades fail
+	// with "response does not implement http.Hijacker".
+	got := false
+	h := RequestLogger()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, isHijacker := w.(http.Hijacker)
+		got = isHijacker
+	}))
+	// httptest.NewRecorder is NOT a Hijacker, so we need a real http.Server's
+	// ResponseWriter via httptest.NewServer.
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	_, _ = http.Get(srv.URL)
+	if !got {
+		t.Fatal("inner handler's ResponseWriter does not implement http.Hijacker; WebSocket upgrades will fail")
+	}
+}
+
 func TestClientIP_PrefersXForwardedFor(t *testing.T) {
 	req := httptest.NewRequest("GET", "/x", nil)
 	req.RemoteAddr = "10.0.0.1:1234"

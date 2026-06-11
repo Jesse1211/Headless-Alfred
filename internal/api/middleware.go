@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -101,6 +102,20 @@ func (s *statusRecorder) WriteHeader(c int) {
 	s.status = c
 	s.ResponseWriter.WriteHeader(c)
 }
+
+// Hijack lets WebSocket upgrades reach the underlying http.Hijacker on the
+// wrapped ResponseWriter. Without this method, gorilla/websocket's
+// Upgrade() returns "response does not implement http.Hijacker" because
+// our wrapper hides the interface.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errNotHijacker
+	}
+	return h.Hijack()
+}
+
+var errNotHijacker = http.ErrNotSupported
 
 // ClientIP returns the IP of the original client.
 //

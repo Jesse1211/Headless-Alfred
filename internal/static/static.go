@@ -43,12 +43,20 @@ func Handler() http.Handler {
 
 		// Fallback to index.html for SPA routes. If even index.html doesn't
 		// exist (pre-frontend-build), 404.
-		if _, err := fs.Stat(sub, "index.html"); err != nil {
+		//
+		// We read index.html ourselves rather than rewriting r.URL.Path to
+		// "/index.html" and re-dispatching to fileServer — http.FileServer
+		// "helpfully" 301-redirects any request whose path ends in
+		// /index.html to the directory without it, which would bounce the
+		// SPA route forever.
+		index, err := fs.ReadFile(sub, "index.html")
+		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/index.html"
-		fileServer.ServeHTTP(w, r2)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(index)
 	})
 }
