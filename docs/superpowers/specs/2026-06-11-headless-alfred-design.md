@@ -42,6 +42,27 @@ PVC mounted at /data
 
 **Single container, single Go process, single bash.** Chosen for minimal moving parts. tmux deliberately omitted — bash and Go share container lifecycle anyway, so tmux adds layers without resilience gain.
 
+### 3.1 How one bash serves many commands
+
+bash is started once with PTY, with `--noprofile --norc` and `PS1=''` `PS2=''` so it emits no prompt characters into the output stream. The Go side wraps every user command with sentinels before writing it to the PTY:
+
+```bash
+printf '\x1eALFRED_START %s\x1e\n' "<cmdId>"
+<user command line(s)>
+__alfred_ec=$?
+printf '\x1eALFRED_END %s %d\x1e\n' "<cmdId>" "$__alfred_ec"
+```
+
+`\x1e` (RS, record separator) is used because it almost never appears in real output. The Go output parser is a simple state machine:
+
+- Outside any command: discard bytes (shouldn't normally happen).
+- Saw `\x1eALFRED_START <id>\x1e\n`: emit `started` event, switch to "inside command <id>", route subsequent bytes to subscribers tagged with `<id>`.
+- Saw `\x1eALFRED_END <id> <ec>\x1e\n`: emit `done` with exit code, switch back to outside.
+
+Trade-offs accepted: the unlikely case of a program emitting `\x1eALFRED_END ...\x1e\n` literally would confuse the parser. Mitigation: include a random per-process nonce in the sentinel (`ALFRED_END_<nonce>`), generated at startup, never logged.
+
+`cwd` for a new command is captured at command start by reading `$PWD` inside the sentinel header line: `printf '\x1eALFRED_START %s %s\x1e\n' "<cmdId>" "$PWD"`. The Go parser extracts it from the START line.
+
 ## 4. Module boundaries
 
 ### Backend (`cmd/alfred-server` + `internal/`)
@@ -155,7 +176,7 @@ Interrupted commands are **not** auto-restarted. They could have side effects (`
 { type: "started", cmdId, command, startedAt }
 { type: "chunk", cmdId, data }                   // base64-encoded bytes
 { type: "done", cmdId, exitCode, finishedAt }
-{ type: "error", code, message }                 // e.g. code="busy" | "auth_expired" | "shell_restarted"
+{ type: "error", code, message }                 // e.g. code="busy" | "shell_restarted" | "shell_unavailable"
 { type: "pong" }
 ```
 
@@ -167,11 +188,11 @@ Interrupted commands are **not** auto-restarted. They could have side effects (`
 {
   "id": "01HAB...",                              // ULID
   "command": "npm run train",
-  "cwd": "/workspace",
+  "cwd": "/workspace",                            // captured from $PWD at START sentinel
   "started_at": "2026-06-11T14:23:01Z",
-  "finished_at": "2026-06-11T16:23:55Z",
-  "exit_code": 0,
-  "output_path": "/data/outputs/01HAB....log",
+  "finished_at": "2026-06-11T16:23:55Z",          // null while running, or for interrupted
+  "exit_code": 0,                                  // null while running, or for interrupted
+  "output_path": "/data/outputs/01HAB....log",   // file exists only after command ends
   "output_truncated": false,
   "status": "completed"
 }
@@ -179,9 +200,15 @@ Interrupted commands are **not** auto-restarted. They could have side effects (`
 
 `status` values: `running` | `completed` | `interrupted` | `stopped`.
 
+A "running" record is written at command start with `finished_at` and `exit_code` as null and `output_path` empty. On boot, any record still in `running` is swept to `interrupted` (its bash died with Go). On normal completion or stop, the record is rewritten with the final fields and `output_path` filled in after the log file is flushed.
+
 ### `/data/outputs/<id>.log`
 
-Raw byte stream, append-only. Capped at 10 MB; if the running buffer exceeds the cap, the head is dropped and `output_truncated` is set to `true` in the metadata.
+Written once at command end from the in-memory buffer of that command (not streamed live during the run — disk IO failures during a long command don't corrupt anything).
+
+In-memory buffer for the currently running command: append-only, capped at 10 MB. Once 10 MB is reached, further bytes are still streamed live to WebSocket subscribers but **not** added to the buffer; `output_truncated` is set to `true`. So the on-disk file contains the **first** 10 MB; reconnecting clients see the same first 10 MB plus whatever new bytes arrive live after reconnect. This trade-off is intentional: simpler than rolling truncation, and a 10 MB head is usually enough to find what crashed.
+
+The buffer is also what populates `outputSoFar` on `reattach`.
 
 ### Atomicity
 
@@ -209,8 +236,8 @@ Trade-off accepted: any process that can read pod env vars can impersonate the u
 
 | Category | Examples | Server behavior | UI behavior |
 |---|---|---|---|
-| Bad input | wrong password, expired/wrong token, empty command, `run` while busy | HTTP 401 / WS `{type:"error", code:"..."}` | red toast with clear message |
-| Shell death | bash killed by OOM, kernel kill | mark running command `interrupted`, attempt one bash restart, broadcast `{type:"error", code:"shell_restarted"}` | banner "shell restarted, retry your command" |
+| Bad input | wrong password, wrong/rotated token, empty command, oversize command (>4 KB), `run` while busy | HTTP 401 / WS `{type:"error", code:"..."}` | red toast with clear message |
+| Shell death | bash killed by OOM, kernel kill | mark running command `interrupted`, attempt one bash restart. On success, broadcast `{type:"error", code:"shell_restarted"}`. On failure, broadcast `{type:"error", code:"shell_unavailable"}` and reject further `run` messages until Pod restarts | banner "shell restarted, retry your command" / "shell unavailable, contact admin" |
 | Storage IO | PVC full, fs error | log; do not change command status (command itself may still be running fine); keep streaming to WS subscribers from memory buffer | yellow banner "storage degraded, history may be incomplete" |
 | Network / WS | client drops, idle timeout | unsubscribe transient subscriber; nothing else | exponential reconnect (1, 2, 4, 8, 16, 30 s cap), status dot in header |
 | Panic | Go bug | `recover` middleware, log stack, return 500 / close WS with 1011 | "internal server error" |
@@ -232,7 +259,7 @@ Trade-off accepted: any process that can read pod env vars can impersonate the u
 - [x] HTTPS enforced at Traefik (`redirectScheme: https`)
 - [x] Token validation before WebSocket upgrade
 - [x] Command length capped at 4 KB
-- [x] Rate limit on `/api/login`: 5 attempts / minute per IP (in-memory token bucket)
+- [x] Rate limit on `/api/login`: 5 attempts / minute per source IP. Source IP is taken from `X-Forwarded-For` (rightmost) since Traefik terminates TLS in front; the Go server trusts that header only because it only listens on the in-cluster Service IP
 - [x] No logging of password, token, or command content
 - [x] PVC mounted with mode `0700`
 - [x] No `pprof`, no debug endpoints in production binary
@@ -300,12 +327,21 @@ GitHub Actions: `helm/kind-action` to provision kind, run unit + integration on 
 
 ## 13. Deployment
 
+### Cluster prerequisites (one-time, not part of this app's manifests)
+
+- k3s installed with Traefik enabled (default)
+- cert-manager installed
+- A `ClusterIssuer` named `letsencrypt-prod` configured to use HTTP-01 challenge through Traefik
+- DNS for `agent.jesseliu.me` pointed (A record) at the cluster node's public IP **before** first deploy, so the HTTP-01 challenge can succeed
+
+### App deployment
+
 - Image: `ghcr.io/<owner>/headless-alfred:<git-sha>`
 - Single Deployment, 1 replica (PVC is RWO; bash state is process-local — multiple replicas would be incoherent)
 - `restartPolicy: Always`, no PodDisruptionBudget needed for single-instance personal use
-- DNS: `agent.jesseliu.me` A record → cluster node public IP
 - Ingress: Traefik with `cert-manager.io/cluster-issuer: letsencrypt-prod` annotation
 - Secret created out-of-band: `kubectl create secret generic alfred-secret --from-literal=ALFRED_USER=... --from-literal=ALFRED_PASSWORD=... --from-literal=ALFRED_TOKEN=$(openssl rand -hex 32)`
+- Resource requests/limits: 100m CPU / 128 Mi memory request, 1 CPU / 1 Gi memory limit. The limit caps how much memory a runaway command can consume (since output buffer is in the same process).
 
 ## 14. Future (explicitly out of scope for v1)
 
