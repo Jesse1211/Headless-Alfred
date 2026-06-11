@@ -16,6 +16,7 @@ web-build:
 	cd web && npm run build
 
 embed-web: web-build
+	mkdir -p internal/static/dist
 	find internal/static/dist -mindepth 1 -delete
 	cp -R web/dist/. internal/static/dist/
 
