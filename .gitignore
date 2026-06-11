@@ -1,0 +1,21 @@
+# Build artifacts
+/bin/
+/internal/static/dist/
+
+# Go
+*.test
+*.out
+/coverage.out
+
+# Node (for later plans, harmless now)
+/web/node_modules/
+/web/dist/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local-only secrets
+deploy/manifests/secret.yaml
