@@ -43,7 +43,9 @@ RUN apt-get update \
  && mkdir -p /data \
  && chown alfred:alfred /data
 
-USER alfred
+# Numeric so Kubernetes' runAsNonRoot check can verify the user without
+# introspecting /etc/passwd inside the image.
+USER 1000
 WORKDIR /home/alfred
 COPY --from=go-builder --chown=alfred:alfred /out/alfred-server /usr/local/bin/alfred-server
 

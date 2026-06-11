@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push
+.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push e2e e2e-setup e2e-teardown
 
 test: test-unit test-integration
 
@@ -37,3 +37,14 @@ image:
 
 image-push:
 	./scripts/build-image.sh --push
+
+# E2E: provision kind cluster, deploy alfred, run scenarios.
+# Idempotent — cluster persists across runs. Use e2e-teardown to clean up.
+e2e-setup:
+	./test/e2e/setup.sh
+
+e2e:
+	go test -tags=e2e -v -timeout=10m ./test/e2e/
+
+e2e-teardown:
+	./test/e2e/teardown.sh

@@ -31,12 +31,12 @@ command -v docker >/dev/null || { echo "docker not installed"; exit 1; }
 
 # 1. Build the image locally with a plain "headless-alfred:<tag>" name so the
 #    kind load step doesn't need to retag.
-echo "[setup] building image $IMAGE…"
+echo "[setup] building image ${IMAGE}…"
 docker build -t "$IMAGE" .
 
 # 2. Create cluster if missing.
 if ! kind get clusters | grep -qx "$CLUSTER_NAME"; then
-  echo "[setup] creating kind cluster $CLUSTER_NAME…"
+  echo "[setup] creating kind cluster ${CLUSTER_NAME}…"
   kind create cluster --name "$CLUSTER_NAME" --config test/e2e/kind-config.yaml
 else
   echo "[setup] reusing existing kind cluster $CLUSTER_NAME"
@@ -84,7 +84,7 @@ pkill -f "kubectl.*port-forward.*svc/alfred.*$LOCAL_PORT" 2>/dev/null || true
 sleep 1
 
 # 7. Start port-forward in background.
-echo "[setup] starting port-forward on :$LOCAL_PORT…"
+echo "[setup] starting port-forward on :${LOCAL_PORT}…"
 kubectl -n "$NS" port-forward svc/alfred "$LOCAL_PORT:8080" \
   > /tmp/alfred-e2e-pf.log 2>&1 &
 PF_PID=$!

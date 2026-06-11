@@ -38,11 +38,30 @@ var (
 
 // --- helpers --------------------------------------------------------------
 
+// testIP turns the current test name into a deterministic per-test IP.
+// The server's ClientIP trusts X-Forwarded-For (Traefik topology), so this
+// gives each test its own rate-limit bucket without burning through the
+// shared 127.0.0.1 budget when several tests log in.
+func testIP(t *testing.T) string {
+	t.Helper()
+	// Stable hash of the test name into the 10.0.0.0/8 range.
+	h := uint32(0)
+	for _, c := range t.Name() {
+		h = h*31 + uint32(c)
+	}
+	return fmt.Sprintf("10.%d.%d.%d", (h>>16)&0xff, (h>>8)&0xff, h&0xff)
+}
+
 // login returns (token, status). On non-200 the token is "".
+// Each test gets its own per-test client IP so the login rate limiter
+// doesn't make tests step on each other.
 func login(t *testing.T, user, password string) (string, int) {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"user": user, "password": password})
-	resp, err := http.Post(baseHTTP+"/api/login", "application/json", bytes.NewReader(body))
+	req, _ := http.NewRequest("POST", baseHTTP+"/api/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", testIP(t))
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post login: %v", err)
 	}
@@ -273,25 +292,6 @@ func TestE2E_DisconnectReconnect_PicksUpRunningCommand(t *testing.T) {
 	t.Fatal("no done within deadline")
 }
 
-// Scenario 5: wrong password → 401, repeated wrong → 429 (rate limit).
-func TestE2E_WrongPassword_Rejected(t *testing.T) {
-	_, code := login(t, testUser, "wrong-password")
-	if code != http.StatusUnauthorized {
-		t.Fatalf("code=%d; want 401", code)
-	}
-
-	// After 4 more bad attempts (5 total in <1 min), the 6th should be 429.
-	for i := 0; i < 4; i++ {
-		_, _ = login(t, testUser, "wrong-password")
-	}
-	_, code = login(t, testUser, "wrong-password")
-	if code != http.StatusTooManyRequests {
-		// Soft assertion — the limiter is shared per Pod and may have been
-		// drained by a previous test run. Log but don't fail.
-		t.Logf("expected 429 after 5 bad attempts; got %d. (may reset between runs)", code)
-	}
-}
-
 // Scenario 6: WS upgrade without ?token= is rejected before upgrade.
 func TestE2E_NoToken_WSRejected(t *testing.T) {
 	u, _ := url.Parse(baseWS + "/ws")
@@ -344,4 +344,27 @@ func TestE2E_StopRunningCommand(t *testing.T) {
 		}
 	}
 	t.Fatal("stop did not produce done event in time")
+}
+
+// Scenario 5: wrong password → 401, repeated wrong → 429 (rate limit).
+//
+// MUST run LAST: this test deliberately burns through the login rate limit.
+// Subsequent tests that call login() in the same Go test binary run would
+// get 429 too because the limiter is per-IP and we all share localhost.
+func TestE2E_WrongPassword_Rejected(t *testing.T) {
+	_, code := login(t, testUser, "wrong-password")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("code=%d; want 401", code)
+	}
+
+	// After 4 more bad attempts (5 total in <1 min), the 6th should be 429.
+	for i := 0; i < 4; i++ {
+		_, _ = login(t, testUser, "wrong-password")
+	}
+	_, code = login(t, testUser, "wrong-password")
+	if code != http.StatusTooManyRequests {
+		// Soft assertion — the limiter is shared per Pod and may have been
+		// drained by a previous test run. Log but don't fail.
+		t.Logf("expected 429 after 5 bad attempts; got %d. (may reset between runs)", code)
+	}
 }
