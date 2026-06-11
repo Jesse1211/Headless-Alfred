@@ -23,6 +23,7 @@ func TestStore_SaveAndGet(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	rec := Record{
 		ID:        "01HAB",
+		SessionID: "sess-1",
 		Command:   "ls",
 		Cwd:       "/tmp",
 		StartedAt: now,
@@ -34,6 +35,9 @@ func TestStore_SaveAndGet(t *testing.T) {
 	got, err := s.Get("01HAB")
 	if err != nil {
 		t.Fatalf("get: %v", err)
+	}
+	if got.SessionID != "sess-1" {
+		t.Fatalf("session_id not round-tripped: %q", got.SessionID)
 	}
 	if got.Command != "ls" || got.Status != StatusRunning {
 		t.Fatalf("round-trip mismatch: %+v", got)

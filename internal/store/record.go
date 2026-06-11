@@ -13,6 +13,7 @@ const (
 
 type Record struct {
 	ID              string     `json:"id"`
+	SessionID       string     `json:"session_id"`
 	Command         string     `json:"command"`
 	Cwd             string     `json:"cwd"`
 	StartedAt       time.Time  `json:"started_at"`
