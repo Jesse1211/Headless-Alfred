@@ -11,7 +11,7 @@ If you have less than 5 minutes, read just **Mental model** and **Three invarian
 One Go process per Pod. That process owns:
 
 1. **One bash subprocess** spawned at startup with `--noprofile --norc` and empty `PS1`. It lives until the Go process dies.
-2. **One PTY** that bash's stdin/stdout flow through. Output is parsed via sentinel markers (`\x1eALFRED_START_<nonce> <cmdID> <cwd>\x1e`) wrapped around each user command.
+2. **One PTY** that bash's stdin/stdout flow through. Output is parsed via sentinel markers (`\x1eALFRED_START_<nonce> <cmdID> <cwd>\x1e`) wrapped around each user command. **PTY echo is disabled at startup** (`stty -echo`) so the wrapper script we feed bash isn't echoed back into the parser; see the traps table below.
 3. **Two broadcasters** (raw bytes + typed events). Subscribers come and go (WebSocket connections, the disk-writer). The bash process never blocks on a slow subscriber.
 4. **A JSON file store** at `/data` — one file per command for metadata, one for output. Atomic writes via tmp+rename.
 5. **An HTTP+WS surface** for the React client.
@@ -64,6 +64,8 @@ If you change any of these, you will probably hit the same bug we already fixed.
 | `go:embed dist` skips dotfiles by default | An empty `dist/` (only `.gitkeep`) reports "no embeddable files" at compile time | The Dockerfile populates `dist/` with the real build; locally use `make embed-web` |
 | `printf` with a `\x1e` followed by raw text confuses the parser if the next byte isn't a known terminator | We append a literal `X` after the closing RS to give the parser a definitive end-of-sentinel marker | `TestSentinelParser_HandlesSentinelSplitAcrossFeeds` |
 | Login rate limiter is per-IP (`X-Forwarded-For` from Traefik) | Tests that all log in from `127.0.0.1` burn the same bucket | E2E tests set `X-Forwarded-For` per `t.Name()`; production deals with this naturally |
+| Bash PTY echo is on by default — every byte written into the master is echoed back through the slave | The echoed wrapper (`printf 'START…'`, the user command, `__alfred_ec=$?`, `printf 'END…'`) arrives **after** the START sentinel has flipped the parser to `stateInside`, so it leaks into the visible output as garbage like `__alfred_ec=$?` and `printf '\\x1eALFRED_END_…'` | `startLocked` writes `stty -echo\n` to the PTY immediately after `pty.Start`; that command's own echo lands in `stateOutside` and is discarded |
+| React `<StrictMode>` calls every state updater **twice** in dev to detect non-idempotent side effects | A naive `setMessages((m) => [...m, newOne])` on `done` events appends each completed command twice in the chat stream (server store is correct, only the UI doubles) | `useShell` mirrors `running` into a ref, reads the snapshot synchronously, and writes via an idempotent updater that no-ops if `msgs.some(m => m.id === snapshot.id)` |
 
 ---
 
@@ -108,7 +110,7 @@ static/      (embed.FS of web/dist with SPA fallback)
 | How commands are framed in/out of bash | `internal/shell/sentinel.go` (and the `Wrap` function) |
 | The HTTP API surface | `internal/api/{router,login,commands}.go` |
 | WS protocol | `internal/api/ws.go` (and `web/src/lib/ws.ts` for the client) |
-| Frontend UI | `web/src/features/terminal/` |
+| Frontend UI (ChatGPT-style stream) | `web/src/features/terminal/` — `ChatStream.tsx` renders pairs (UserBubble + AssistantBlock); `useShell.ts` owns the WS protocol and merges live `running` state with the historical `messages` list |
 | What's stored to disk | `internal/store/store.go` + `internal/store/record.go` |
 | Container build | `Dockerfile` + `scripts/build-image.sh` |
 | K8s manifests | `deploy/manifests/` |

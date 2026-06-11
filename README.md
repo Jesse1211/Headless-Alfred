@@ -7,18 +7,30 @@ Close the laptop, the session keeps running. Come back, pick up where you left o
 Domain: **agent.jesseliu.me** (production). Single user. Personal tool.
 
 ```
-┌──────────┬──────────────────────────────────┐
-│ History  │  Output                          │
-├──────────┤                                  │
-│ ls       │  epoch 1/100 loss=0.83           │
-│ cd /tmp  │  epoch 2/100 loss=0.71           │
-│ pwd      │  epoch 3/100 loss=0.62           │
-│ train ◀│  epoch 4/100 loss=0.55  ● live   │
-│          │                                  │
-├──────────┴──────────────────────────────────┤
-│ > [ Type a command...               ] [Run] │
+┌─────────────────────────────────────────────┐
+│ Headless Alfred                  ● Sign out │
+├─────────────────────────────────────────────┤
+│                                       [ ls ]│
+│  CONTEXT.md Makefile deploy go.mod          │
+│  Dockerfile README.md docs   go.sum         │
+│  exit 0                                     │
+│ ─────────────────────────────────────────── │
+│                                      [ pwd ]│
+│  /Users/jesseliu/Desktop/Chore/Headless-... │
+│  exit 0                                     │
+│ ─────────────────────────────────────────── │
+│                                    [ train ]│
+│  epoch 1/100 loss=0.83                      │
+│  epoch 2/100 loss=0.71                      │
+│  epoch 3/100 loss=0.62  ● live              │
+├─────────────────────────────────────────────┤
+│ (  Type a command…                     ↑  )│
 └─────────────────────────────────────────────┘
 ```
+
+ChatGPT-style chat stream: your command on the right, output on the
+left, a thin separator between each turn. Long history scrolls the whole
+page. Close the tab any time — commands keep running on the server.
 
 ---
 
@@ -191,7 +203,7 @@ internal/
 web/                    React + Vite + TypeScript SPA
   src/lib/              fetch + WebSocket clients
   src/features/auth     login page + useAuth hook
-  src/features/terminal split-screen UI + useShell hook
+  src/features/terminal ChatStream UI (command + output turns) + useShell hook
 deploy/
   manifests/            k8s YAMLs for namespace, pvc, secret template, deployment, service, ingress
   Makefile              operator targets (push, apply, set-image, logs, status)
