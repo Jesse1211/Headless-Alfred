@@ -1,2 +1,199 @@
-# Headless-Alfred
-A cloud-resident, headless Claude agent that keeps working while your machine is off.
+# Headless Alfred
+
+A web-based control panel for a persistent bash session living on your cloud server.
+Type a command in the browser → it runs on the server → output streams back live.
+Close the laptop, the session keeps running. Come back, pick up where you left off.
+
+Domain: **agent.jesseliu.me** (production). Single user. Personal tool.
+
+```
+┌──────────┬──────────────────────────────────┐
+│ History  │  Output                          │
+├──────────┤                                  │
+│ ls       │  epoch 1/100 loss=0.83           │
+│ cd /tmp  │  epoch 2/100 loss=0.71           │
+│ pwd      │  epoch 3/100 loss=0.62           │
+│ train ◀│  epoch 4/100 loss=0.55  ● live   │
+│          │                                  │
+├──────────┴──────────────────────────────────┤
+│ > [ Type a command...               ] [Run] │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Usage flow
+
+### 0. One-time setup of the cloud server
+
+You need a k3s cluster reachable at `agent.jesseliu.me`. See [`deploy/README.md`](deploy/README.md) for the full runbook. Summary:
+
+- k3s installed (Traefik enabled by default)
+- cert-manager installed with a `letsencrypt-prod` ClusterIssuer
+- DNS A record `agent.jesseliu.me` → cluster public IP
+- (Optional) GHCR pull secret if the image is private
+
+### 1. First-time deploy
+
+```bash
+# Create namespace + secret (the one thing not in git).
+kubectl apply -f deploy/manifests/namespace.yaml
+kubectl -n alfred create secret generic alfred-secret \
+  --from-literal=ALFRED_USER=admin \
+  --from-literal=ALFRED_PASSWORD='<your strong password>' \
+  --from-literal=ALFRED_TOKEN=$(openssl rand -hex 32)
+
+# Build + push the image to your registry, then apply manifests.
+make -C deploy push apply
+```
+
+Wait until the certificate is Ready (`make -C deploy status`), then open https://agent.jesseliu.me in a browser.
+
+### 2. Day-to-day from the browser
+
+1. Open https://agent.jesseliu.me — login page appears.
+2. Sign in with `ALFRED_USER` / `ALFRED_PASSWORD`. Token persists in localStorage, so subsequent visits skip login until you sign out.
+3. The terminal page shows:
+   - **Left**: command history (most recent on top).
+   - **Right**: output of the running or selected command.
+   - **Bottom**: command input. Enter to run, Shift+Enter for newline.
+4. Type any command. While it runs:
+   - Output streams live.
+   - History is locked (one command at a time).
+   - A red **Stop** button replaces Run; click to SIGKILL bash (loses cwd, but reliably interrupts long jobs).
+5. Close the tab any time. The command keeps running on the server. Reopen the tab and click in — the WS reattaches and resumes streaming.
+
+### 3. Updating the running app
+
+After a code change:
+
+```bash
+git pull
+make -C deploy push          # build + push :SHORT_SHA
+make -C deploy set-image     # rolling update to the new image
+```
+
+State preserved: command history JSON files on the PVC survive. State lost: in-flight bash session (the cwd, env vars, aliases). The user re-cds.
+
+### 4. Rotating credentials
+
+```bash
+kubectl -n alfred delete secret alfred-secret
+kubectl -n alfred create secret generic alfred-secret \
+  --from-literal=ALFRED_USER=admin \
+  --from-literal=ALFRED_PASSWORD='<new>' \
+  --from-literal=ALFRED_TOKEN=$(openssl rand -hex 32)
+make -C deploy rollout-restart
+```
+
+All issued tokens become invalid; users must log in again.
+
+---
+
+## Local development
+
+### Run both backend and frontend dev servers
+
+```bash
+# Terminal 1 — backend with throwaway env, on :8080
+ALFRED_USER=admin ALFRED_PASSWORD=test ALFRED_TOKEN=devtoken \
+  ALFRED_DATA_DIR=/tmp/alfred-dev go run ./cmd/alfred-server
+
+# Terminal 2 — Vite dev server on :5173 (proxies /api and /ws to :8080)
+cd web && npm run dev
+```
+
+Open http://localhost:5173. Login `admin` / `test`. Vite HMR makes frontend iteration fast.
+
+### Run the production binary locally (no Vite, single binary serving SPA + API + WS)
+
+```bash
+make embed-web build           # build frontend → copy to internal/static/dist → build Go binary
+ALFRED_USER=admin ALFRED_PASSWORD=test ALFRED_TOKEN=devtoken \
+  ALFRED_DATA_DIR=/tmp/alfred-dev ./bin/alfred-server
+```
+
+Open http://localhost:8080.
+
+### Automated tests
+
+```bash
+make test            # Go: 65 unit + integration tests (race detector on)
+cd web && npm test   # 9 vitest hook tests
+make smoke           # binary smoke (HTTP-only, no WS)
+make ws-smoke        # full headless end-to-end against the local binary
+```
+
+### Full end-to-end in a real Kubernetes cluster (kind)
+
+```bash
+make e2e-setup       # ~90s: build image, create kind cluster, deploy, port-forward
+make e2e             # 7 spec scenarios against the live cluster
+make e2e-teardown    # delete only the alfred-e2e cluster
+```
+
+---
+
+## How it works
+
+```
+[Browser]
+   │ HTTPS
+   ▼
+[Traefik in k3s] ── cert-manager → Let's Encrypt
+   │
+   ▼
+[Service alfred → :8080]
+   │
+   ▼
+[Pod — single replica]
+   Go binary:
+     • Static React build (embedded via go:embed)
+     • HTTP API: /api/login, /api/commands/*, /healthz, /readyz
+     • WebSocket: /ws (token in query string)
+     • One persistent bash via PTY (sentinel-wrapped commands)
+     • Per-command JSON metadata + .log output files
+   │
+   ▼
+[PVC /data — RWO 1 GB]
+   ├ commands/<ulid>.json
+   └ outputs/<ulid>.log
+```
+
+Key invariant: **bash lifecycle ≠ WebSocket lifecycle**. The bash process lives as long as the Go process. Browsers disconnect and reconnect freely; commands keep running. See [`docs/superpowers/specs/2026-06-11-headless-alfred-design.md`](docs/superpowers/specs/2026-06-11-headless-alfred-design.md) for the full design.
+
+---
+
+## Repo layout
+
+```
+cmd/alfred-server/      Go main entry point
+internal/
+  shell/                bash + PTY + sentinel-framed output
+  store/                JSON file persistence
+  auth/                 static credentials + per-IP login rate limit
+  api/                  HTTP/WS handlers, middleware, router
+  static/               go:embed of web/dist for production
+web/                    React + Vite + TypeScript SPA
+  src/lib/              fetch + WebSocket clients
+  src/features/auth     login page + useAuth hook
+  src/features/terminal split-screen UI + useShell hook
+deploy/
+  manifests/            k8s YAMLs for namespace, pvc, secret template, deployment, service, ingress
+  Makefile              operator targets (push, apply, set-image, logs, status)
+  README.md             cluster prerequisites + runbook
+scripts/
+  build-image.sh        wraps docker build with sane defaults
+  smoke.sh              HTTP-layer binary check
+  ws-smoke/             headless end-to-end (login + WS run + verify)
+test/e2e/               kind-based 7-scenario E2E
+docs/superpowers/
+  specs/                design document(s)
+  plans/                implementation plan documents (the build journey)
+```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
