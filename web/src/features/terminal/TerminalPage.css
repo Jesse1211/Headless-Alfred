@@ -1,0 +1,241 @@
+.terminal-page {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  height: 100vh;
+}
+
+.terminal-page__header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-page__brand {
+  font-weight: 600;
+}
+
+.terminal-page__status {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d1d5db;
+}
+
+.status-dot--open { background: var(--ok); }
+.status-dot--connecting,
+.status-dot--reconnecting { background: var(--warn); }
+.status-dot--closed { background: var(--error); }
+
+.terminal-page__logout {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.terminal-page__banner {
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.terminal-page__banner.is-error {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.terminal-page__banner button {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  color: inherit;
+}
+
+.terminal-page__split {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 0;
+}
+
+.history-list {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+.history-list__header {
+  padding: 12px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.history-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.history-list__item {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.history-list__item.is-selected {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.history-list__item.is-running {
+  background: rgba(22, 163, 74, 0.06);
+}
+
+.history-list__item.is-locked {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.history-list__cmd {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-list__meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.history-list__empty {
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.history-list__error {
+  padding: 8px 16px;
+  color: var(--error);
+  background: var(--error-bg);
+  font-size: 13px;
+}
+
+.terminal-page__main {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+}
+
+.terminal-page__empty {
+  padding: 32px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.output-view {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+}
+
+.output-view__header {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.output-view__header code {
+  font-family: ui-monospace, monospace;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.output-view__live { color: var(--ok); }
+.output-view__exit.is-ok { color: var(--ok); }
+.output-view__exit.is-err { color: var(--error); }
+.output-view__warn { color: var(--warn); }
+
+.output-view__body {
+  margin: 0;
+  padding: 16px 20px;
+  overflow: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--surface);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.command-input {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.command-input textarea {
+  flex: 1;
+  resize: none;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  min-height: 38px;
+  max-height: 200px;
+}
+
+.command-input textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.command-input button {
+  padding: 0 16px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.command-input__stop {
+  background: var(--error) !important;
+}
+
+.command-input button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
