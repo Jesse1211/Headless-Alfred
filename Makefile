@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push e2e e2e-setup e2e-teardown
+.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push e2e e2e-setup e2e-teardown local-status local-stop
 
 test: test-unit test-integration
 
@@ -48,3 +48,19 @@ e2e:
 
 e2e-teardown:
 	./test/e2e/teardown.sh
+
+# Show what alfred-related things are running locally.
+local-status:
+	@echo "== alfred-server processes =="; pgrep -fl alfred-server || echo "  (none)"
+	@echo "== kubectl port-forwards to alfred =="; pgrep -fl "kubectl.*port-forward.*alfred" || echo "  (none)"
+	@echo "== ports 8080 / 5173 / 18080 =="; lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -E ':(8080|5173|18080)' || echo "  (none listening)"
+	@echo "== kind clusters =="; kind get clusters 2>/dev/null || echo "  (kind not installed)"
+
+# Stop local alfred-server + kubectl port-forwards. Leaves kind cluster alone.
+# Use `make e2e-teardown` for the kind cluster.
+local-stop:
+	@pkill -f "go run ./cmd/alfred-server" 2>/dev/null || true
+	@pkill -f "bin/alfred-server" 2>/dev/null || true
+	@pkill -f "kubectl.*port-forward.*svc/alfred" 2>/dev/null || true
+	@if [ -f /tmp/alfred-e2e-pf.pid ]; then kill "$$(cat /tmp/alfred-e2e-pf.pid)" 2>/dev/null || true; rm -f /tmp/alfred-e2e-pf.pid; fi
+	@echo "stopped (kind cluster untouched — use 'make e2e-teardown' to delete it)"

@@ -132,6 +132,20 @@ make e2e             # 7 spec scenarios against the live cluster
 make e2e-teardown    # delete only the alfred-e2e cluster
 ```
 
+### Is it running? Cleaning up
+
+```bash
+make local-status    # shows: alfred-server processes, port-forwards, listening ports, kind clusters
+make local-stop      # kills any local alfred-server + kubectl port-forward, leaves kind cluster alone
+```
+
+A few notes that come up:
+
+- **Vite picks the next free port.** If `:5173` is already in use by another project's dev server, Vite falls back to `:5174`, `:5175`, etc. — read the line `Vite ready in ... → Local: http://localhost:NNNN/` it prints on startup.
+- **Multiple `ALFRED_DATA_DIR` mistakes are easy.** A second `go run` against the same data dir while the first is still running shares JSON files but each process owns its own bash — confusing. Either use different dirs (`/tmp/alfred-dev-1`, `/tmp/alfred-dev-2`) or `make local-stop` first.
+- **kind cluster `alfred-e2e` persists across runs** until you `make e2e-teardown`. Useful: iterate fast on tests. Tradeoff: it eats a couple GB of RAM. The `local-stop` target does NOT delete it; use `make e2e-teardown` explicitly.
+- **Port 8080 in `lsof` may be Docker Desktop**, not us. Docker Desktop's `com.docker.backend` listens on miscellaneous ports for internal use. Check `pgrep -fl alfred-server` to be sure.
+
 ---
 
 ## How it works
