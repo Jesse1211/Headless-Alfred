@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -68,13 +67,13 @@ type Shell struct {
 	logger *slog.Logger
 	nonce  string
 
-	mu         sync.Mutex
-	cmd        *exec.Cmd
-	pty        *os.File
-	parser     *Parser
-	available  bool
-	currentCmd *RunningCommand
-	stopping   bool // set by Stop() before killing bash; tells waitLoop to skip restart
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	pty          *os.File
+	parser       *Parser
+	available    bool
+	currentCmd   *RunningCommand
+	shuttingDown bool // set by Close() to suppress auto-restart after kill
 
 	rawBcast *Broadcaster      // raw PTY chunks; not exposed externally
 	evtBcast *EventBroadcaster // typed events for external consumers
@@ -169,21 +168,16 @@ func (s *Shell) waitLoop(c *exec.Cmd) {
 		s.mu.Unlock()
 	}
 
-	// If bash was killed by SIGKILL, check whether it was an explicit Stop()
-	// call or an external teardown (e.g. test cleanup). In either case we
-	// suppress auto-restart to avoid a data race: the caller that issued
-	// Kill() may be concurrently reading s.cmd, and writing s.cmd here (via
-	// startLocked) without synchronisation would trigger the race detector.
-	if isKilled(err) {
-		s.mu.Lock()
-		s.stopping = false
+	// If Close() was called, do not restart bash.
+	s.mu.Lock()
+	if s.shuttingDown {
 		s.available = false
+		s.cmd = nil
+		s.pty = nil
 		s.mu.Unlock()
 		return
 	}
-
-	// Attempt one restart.
-	s.mu.Lock()
+	// Otherwise (normal death, or Stop()-initiated death), attempt one restart.
 	defer s.mu.Unlock()
 	s.cmd = nil
 	s.pty = nil
@@ -193,23 +187,6 @@ func (s *Shell) waitLoop(c *exec.Cmd) {
 		return
 	}
 	s.logger.Info("bash restarted")
-}
-
-// isKilled reports whether err (from cmd.Wait) indicates the process was
-// killed by SIGKILL. We use this to suppress auto-restart on intentional
-// teardowns and to avoid data races with callers that check s.cmd after
-// issuing Kill().
-func isKilled(err error) bool {
-	if err == nil {
-		return false
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-			return ws.Signaled() && ws.Signal() == syscall.SIGKILL
-		}
-	}
-	return false
 }
 
 // Write submits a user command for execution.
@@ -238,9 +215,12 @@ func (s *Shell) Write(cmdID, userCmd string) error {
 	return nil
 }
 
-// Stop kills the currently running command by sending SIGKILL to bash.
-// This causes waitLoop to emit an Ended event with a non-zero exit code.
-// The shell is marked unavailable after Stop; restart it with Start.
+// Stop kills the currently running command by SIGKILL-ing bash. The waitLoop
+// emits an Ended event with a non-zero exit code, then transparently restarts
+// bash so the shell is ready for the next command. The trade-off: bash state
+// (cwd, env vars, aliases) is reset on Stop. Acceptable because Stop is rare
+// and SIGINT-via-PTY routing on macOS proved unreliable (terminal line
+// discipline drops queued sentinel printfs).
 // No-op if nothing is running.
 func (s *Shell) Stop() {
 	s.mu.Lock()
@@ -248,13 +228,23 @@ func (s *Shell) Stop() {
 		s.mu.Unlock()
 		return
 	}
-	s.stopping = true
 	proc := s.cmd.Process
 	s.mu.Unlock()
-	// SIGKILL terminates bash immediately, regardless of what child it is
-	// waiting on. The waitLoop goroutine will detect the death, emit an
-	// Ended event with ExitCode -1, and skip auto-restart.
 	_ = proc.Kill()
+}
+
+// Close shuts the shell down for good. After Close, bash will not be
+// restarted by the waitLoop. Safe to call from anywhere (e.g. test cleanup)
+// regardless of current state. Idempotent.
+func (s *Shell) Close() error {
+	s.mu.Lock()
+	s.shuttingDown = true
+	proc := s.cmd
+	s.mu.Unlock()
+	if proc != nil && proc.Process != nil {
+		_ = proc.Process.Kill()
+	}
+	return nil
 }
 
 // CurrentCommand returns a copy of the running command state, or nil if idle.

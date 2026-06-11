@@ -24,12 +24,7 @@ func newTestShell(t *testing.T) *Shell {
 	if err := s.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	t.Cleanup(func() {
-		// Best-effort kill.
-		if s.cmd != nil && s.cmd.Process != nil {
-			_ = s.cmd.Process.Kill()
-		}
-	})
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -162,6 +157,46 @@ func TestIntegration_StopSendsSIGINT(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("stop did not terminate command")
 		}
+	}
+}
+
+func TestIntegration_ShellUsableAfterStop(t *testing.T) {
+	// Regression: a previous version of Stop killed bash and skipped restart,
+	// permanently bricking the shell after a single Stop. Stop must leave the
+	// shell ready to accept the next command.
+	s := newTestShell(t)
+	sub, cancel := s.SubscribeEvents(256)
+	defer cancel()
+	if err := s.Write("first", "sleep 30"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	s.Stop()
+
+	// Drain until the first command's Ended event.
+	deadline := time.After(5 * time.Second)
+loop:
+	for {
+		select {
+		case evt := <-sub.C:
+			if evt.Ended != nil && evt.Ended.CmdID == "first" {
+				break loop
+			}
+		case <-deadline:
+			t.Fatalf("first command never ended")
+		}
+	}
+
+	// Bash should have restarted by now; give it a moment.
+	time.Sleep(200 * time.Millisecond)
+
+	// Subsequent command must succeed.
+	out, ec := runAndCollect(t, s, "second", "echo after-stop")
+	if ec != 0 {
+		t.Fatalf("second command exit = %d, want 0; out = %q", ec, out)
+	}
+	if !strings.Contains(out, "after-stop") {
+		t.Fatalf("second command output missing expected text: %q", out)
 	}
 }
 
