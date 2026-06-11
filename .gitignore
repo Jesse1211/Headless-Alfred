@@ -7,12 +7,9 @@
 *.out
 /coverage.out
 
-# Node (for later plans, harmless now)
+# Node
 /web/node_modules/
 /web/dist/
-/web/*.tsbuildinfo
-/web/*.js
-/web/*.d.ts
 
 # Editor
 .idea/
