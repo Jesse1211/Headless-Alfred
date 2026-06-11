@@ -109,22 +109,30 @@ func TestStore_ListRespectsBefore(t *testing.T) {
 	}
 }
 
-func TestStore_AppendOutputAndOutputPath(t *testing.T) {
+func TestStore_WriteAndReadOutput(t *testing.T) {
 	s := newTestStore(t)
 	_ = s.Save(Record{ID: "X", Command: "x", Status: StatusRunning})
 	if err := s.WriteOutput("X", []byte("hello\nworld\n")); err != nil {
 		t.Fatalf("WriteOutput: %v", err)
 	}
-	rec, _ := s.Get("X")
-	if rec.OutputPath == "" {
-		t.Fatalf("OutputPath empty after WriteOutput")
-	}
-	data, err := os.ReadFile(rec.OutputPath)
+	data, err := s.ReadOutput("X")
 	if err != nil {
-		t.Fatalf("read output file: %v", err)
+		t.Fatalf("ReadOutput: %v", err)
 	}
 	if string(data) != "hello\nworld\n" {
 		t.Fatalf("got %q", data)
+	}
+}
+
+func TestStore_ReadOutput_MissingFile(t *testing.T) {
+	s := newTestStore(t)
+	_ = s.Save(Record{ID: "X", Command: "x", Status: StatusRunning})
+	data, err := s.ReadOutput("X")
+	if err != nil {
+		t.Fatalf("ReadOutput on missing file should not error, got %v", err)
+	}
+	if data != nil {
+		t.Fatalf("expected nil, got %q", data)
 	}
 }
 

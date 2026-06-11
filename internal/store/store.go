@@ -63,31 +63,27 @@ func (s *Store) Get(id string) (Record, error) {
 	return r, nil
 }
 
-// WriteOutput writes the entire output buffer for a command to its log file,
-// then updates the record's OutputPath.
+// WriteOutput writes the entire output buffer for a command to its log file.
+// It does NOT touch the record metadata; the caller manages the Record.
 func (s *Store) WriteOutput(id string, body []byte) error {
-	path := s.outputPath(id)
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		return err
-	}
-	r, err := s.Get(id)
-	if err != nil {
-		return err
-	}
-	r.OutputPath = path
-	return s.Save(r)
+	return os.WriteFile(s.outputPath(id), body, 0o600)
 }
 
-// ReadOutput reads the output file for a command, or returns empty if none.
+// OutputPath returns the path that ReadOutput/WriteOutput use for the given
+// command. Exposed so callers can compose absolute paths for logging or for
+// external tools, without having to know the layout convention.
+func (s *Store) OutputPath(id string) string {
+	return s.outputPath(id)
+}
+
+// ReadOutput reads the output file for a command. Returns (nil, nil) if no
+// output file exists yet (command may still be running or never had output).
 func (s *Store) ReadOutput(id string) ([]byte, error) {
-	r, err := s.Get(id)
-	if err != nil {
-		return nil, err
-	}
-	if r.OutputPath == "" {
+	data, err := os.ReadFile(s.outputPath(id))
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	return os.ReadFile(r.OutputPath)
+	return data, err
 }
 
 // List returns records sorted by StartedAt descending. If before != "", only

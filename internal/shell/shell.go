@@ -50,6 +50,10 @@ type EndedEvent struct {
 	ExitCode   int
 	FinishedAt time.Time
 	Truncated  bool
+	// Output is the complete in-memory buffer of bytes the command produced
+	// (capped at MaxBufferBytes). Consumers persist this to disk; the Shell
+	// module deliberately doesn't talk to storage.
+	Output []byte
 }
 
 // RunningCommand is the state of a command currently executing.
@@ -153,34 +157,43 @@ func (s *Shell) waitLoop(c *exec.Cmd) {
 	err := c.Wait()
 	s.mu.Lock()
 	s.logger.Error("bash exited", "err", err)
-	// Mark current command as interrupted at the event layer.
+
+	// Snapshot the Ended event for any in-flight command. We publish AFTER
+	// releasing the lock (Publish may take its own locks via subscribers),
+	// but we must mark the shell unavailable atomically here — otherwise a
+	// concurrent Write() between this Unlock and the restart's re-Lock
+	// could see available=true and a dead PTY, queue a command that bash
+	// never receives, and permanently brick the shell with an orphan
+	// currentCmd that never gets a Started/Ended event.
+	var endedEvt *CommandEvent
 	if s.currentCmd != nil {
-		evt := CommandEvent{Ended: &EndedEvent{
+		endedEvt = &CommandEvent{Ended: &EndedEvent{
 			CmdID:      s.currentCmd.ID,
 			ExitCode:   -1,
 			FinishedAt: time.Now().UTC(),
 			Truncated:  s.currentCmd.Truncated,
+			Output:     s.currentCmd.Buffer,
 		}}
-		s.currentCmd = nil
-		s.mu.Unlock()
-		s.evtBcast.Publish(evt)
-	} else {
-		s.mu.Unlock()
+	}
+	s.currentCmd = nil
+	s.available = false
+	s.cmd = nil
+	s.pty = nil
+	shutdown := s.shuttingDown
+	s.mu.Unlock()
+
+	if endedEvt != nil {
+		s.evtBcast.Publish(*endedEvt)
 	}
 
 	// If Close() was called, do not restart bash.
-	s.mu.Lock()
-	if s.shuttingDown {
-		s.available = false
-		s.cmd = nil
-		s.pty = nil
-		s.mu.Unlock()
+	if shutdown {
 		return
 	}
+
 	// Otherwise (normal death, or Stop()-initiated death), attempt one restart.
+	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cmd = nil
-	s.pty = nil
 	if err := s.startLocked(); err != nil {
 		s.logger.Error("bash restart failed", "err", err)
 		s.available = false
@@ -317,6 +330,9 @@ func (s *Shell) onParserEvent(e ParseEvent) {
 			return
 		}
 		truncated := s.currentCmd.Truncated
+		// Capture the buffer before clearing currentCmd; consumers need it
+		// to persist output to disk.
+		buffer := s.currentCmd.Buffer
 		s.currentCmd = nil
 		s.mu.Unlock()
 		s.evtBcast.Publish(CommandEvent{Ended: &EndedEvent{
@@ -324,6 +340,7 @@ func (s *Shell) onParserEvent(e ParseEvent) {
 			ExitCode:   e.ExitCode,
 			FinishedAt: time.Now().UTC(),
 			Truncated:  truncated,
+			Output:     buffer,
 		}})
 	}
 }

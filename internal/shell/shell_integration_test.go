@@ -85,6 +85,33 @@ func TestIntegration_CDPersistsAcrossCommands(t *testing.T) {
 	}
 }
 
+func TestIntegration_EndedEventCarriesOutputBuffer(t *testing.T) {
+	// Regression: consumers (e.g. the WS handler) persist the buffer to disk
+	// when a command ends. The buffer used to live only in currentCmd; by the
+	// time Ended fires, currentCmd is nil so CurrentCommand() returns nil and
+	// the buffer was unreachable. The fix puts Output in the event itself.
+	s := newTestShell(t)
+	sub, cancel := s.SubscribeEvents(256)
+	defer cancel()
+	if err := s.Write("buf-cmd", "echo expected-in-buffer"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case evt := <-sub.C:
+			if evt.Ended != nil && evt.Ended.CmdID == "buf-cmd" {
+				if !strings.Contains(string(evt.Ended.Output), "expected-in-buffer") {
+					t.Fatalf("Ended.Output = %q, want it to contain command output", evt.Ended.Output)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("no ended event")
+		}
+	}
+}
+
 func TestIntegration_CWDCapturedFromStartSentinel(t *testing.T) {
 	s := newTestShell(t)
 	runAndCollect(t, s, "cd-cmd", "cd /tmp")
