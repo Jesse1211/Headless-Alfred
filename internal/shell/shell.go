@@ -126,6 +126,19 @@ func (s *Shell) startLocked() error {
 	s.parser.OnEvent = s.onParserEvent
 	s.available = true
 
+	// Turn off PTY echo. Without this, bash would echo every byte of the
+	// wrapped command (START printf + user command + END printf) back through
+	// the PTY as literal text. Those echoed bytes arrive in the parser AFTER
+	// the START sentinel has put it in stateInside, so they'd leak into the
+	// command's visible output as garbage like:
+	//   __alfred_ec=$?
+	//   printf '\x1eALFRED_END_<nonce> <cmdID> %d\x1eX\n' "$__alfred_ec"
+	// The echo of "stty -echo" itself harmlessly lands in stateOutside and
+	// is dropped by the parser.
+	if _, err := f.Write([]byte("stty -echo\n")); err != nil {
+		return fmt.Errorf("pty write stty: %w", err)
+	}
+
 	// Reader goroutine: feed PTY bytes into parser and raw broadcaster.
 	go s.readLoop(f)
 	// Wait goroutine: detect bash death.
