@@ -732,19 +732,38 @@ And replace the placeholder callbacks at the bottom:
 Run: `cd web && npm test`
 Expected: All tests in `useSessions.test.ts` PASS plus existing auth tests still PASS.
 
-- [ ] **Step 4: Delete old useShell + types remnants**
+- [ ] **Step 4: Delete old useShell + redirect dependents**
 
 ```bash
 rm web/src/features/terminal/useShell.ts
 rm web/src/features/terminal/useShell.test.ts
 ```
 
-Update `web/src/features/terminal/types.ts` — if it still exports
-`CompletedMsg`, redirect to import from the sessions feature:
+Replace `web/src/features/terminal/types.ts` with a re-export so
+that `ChatStream.tsx` and `CommandInput.tsx` continue to compile
+without touching their imports. They currently pull `RunningCmd` and
+`CompletedMsg` from this file (some directly, some transitively via
+useShell which we just deleted).
 
 ```typescript
-export type { RunningCmd } from '../sessions/types'
+// Re-export so existing imports `import { CompletedMsg, RunningCmd }
+// from './types'` keep working. The source of truth lives in
+// features/sessions/types.ts now.
+export type { RunningCmd, CompletedMsg } from '../sessions/types'
 ```
+
+Audit `ChatStream.tsx`: if it has `import { CompletedMsg } from
+'./useShell'`, change to `import { CompletedMsg } from './types'`.
+Same for any other terminal/* files that referenced `useShell`'s
+exports.
+
+Verify nothing still imports the deleted file:
+
+```bash
+grep -rE "from ['\"].*useShell['\"]" web/src/
+```
+
+Expected: empty.
 
 - [ ] **Step 5: Commit**
 

@@ -705,6 +705,13 @@ func StopCommandHandler(m *session.Manager) http.Handler {
 			writeError(w, http.StatusConflict, "not_running", "command is not currently running")
 			return
 		}
+		// Stamp status=stopped BEFORE issuing the SIGKILL so the Ended
+		// event handler in ws.go sees it and does not promote to
+		// "completed". This is the only place that writes StatusStopped.
+		if rec, err := m.StoreFor().Get(sid, id); err == nil {
+			rec.Status = store.StatusStopped
+			_ = m.StoreFor().Save(sid, rec)
+		}
 		sh.Stop()
 		w.WriteHeader(http.StatusNoContent)
 	})

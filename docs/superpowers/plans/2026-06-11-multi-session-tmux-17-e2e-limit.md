@@ -130,13 +130,24 @@ Keep:
 - `TestE2E_DisconnectReconnect_PicksUpRunningCommand` (reattach)
 - `TestE2E_StopRunningCommand` (Stop path — though Plan 18's recommended scenario `Stop_RestartsBashSameSession` is tighter)
 
-For each kept test, find its `dialWS` call and add a `createSession` step + thread the sessionID into the run message:
+For each kept test, do all three of these:
+
+1. Create a session at the top: `sid := createSession(t, tok, "...")`
+2. Send the run message with `sessionID`: `conn.WriteJSON(map[string]any{"type": "run", "sessionID": sid, "command": "pwd"})`
+3. **Switch the message decoder** from the legacy `wsMsg` struct (no SessionID field) to `wsMsgMulti` (Plan 11). The old `wsMsg` would silently drop the new `sessionID` field, so assertions like "did the right session report idle?" turn into false positives.
 
 ```go
-sid := createSession(t, tok, "smoke")
-// ... when sending the run message:
-_ = conn.WriteJSON(map[string]any{"type": "run", "sessionID": sid, "command": "pwd"})
+// before:
+var m wsMsg
+_ = conn.ReadJSON(&m)
+// after:
+var m wsMsgMulti
+_ = conn.ReadJSON(&m)
+// and, for assertions that branch on session:
+if m.SessionID != sid { continue }
 ```
+
+If the test does not branch on sessionID (e.g., `TestE2E_StopRunningCommand` just waits for `done`), the switch is type-only — but **do switch** to keep one struct across the file.
 
 - [ ] **Step 2: Run remaining tests**
 

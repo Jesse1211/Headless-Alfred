@@ -41,10 +41,10 @@ import (
 	"time"
 )
 
-// We use `yes | head -c 6291456` to produce exactly 6 MiB of 'y\n' bytes.
-// 6 MiB > 8 MiB threshold/2 — i.e., after command 1 the offset is past
-// the threshold; the stop-pipe + truncate dance must fire between
-// commands 1 and 3 without losing bytes from either.
+// Plan 3 defines `shell.StreamTruncateThreshold = 8 MiB`. Two 6 MiB
+// commands plus a small middle command guarantee the threshold is
+// crossed between commands and that the truncate fires at the next
+// idle boundary — exactly the racy path spec §4.4 describes.
 const sixMiB = 6 * 1024 * 1024
 
 func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
@@ -206,5 +206,5 @@ git commit -m "test(e2e): PtyStream_Truncation_NoLostBytes (6MB+small+6MB sequen
 
 ## Plan 13 self-review checklist
 
-- [ ] The 6 MiB constant matches the truncation threshold from TmuxShell — cross-check Plan 3.
+- [ ] The 6 MiB constant + 8 MiB `shell.StreamTruncateThreshold` are consistent (cmd 1 alone is under threshold; cmd 1 + tiny cmd 2 forces idle boundary; cmd 3 push total well past).
 - [ ] The test does not depend on tmux flushing timing in any way other than waiting for `done`.

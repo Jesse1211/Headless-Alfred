@@ -370,31 +370,37 @@ git commit -m "test(e2e): RenamePersistsAcrossReload"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update the top usage diagram**
+- [ ] **Step 1: Replace the ASCII layout diagram + add multi-session paragraph**
 
-Replace the existing ASCII art with one that reflects the sidebar + chat layout. Keep the text concise (the user shipped multi-session as a "personal-tool extension", not a marketing pitch).
+The current top diagram (single-pane chat) sits between lines 9 and ~29 of README.md (it's the first fenced code block under "Domain:"). Find it with:
 
-Suggested replacement near the top:
+```bash
+grep -n 'Type a command' README.md
+```
 
+Replace the entire fenced block with:
+
+````markdown
 ```
 ┌──────────────────┬──────────────────────────────────────┐
-│ + New chat       │ Active session name        ● Sign out │
+│ + New chat       │ training                  ● Sign out │
 ├──────────────────┼──────────────────────────────────────┤
-│ ACTIVE SESSIONS  │                                 [ ls ]│
-│  • Session 1     │   CONTEXT.md Makefile deploy go.mod   │
-│  • training      │   exit 0                              │
-│  • db-debug ←sel │ ─────────────────────────────────────│
-│                  │                                [ pwd ]│
-│                  │   /Users/jesseliu/Desktop/...         │
-│                  │   exit 0                              │
+│ ACTIVE SESSIONS  │                                [ ls ]│
+│  • Session 1     │   CONTEXT.md Makefile deploy go.mod  │
+│  • training ←sel │   exit 0                             │
+│  • db-debug      │ ──────────────────────────────────── │
+│                  │                              [ pwd ] │
+│                  │   /Users/jesseliu/Desktop/...        │
+│                  │   exit 0                             │
 │                  ├──────────────────────────────────────┤
-│                  │ ( Type a command…                ↑ )│
+│                  │ ( Type a command…                ↑ ) │
 └──────────────────┴──────────────────────────────────────┘
 ```
 
-Add a short paragraph below it:
+Up to 8 concurrent bash sessions, each independent (own cwd / env / aliases) but sharing the container's filesystem. `mkdir foo` in one session is visible from another. Sessions survive Go-process restarts (e.g. `kubectl rollout`); Pod restarts reset them but keep the per-command history on the PVC.
+````
 
-> Up to 8 concurrent bash sessions, each independent (own cwd / env / aliases) but sharing the container's filesystem. `mkdir foo` in one session is visible from another. Sessions survive Go-process restarts (e.g. `kubectl rollout`); Pod restarts reset them but keep the per-command history on the PVC.
+(The trailing paragraph goes between the closing ``` and the next `---` separator.)
 
 - [ ] **Step 2: Commit**
 
@@ -410,30 +416,46 @@ git commit -m "docs(readme): multi-session diagram + 1-paragraph intro"
 **Files:**
 - Modify: `CONTEXT.md`
 
-- [ ] **Step 1: Update the "Three invariants" section**
+The current `CONTEXT.md` has three sections that need patches. Use exact-string edits so you don't accidentally touch unrelated paragraphs.
 
-After invariant #1 ("Bash lifecycle ≠ WebSocket lifecycle"), append:
+- [ ] **Step 1: Strengthen invariant #1**
 
-> **Strengthening (multi-session):** Bash lifecycle ≠ Go-process lifecycle either. The tmux server outlives alfred-server. `kubectl rollout` does NOT terminate in-flight commands. Pod restart DOES terminate them; this is an accepted trade-off documented in spec §1 non-goals.
+Find the heading `### 1. Bash lifecycle ≠ WebSocket lifecycle.` and the paragraph immediately after it (look for "Bash is born when Go starts..."). Insert a new paragraph AFTER that paragraph, before invariant #2:
 
-In the "Non-obvious traps" table, add:
+```markdown
+**Strengthening (multi-session):** Bash lifecycle ≠ Go-process lifecycle either. The tmux server outlives alfred-server. `kubectl rollout` does NOT terminate in-flight commands; the in-flight command keeps streaming into `pty.stream`, and the new alfred-server process resumes parsing it from `pty.offset` and re-emits any pending `Started`/`Ended` events to reconnecting clients. Pod restart DOES terminate them; this is an accepted trade-off documented in spec §1 non-goals.
+```
 
-| Trap | What happens | Test |
-|---|---|---|
-| `tmux send-keys -l` sends `\n` as a literal character, not Enter | bash never executes the wrapper-script line; sentinel never fires; UI hangs | `TmuxRunner` splits into `SendText` + `SendEnter` (Plan 2); covered by `TestExecRunner_SendTextThenEnter_ExecutesCommand` |
-| `tmux pipe-pane` holds the file open across a rename — naive truncate loses output | Output of subsequent commands ends up in the unlinked inode | `TmuxShell.TruncateConsumed` does stop-pipe → truncate → restart-pipe (Plan 2/3); covered by `TestStreamReader_TruncateAtIdleBoundary` |
-| Empty FIFO would let bash block forever if Go-process is down | A FIFO consumer disappearing during Go restart SIGPIPEs bash | spec §3 chose regular file + offset over FIFO; covered by `TestStreamReader_ResumesFromPersistedOffset` |
+- [ ] **Step 2: Append three rows to the "Non-obvious traps" table**
 
-In "Quick orientation":
+Find the existing traps table (under the heading `## Non-obvious traps we already fell into`). Append AFTER its last existing row:
 
-| Change | Where to look first |
-|---|---|
-| Add a new tmux operation | `internal/shell/tmuxio/runner.go` |
-| Modify session lifecycle | `internal/session/manager.go` |
-| Change WS protocol | `internal/api/ws.go` + `web/src/lib/ws.ts` |
+```markdown
+| `tmux send-keys -l` sends `\n` as a literal character, not Enter | bash never executes the wrapper-script line; sentinel never fires; UI hangs forever waiting for `Started` | `TmuxRunner` splits into `SendText` + `SendEnter`; covered by `TestExecRunner_SendTextThenEnter_ExecutesCommand` |
+| `tmux pipe-pane` writer holds `pty.stream` open across a naive rename, so output ends up in the unlinked inode | Subsequent commands' bytes silently lost; persisted output appears truncated | `StreamReader.TruncateConsumed` does stop-pipe → truncate → restart-pipe; covered by `TestStreamReader_TruncateAtIdleBoundary` |
+| A FIFO consumer disappearing during Go restart SIGPIPEs bash → tmux session dies → violates invariant #1 | Lost session + lost in-flight command on every Go restart | spec §3 chose regular-file + byte-offset over FIFO; covered by `TestStreamReader_ResumesFromPersistedOffset` and the E2E `TestE2E_GoRestart_DuringStreamingChunks` |
+```
+
+- [ ] **Step 3: Append four rows to "Quick orientation"**
+
+Find the table under `## Quick orientation for "I want to change X"`. Append:
+
+```markdown
+| Add a new tmux operation | `internal/shell/tmuxio/runner.go` (also add to `FakeRunner`) |
+| Modify session lifecycle (create, close, reconcile) | `internal/session/manager.go` |
+| Change WS protocol | `internal/api/ws.go` + `web/src/lib/ws.ts` (keep in sync — type unions on both sides) |
 | Change the sidebar UI | `web/src/features/sessions/SessionsSidebar.tsx` |
+```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 4: Verify and commit**
+
+```bash
+grep -F "Strengthening (multi-session)" CONTEXT.md
+grep -F "SendText" CONTEXT.md
+grep -F "SessionsSidebar.tsx" CONTEXT.md
+```
+
+All three must return exactly one match.
 
 ```bash
 git add CONTEXT.md

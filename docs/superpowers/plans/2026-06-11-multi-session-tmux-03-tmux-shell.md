@@ -797,6 +797,7 @@ package shell
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -1085,8 +1086,36 @@ func (ts *TmuxShell) onParserEvent(e ParseEvent) {
 			Truncated:  truncated,
 			Output:     buffer,
 		}})
+		// Sentinel-aligned truncation (spec §4.4): only safe to fire
+		// HERE, between commands. The reader is guaranteed to be in
+		// stateOutside (parser just emitted EventEnd) so the StopPipe
+		// → truncate → StartPipe sequence cannot strand bytes from a
+		// running command.
+		ts.maybeTruncate()
 	}
 }
+
+// maybeTruncate fires StreamReader.TruncateConsumed if pty.stream
+// has grown past StreamTruncateThreshold. No-op if the file is
+// smaller, or if Resume has not finished wiring the reader yet.
+func (ts *TmuxShell) maybeTruncate() {
+	if ts.reader == nil {
+		return
+	}
+	info, err := os.Stat(ts.cfg.StreamPath)
+	if err != nil || info.Size() < StreamTruncateThreshold {
+		return
+	}
+	if err := ts.reader.TruncateConsumed(ts.cfg.Runner, ts.cfg.SessionID, ts.pipeCmd()); err != nil {
+		ts.cfg.Logger.Error("truncate pty.stream", "session", ts.cfg.SessionID, "err", err)
+	}
+}
+
+// StreamTruncateThreshold is the on-disk size of pty.stream above
+// which we fire the truncation dance at the next idle boundary.
+// Aligned with spec §4.4: 8 MiB. Plan 13's E2E hits this directly
+// with two 6-MiB outputs around a small middle command.
+const StreamTruncateThreshold = 8 * 1024 * 1024
 
 // parserSink adapts the shell.Parser (concrete type) to the
 // tmuxio.ParserSink interface so StreamReader can deliver bytes.

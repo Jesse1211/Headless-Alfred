@@ -202,8 +202,13 @@ type Manager struct {
 	shells   map[string]*shell.TmuxShell
 	metas    map[string]store.SessionMeta // mirror of sessions.json
 
-	onSessionClosed  func(sessionID string)
-	onSessionRenamed func(sessionID, newName string)
+	// Multi-subscriber listener lists. Each WS connection registers its
+	// own listener via AddCloseListener / AddRenameListener and removes
+	// it on disconnect — N tabs == N entries. Single-Set semantics
+	// would clobber earlier tabs (regression-tested against by Plan 6
+	// TestWS_SessionClosed_BroadcastsToConnectedClients).
+	closeListeners   []func(sessionID string)
+	renameListeners  []func(sessionID, newName string)
 }
 
 // NewManager validates the config but does NOT contact tmux or load
@@ -237,20 +242,43 @@ func NewManager(cfg Config) (*Manager, error) {
 	}, nil
 }
 
-// SetCloseListener registers a callback invoked AFTER a session has
+// AddCloseListener registers a callback invoked AFTER a session has
 // been fully closed (tmux killed, store deleted, sessions.json saved).
-// Plan 6 (WS) uses this to broadcast session_closed.
-func (m *Manager) SetCloseListener(fn func(sessionID string)) {
+// Returns a remove function — call it on WS disconnect so a new tab's
+// listener doesn't get a callback into an orphaned closure.
+//
+// Multi-subscriber: each WS connection adds its own listener; N tabs
+// produce N callbacks per close. Plan 6 (WS) uses this.
+func (m *Manager) AddCloseListener(fn func(sessionID string)) (remove func()) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onSessionClosed = fn
+	m.closeListeners = append(m.closeListeners, fn)
+	idx := len(m.closeListeners) - 1
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		// Identity match via pointer; the slice may have been compacted
+		// by an earlier remove so we just nil it out instead of slicing.
+		// Stale nil entries are filtered when firing.
+		if idx < len(m.closeListeners) {
+			m.closeListeners[idx] = nil
+		}
+	}
 }
 
-// SetRenameListener — same pattern as SetCloseListener.
-func (m *Manager) SetRenameListener(fn func(sessionID, newName string)) {
+// AddRenameListener — same pattern as AddCloseListener.
+func (m *Manager) AddRenameListener(fn func(sessionID, newName string)) (remove func()) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onSessionRenamed = fn
+	m.renameListeners = append(m.renameListeners, fn)
+	idx := len(m.renameListeners) - 1
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if idx < len(m.renameListeners) {
+			m.renameListeners[idx] = nil
+		}
+	}
 }
 
 // List returns a snapshot of all current session metadata in
@@ -627,7 +655,7 @@ func TestManager_Rename_FiresListener(t *testing.T) {
 	m, _ := newTestManager(t)
 	meta, _ := m.Create("Session 1")
 	called := make(chan struct{}, 1)
-	m.SetRenameListener(func(id, name string) {
+	m.AddRenameListener(func(id, name string) {
 		if id == meta.ID && name == "training" {
 			called <- struct{}{}
 		}
@@ -686,7 +714,7 @@ func TestManager_Close_FiresListener(t *testing.T) {
 	m, _ := newTestManager(t)
 	meta, _ := m.Create("")
 	called := make(chan string, 1)
-	m.SetCloseListener(func(id string) {
+	m.AddCloseListener(func(id string) {
 		called <- id
 	})
 	_ = m.Close(meta.ID)
@@ -697,6 +725,47 @@ func TestManager_Close_FiresListener(t *testing.T) {
 		}
 	default:
 		t.Fatal("listener not called")
+	}
+}
+
+// Regression: multiple WS connections each Add their own listener;
+// Close must call EVERY registered listener, not just the last one.
+func TestManager_Close_FiresAllListeners_MultiSubscriber(t *testing.T) {
+	m, _ := newTestManager(t)
+	meta, _ := m.Create("")
+	got := make(chan int, 3)
+	m.AddCloseListener(func(string) { got <- 1 })
+	m.AddCloseListener(func(string) { got <- 2 })
+	m.AddCloseListener(func(string) { got <- 3 })
+	_ = m.Close(meta.ID)
+	seen := map[int]bool{}
+	for i := 0; i < 3; i++ {
+		select {
+		case v := <-got:
+			seen[v] = true
+		default:
+			t.Fatalf("only %d/3 listeners fired", i)
+		}
+	}
+	if !seen[1] || !seen[2] || !seen[3] {
+		t.Fatalf("missed listener: %+v", seen)
+	}
+}
+
+func TestManager_AddCloseListener_RemoveStopsCallbacks(t *testing.T) {
+	m, _ := newTestManager(t)
+	meta1, _ := m.Create("")
+	called := 0
+	remove := m.AddCloseListener(func(string) { called++ })
+	_ = m.Close(meta1.ID)
+	if called != 1 {
+		t.Fatalf("after first Close, called=%d, want 1", called)
+	}
+	meta2, _ := m.Create("")
+	remove()
+	_ = m.Close(meta2.ID)
+	if called != 1 {
+		t.Fatalf("listener fired after remove(): called=%d", called)
 	}
 }
 ```
@@ -726,14 +795,19 @@ func (m *Manager) Rename(sessionID, newName string) error {
 	}
 	meta.Name = cleaned
 	m.metas[sessionID] = meta
-	listener := m.onSessionRenamed
+	listeners := make([]func(string, string), 0, len(m.renameListeners))
+	for _, fn := range m.renameListeners {
+		if fn != nil {
+			listeners = append(listeners, fn)
+		}
+	}
 	m.mu.Unlock()
 
 	if err := m.persistMetas(); err != nil {
 		return fmt.Errorf("persist: %w", err)
 	}
-	if listener != nil {
-		listener(sessionID, cleaned)
+	for _, fn := range listeners {
+		fn(sessionID, cleaned)
 	}
 	return nil
 }
@@ -752,7 +826,12 @@ func (m *Manager) Close(sessionID string) error {
 	}
 	delete(m.shells, sessionID)
 	delete(m.metas, sessionID)
-	listener := m.onSessionClosed
+	listeners := make([]func(string), 0, len(m.closeListeners))
+	for _, fn := range m.closeListeners {
+		if fn != nil {
+			listeners = append(listeners, fn)
+		}
+	}
 	m.mu.Unlock()
 
 	if hasShell {
@@ -767,8 +846,8 @@ func (m *Manager) Close(sessionID string) error {
 	if err := m.persistMetas(); err != nil {
 		return fmt.Errorf("persist: %w", err)
 	}
-	if listener != nil {
-		listener(sessionID)
+	for _, fn := range listeners {
+		fn(sessionID)
 	}
 	return nil
 }
@@ -776,8 +855,8 @@ func (m *Manager) Close(sessionID string) error {
 
 - [ ] **Step 4: Run, confirm green**
 
-Run: `go test ./internal/session/ -run "TestManager_(Rename|Close)" -count=1 -v`
-Expected: 7 PASS.
+Run: `go test ./internal/session/ -run "TestManager_(Rename|Close|AddCloseListener)" -count=1 -v`
+Expected: 9 PASS (the 7 original + `Close_FiresAllListeners_MultiSubscriber` + `AddCloseListener_RemoveStopsCallbacks`).
 
 - [ ] **Step 5: Commit**
 
@@ -1014,6 +1093,13 @@ func (m *Manager) Reconcile() error {
 // session and its pipe-pane are still running, so we just attach a
 // new readLoop + poller and pick up at pty.offset.
 //
+// If the store contains a status=running record for this session,
+// we seed it into the TmuxShell so WS reattach sees the in-flight
+// command. The previous process emitted the START sentinel before
+// dying; that byte is already past the new pty.offset, so without
+// this seed the new parser would silently drop the upcoming chunks
+// and END.
+//
 // Caller must NOT hold m.mu (we take it ourselves when registering).
 func (m *Manager) resumeShell(sessionID string) error {
 	cfg := shell.TmuxShellConfig{
@@ -1032,7 +1118,25 @@ func (m *Manager) resumeShell(sessionID string) error {
 	ts.OnUserExit = func() {
 		_ = m.Close(id)
 	}
-	if err := ts.Resume(); err != nil {
+
+	// Find a status=running record (there is at most one per session
+	// because the shell only accepts one command at a time).
+	var seed *shell.RunningCommand
+	if list, err := m.cfg.Store.List(sessionID, 0, ""); err == nil {
+		for _, r := range list {
+			if r.Status == store.StatusRunning {
+				seed = &shell.RunningCommand{
+					ID:        r.ID,
+					Command:   r.Command,
+					Cwd:       r.Cwd,
+					StartedAt: r.StartedAt,
+				}
+				break
+			}
+		}
+	}
+
+	if err := ts.Resume(seed); err != nil {
 		return fmt.Errorf("resume tmux shell: %w", err)
 	}
 	m.mu.Lock()
@@ -1053,13 +1157,31 @@ process). Add this method to `internal/shell/tmux_shell.go`:
 //   remain-on-exit on, PTY echo off, pipe-pane writing to StreamPath.
 // All Resume does is wire the parser, open the StreamReader, and
 // launch the read+poller goroutines.
-func (ts *TmuxShell) Resume() error {
+//
+// If seed is non-nil it is installed as the current command BEFORE
+// the read loop starts. Required for Go-restart resume: the START
+// sentinel for the in-flight command is already past pty.offset
+// (parsed by the previous process), so without a seed the parser
+// will only see chunks/end events for a "current command" it never
+// knew started — they get dropped and the user sees an empty
+// session. Manager.Reconcile passes the seed when it finds a
+// status=running record in the store.
+func (ts *TmuxShell) Resume(seed *RunningCommand) error {
 	ts.mu.Lock()
 	if ts.started {
 		ts.mu.Unlock()
 		return fmt.Errorf("TmuxShell %s already started", ts.cfg.SessionID)
 	}
 	ts.started = true
+	if seed != nil {
+		ts.currentCmd = &RunningCommand{
+			ID:        seed.ID,
+			Command:   seed.Command,
+			Cwd:       seed.Cwd,
+			StartedAt: seed.StartedAt,
+			Buffer:    append([]byte{}, seed.Buffer...),
+		}
+	}
 	ts.mu.Unlock()
 
 	ts.parser = NewParser(ts.cfg.Nonce)
@@ -1077,6 +1199,7 @@ func (ts *TmuxShell) Resume() error {
 	ts.cfg.Logger.Info("tmux shell resumed",
 		"session", ts.cfg.SessionID,
 		"resume_offset", reader.Offset(),
+		"seeded_current_cmd", seed != nil,
 	)
 	return nil
 }
@@ -1104,7 +1227,7 @@ func TestTmuxShell_Resume_StartsReadLoopWithoutNewSession(t *testing.T) {
 	ts, dir := newTestTmuxShell(t, fr)
 	pre := len(fr.Calls())
 
-	if err := ts.Resume(); err != nil {
+	if err := ts.Resume(nil); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	defer ts.Close()
@@ -1141,12 +1264,59 @@ func TestTmuxShell_Resume_StartsReadLoopWithoutNewSession(t *testing.T) {
 	}
 	t.Fatal("Resume did not deliver Ended event for cmd-R")
 }
+
+func TestTmuxShell_Resume_WithSeed_DeliversEndedForInFlightCommand(t *testing.T) {
+	fr := tmuxio.NewFakeRunner()
+	_ = fr.NewSession("sess-1", "bash")
+	ts, dir := newTestTmuxShell(t, fr)
+
+	// Seed an in-flight command — the START sentinel was already
+	// processed by the previous process; only the END is to come.
+	seed := &RunningCommand{
+		ID:        "in-flight",
+		Command:   "sleep 5",
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	if err := ts.Resume(seed); err != nil {
+		t.Fatalf("Resume(seed): %v", err)
+	}
+	defer ts.Close()
+
+	if cur := ts.CurrentCommand(); cur == nil || cur.ID != "in-flight" {
+		t.Fatalf("CurrentCommand after seeded Resume = %+v, want id in-flight", cur)
+	}
+
+	sub, cancel := ts.SubscribeEvents(8)
+	defer cancel()
+	// Append only the END sentinel (no START) — exactly what the
+	// stream-readers's offset would advance to after a Go restart.
+	streamFile := filepath.Join(dir, "pty.stream")
+	body := "\x1eALFRED_END_nonce-x in-flight 0\x1eX\n"
+	f, _ := os.OpenFile(streamFile, os.O_WRONLY|os.O_APPEND, 0o600)
+	_, _ = f.Write([]byte(body))
+	_ = f.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case ev := <-sub.C:
+			if ev.Ended != nil && ev.Ended.CmdID == "in-flight" {
+				if ev.Ended.ExitCode != 0 {
+					t.Fatalf("exit = %d", ev.Ended.ExitCode)
+				}
+				return
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	t.Fatal("Resume(seed) did not deliver Ended event for in-flight command")
+}
 ```
 
 - [ ] **Step 6: Run, confirm green**
 
 Run: `go test ./internal/shell/ -run TestTmuxShell_Resume -race -count=1 -v`
-Expected: 1 PASS.
+Expected: 2 PASS.
 
 - [ ] **Step 7: Commit**
 
@@ -1168,7 +1338,8 @@ git commit -m "session: Manager.Reconcile + shell: TmuxShell.Resume for Go-resta
 ### Known limitations carried forward
 
 - `Manager.Reconcile()` calling Resume twice on the same in-memory Manager returns "already started" from the second Resume; the Manager logs and moves on. Production code only calls Reconcile once at boot, so this is purely defensive. Covered by `TestManager_Reconcile_Idempotent`.
-- Listener callbacks (`SetCloseListener`, `SetRenameListener`) fire synchronously, with `m.mu` released. For Close this includes disk I/O (DeleteSession) — total wall time of one Close is bounded by a few tens of milliseconds in practice. Acceptable for a single-user tool.
+- Listener callbacks (`AddCloseListener`, `AddRenameListener`) fire synchronously, with `m.mu` released. For Close this includes disk I/O (DeleteSession) — total wall time of one Close is bounded by a few tens of milliseconds in practice. Acceptable for a single-user tool.
+- Listeners are stored as a slice; `remove()` nils the slot (does not compact). Up to 8 WS connections per Pod (one per browser tab) × low rate of open/close means the slice never grows past ~dozens of slots in practice.
 
 ---
 

@@ -258,10 +258,13 @@ func TestWS_OnConnect_SendsIdleForEverySession(t *testing.T) {
 	conn := dialWS(t, url, "tok")
 	defer conn.Close()
 	// Expect 2 idle messages, one per session.
+	// Per-read deadline (not a fixed absolute time) so the test
+	// doesn't false-fail when the server takes hundreds of ms to
+	// fan-out subscriptions before emitting the first idle.
 	seen := map[string]bool{}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && len(seen) < 2 {
-		_ = conn.SetReadDeadline(deadline)
+	endBy := time.Now().Add(3 * time.Second)
+	for len(seen) < 2 && time.Now().Before(endBy) {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		var msg outMsg
 		if err := conn.ReadJSON(&msg); err != nil {
 			t.Fatalf("read: %v", err)
@@ -519,22 +522,27 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 	}
 
 	// 3. Register listeners for session_closed / session_renamed.
+	// AddCloseListener returns a remove() that we MUST call on
+	// disconnect — multiple WS connections coexist, and a stale
+	// listener would call into a closed channel (panic). The
+	// Manager-level test TestManager_AddCloseListener_RemoveStopsCallbacks
+	// guards the remove semantics.
 	closedCh := make(chan string, 4)
 	renamedCh := make(chan namedRename, 4)
-	m.SetCloseListener(func(sid string) {
+	removeClose := m.AddCloseListener(func(sid string) {
 		select {
 		case closedCh <- sid:
-		default:
+		default: // back-pressure: drop. The browser will re-fetch on reconnect.
 		}
 	})
-	m.SetRenameListener(func(sid, name string) {
+	removeRename := m.AddRenameListener(func(sid, name string) {
 		select {
 		case renamedCh <- namedRename{ID: sid, Name: name}:
 		default:
 		}
 	})
-	defer m.SetCloseListener(nil)
-	defer m.SetRenameListener(nil)
+	defer removeClose()
+	defer removeRename()
 
 	// 4. Start fan-in + ping ticker + read pump.
 	events := make(chan FanInEvent, 64)
@@ -545,6 +553,11 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 	defer pingTicker.Stop()
 
 	// Reader goroutine: pumps inbound messages onto a channel.
+	// inbound is buffered=4. A client that bursts >4 messages while the
+	// main loop is busy would block the unbuffered send; the stop
+	// select below ensures the reader can still exit cleanly on
+	// disconnect, and we drain inbound at the bottom of the for-loop
+	// rather than relying on close(inbound) to break the main loop.
 	inbound := make(chan inMsg, 4)
 	go func() {
 		for {
@@ -553,7 +566,11 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 				close(inbound)
 				return
 			}
-			inbound <- msg
+			select {
+			case inbound <- msg:
+			case <-stop:
+				return
+			}
 		}
 	}()
 
@@ -655,16 +672,27 @@ func writeEventToClient(ev FanInEvent, write func(outMsg) error, m *session.Mana
 		})
 	case ev.Event.Ended != nil:
 		e := ev.Event.Ended
-		// Persist final output + update record to completed.
+		// Persist final output + update record. Status semantics:
+		//   - completed: command finished on its own (any exit code,
+		//     including non-zero from a failed shell command like
+		//     `nonexistentcmd → exit 127`). The user did NOT intervene.
+		//   - stopped: user clicked Stop. StopCommandHandler is the
+		//     ONLY caller that writes this status — it does so BEFORE
+		//     SIGKILLing pane_pid so the Ended event arrives with the
+		//     record already marked stopped, and this branch skips it.
+		//   - interrupted: bash died for non-user reasons (Pod restart
+		//     reconciliation). Manager.Reconcile sets this.
 		_ = m.StoreFor().WriteOutput(ev.SessionID, e.CmdID, e.Output)
 		if rec, err := m.StoreFor().Get(ev.SessionID, e.CmdID); err == nil {
 			rec.ExitCode = ptrInt(e.ExitCode)
 			rec.FinishedAt = ptrTime(e.FinishedAt)
 			rec.OutputTruncated = e.Truncated
-			if e.ExitCode == 0 {
+			// Only promote to completed if the record is still flagged
+			// running. Anything else (stopped, interrupted) was set
+			// authoritatively by another code path and we must not
+			// clobber it.
+			if rec.Status == store.StatusRunning {
 				rec.Status = store.StatusCompleted
-			} else {
-				rec.Status = store.StatusStopped
 			}
 			_ = m.StoreFor().Save(ev.SessionID, rec)
 		}
