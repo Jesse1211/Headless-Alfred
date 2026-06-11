@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration tidy
+.PHONY: test test-unit test-integration tidy build smoke
 
 test: test-unit test-integration
 
@@ -10,3 +10,9 @@ test-integration:
 
 tidy:
 	go mod tidy
+
+build:
+	go build -o bin/alfred-server ./cmd/alfred-server
+
+smoke: build
+	./scripts/smoke.sh
