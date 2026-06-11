@@ -1,0 +1,74 @@
+package store
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// SessionMeta is the persistent metadata for one session. Fields are kept
+// minimal on purpose; runtime state (is bash alive, current command) is
+// not stored here — that lives in the in-memory session.Manager.
+type SessionMeta struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SessionsFile is the persisted list of sessions. The file lives at
+// <dir>/sessions.json and is read+written as a whole list under an
+// atomic tmp+rename. There is no per-entry locking; all writes flow
+// through one goroutine (the session.Manager owns the only writer).
+type SessionsFile struct {
+	dir string
+}
+
+func NewSessionsFile(dir string) *SessionsFile {
+	return &SessionsFile{dir: dir}
+}
+
+func (sf *SessionsFile) path() string {
+	return filepath.Join(sf.dir, "sessions.json")
+}
+
+// Load returns the persisted list. Returns (nil, nil) if the file
+// doesn't exist yet (first boot, never written).
+func (sf *SessionsFile) Load() ([]SessionMeta, error) {
+	data, err := os.ReadFile(sf.path())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var list []SessionMeta
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// Save writes the list atomically. Empty list writes an empty JSON
+// array (`[]`), not deletes the file — keeps Load's "missing means
+// never written" signal meaningful.
+func (sf *SessionsFile) Save(list []SessionMeta) error {
+	if list == nil {
+		list = []SessionMeta{}
+	}
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
+	final := sf.path()
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	// Best-effort cleanup. If Rename succeeds, tmp no longer exists
+	// (rename atomically swaps the inode) so Remove is a harmless
+	// noop. If Rename fails, this prevents a stranded .tmp file.
+	defer os.Remove(tmp)
+	return os.Rename(tmp, final)
+}
