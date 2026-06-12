@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/jesseliu/headless-alfred/internal/shell"
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
@@ -171,4 +175,124 @@ func sortByCreatedAtAsc(list []store.SessionMeta) {
 			list[j], list[j-1] = list[j-1], list[j]
 		}
 	}
+}
+
+// Create starts a new session. An empty or whitespace-only name is
+// replaced with "Session N" where N is the count of existing sessions
+// plus 1. Returns ErrSessionLimit if MaxSessions is reached and
+// ErrBadName for over-long names.
+func (m *Manager) Create(name string) (store.SessionMeta, error) {
+	cleaned := strings.TrimSpace(name)
+	if len(cleaned) > MaxNameLength {
+		return store.SessionMeta{}, ErrBadName
+	}
+
+	m.mu.Lock()
+	if len(m.metas) >= m.cfg.MaxSessions {
+		m.mu.Unlock()
+		return store.SessionMeta{}, ErrSessionLimit
+	}
+	if cleaned == "" {
+		// "Session N" where N = current count + 1. Note: if a previous
+		// Create rolled back (startShell or persist failed), N will be
+		// reused — the next successful Create may produce a duplicate
+		// display name like "Session 2" twice. We accept this because
+		// (a) display-name uniqueness is not a Manager invariant, and
+		// (b) the underlying ULID id is always unique. Users can rename
+		// via PATCH /api/sessions/{id} to disambiguate.
+		cleaned = fmt.Sprintf("Session %d", len(m.metas)+1)
+	}
+	id := ulid.Make().String()
+	meta := store.SessionMeta{
+		ID:        id,
+		Name:      cleaned,
+		CreatedAt: time.Now().UTC(),
+	}
+	// Reserve the slot in m.metas BEFORE starting the tmux shell so a
+	// concurrent Create can't blow the limit. We'll rollback on error.
+	m.metas[id] = meta
+	m.mu.Unlock()
+
+	if err := m.startShell(id); err != nil {
+		m.mu.Lock()
+		delete(m.metas, id)
+		m.mu.Unlock()
+		return store.SessionMeta{}, err
+	}
+
+	if err := m.persistMetas(); err != nil {
+		// Rollback the tmux session and the meta entry — we don't want
+		// sessions.json out of sync. We delete from both maps under mu,
+		// then call sh.Close() outside the lock to avoid holding mu
+		// across the tens-of-milliseconds tmux KillSession + readLoop
+		// drain. By the time we Close it, sh is goroutine-local (no
+		// other code can reach it — it's no longer in m.shells), so
+		// there is no concurrent-access window.
+		m.mu.Lock()
+		sh, ok := m.shells[id]
+		delete(m.shells, id)
+		delete(m.metas, id)
+		m.mu.Unlock()
+		if ok {
+			_ = sh.Close()
+		}
+		return store.SessionMeta{}, fmt.Errorf("persist sessions.json: %w", err)
+	}
+	return meta, nil
+}
+
+// startShell spins up a brand-new TmuxShell for sessionID.
+// Caller must NOT hold m.mu — this method takes the lock internally
+// when registering the shell, and TmuxShell.Start can take tens of
+// milliseconds which we don't want under lock.
+func (m *Manager) startShell(sessionID string) error {
+	cfg := shell.TmuxShellConfig{
+		SessionID:  sessionID,
+		Nonce:      m.cfg.Nonce,
+		Runner:     m.cfg.Runner,
+		StreamPath: m.streamPath(sessionID),
+		OffsetPath: m.offsetPath(sessionID),
+		Logger:     m.cfg.Logger,
+	}
+	ts, err := shell.NewTmuxShell(cfg)
+	if err != nil {
+		return fmt.Errorf("NewTmuxShell %s: %w", sessionID, err)
+	}
+	// Wire the OnUserExit hook: voluntary bash exit ⇒ Manager.Close.
+	id := sessionID
+	ts.OnUserExit = func() {
+		_ = m.Close(id)
+	}
+	// Ensure the session dir + commands/outputs subdirs exist BEFORE
+	// the read loop opens pty.stream inside that dir. Plan 1's
+	// EnsureSessionDirs is idempotent.
+	if err := m.cfg.Store.EnsureSessionDirs(sessionID); err != nil {
+		return fmt.Errorf("ensure session dirs: %w", err)
+	}
+	if err := ts.Start(); err != nil {
+		return fmt.Errorf("Start tmux shell: %w", err)
+	}
+	m.mu.Lock()
+	m.shells[sessionID] = ts
+	m.mu.Unlock()
+	return nil
+}
+
+// persistMetas writes m.metas atomically to sessions.json.
+func (m *Manager) persistMetas() error {
+	m.mu.Lock()
+	list := make([]store.SessionMeta, 0, len(m.metas))
+	for _, mt := range m.metas {
+		list = append(list, mt)
+	}
+	sortByCreatedAtAsc(list)
+	m.mu.Unlock()
+	return m.cfg.SessionsFile.Save(list)
+}
+
+// Close is implemented in Plan 4 Task 3. Stub here so startShell's
+// OnUserExit hook closure compiles in this commit.
+func (m *Manager) Close(sessionID string) error {
+	// TODO(plan-4-task-3): real implementation
+	return nil
 }
