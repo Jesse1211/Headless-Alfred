@@ -49,7 +49,7 @@ func TestGetCommand_NotFound(t *testing.T) {
 
 func TestGetCommand_ReturnsRecord(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.Save(store.Record{ID: "X", Command: "ls", Status: store.StatusCompleted, StartedAt: time.Now()})
+	_ = s.Save("", store.Record{ID: "X", Command: "ls", Status: store.StatusCompleted, StartedAt: time.Now()})
 	r := chi.NewRouter()
 	r.Get("/api/commands/{id}", GetCommandHandler(s).ServeHTTP)
 	req := httptest.NewRequest("GET", "/api/commands/X", nil)
@@ -73,8 +73,8 @@ func TestGetCommand_ReturnsRecord(t *testing.T) {
 
 func TestGetCommand_IncludesOutputContent(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.Save(store.Record{ID: "Y", Command: "ls", Status: store.StatusCompleted, StartedAt: time.Now()})
-	_ = s.WriteOutput("Y", []byte("file1\nfile2\n"))
+	_ = s.Save("", store.Record{ID: "Y", Command: "ls", Status: store.StatusCompleted, StartedAt: time.Now()})
+	_ = s.WriteOutput("", "Y", []byte("file1\nfile2\n"))
 	r := chi.NewRouter()
 	r.Get("/api/commands/{id}", GetCommandHandler(s).ServeHTTP)
 	req := httptest.NewRequest("GET", "/api/commands/Y", nil)

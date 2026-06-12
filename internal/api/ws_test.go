@@ -149,14 +149,14 @@ func TestWS_RunSimpleCommand(t *testing.T) {
 		t.Fatalf("body=%q", body.String())
 	}
 	// Verify store has the completed record AND the output was persisted.
-	rec, err := st.Get(cmdID)
+	rec, err := st.Get("", cmdID)
 	if err != nil {
 		t.Fatalf("store.Get: %v", err)
 	}
 	if rec.Status != store.StatusCompleted {
 		t.Fatalf("status = %s, want completed", rec.Status)
 	}
-	out, _ := st.ReadOutput(cmdID)
+	out, _ := st.ReadOutput("", cmdID)
 	if !strings.Contains(string(out), "hello-ws") {
 		t.Fatalf("persisted output = %q, want it to contain hello-ws", out)
 	}

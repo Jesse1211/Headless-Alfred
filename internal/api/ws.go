@@ -227,14 +227,14 @@ func handleRun(msg inMsg, sh *shell.Shell, st *store.Store, write func(outMsg) e
 		StartedAt: now,
 		Status:    store.StatusRunning,
 	}
-	if err := st.Save(rec); err != nil {
+	if err := st.Save("", rec); err != nil {
 		_ = write(outMsg{Type: "error", Code: "store_error", Message: err.Error()})
 		return
 	}
 	if err := sh.Write(id, cmd); err != nil {
 		// Roll back the record so it doesn't sit forever as "running".
 		rec.Status = store.StatusInterrupted
-		_ = st.Save(rec)
+		_ = st.Save("", rec)
 		code := "shell_error"
 		switch {
 		case errors.Is(err, shell.ErrBusy):
@@ -254,11 +254,11 @@ func persistEnded(evt *shell.EndedEvent, st *store.Store) {
 	// Write output file first so a successful WriteOutput is reflected on
 	// disk even if the metadata Save fails.
 	if len(evt.Output) > 0 {
-		if err := st.WriteOutput(evt.CmdID, evt.Output); err != nil {
+		if err := st.WriteOutput("", evt.CmdID, evt.Output); err != nil {
 			slog.Error("store.WriteOutput on end", "cmdId", evt.CmdID, "err", err)
 		}
 	}
-	rec, err := st.Get(evt.CmdID)
+	rec, err := st.Get("", evt.CmdID)
 	if err != nil {
 		slog.Error("store.Get on end", "cmdId", evt.CmdID, "err", err)
 		return
@@ -275,7 +275,7 @@ func persistEnded(evt *shell.EndedEvent, st *store.Store) {
 	} else {
 		rec.Status = store.StatusCompleted
 	}
-	if err := st.Save(rec); err != nil {
+	if err := st.Save("", rec); err != nil {
 		slog.Error("store.Save on end", "cmdId", evt.CmdID, "err", err)
 	}
 }
