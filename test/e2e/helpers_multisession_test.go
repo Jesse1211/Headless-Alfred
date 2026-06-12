@@ -123,6 +123,35 @@ func restartAlfredProcess(t *testing.T) {
 	t.Fatal("alfred-server did not become ready within 30s after restart")
 }
 
+// killTmuxServerInPod terminates the tmux server inside the alfred pod,
+// leaving the alfred-server process alive and the per-session command
+// JSONs untouched on the PVC. Used to simulate "container survived,
+// tmux died" — which is functionally the same as the §4.7 "stored \
+// live" reconciliation branch from alfred-server's perspective.
+func killTmuxServerInPod(t *testing.T) {
+	t.Helper()
+	cmd := exec.Command("kubectl", "-n", "alfred", "exec", "deployment/alfred", "--",
+		"sh", "-c", "pkill -KILL tmux || true")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("kill tmux in pod: %v output=%s", err, out)
+	}
+}
+
+// drainStartupMessages reads any idle/reattach frames the server emits on
+// connect (one per known session) and discards them. Returns when the read
+// deadline elapses with no new message.
+func drainStartupMessages(t *testing.T, conn *websocket.Conn, perMsgTimeout time.Duration) {
+	t.Helper()
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(perMsgTimeout))
+		var m wsMsgMulti
+		if err := conn.ReadJSON(&m); err != nil {
+			return
+		}
+	}
+}
+
 var _ = strings.TrimSpace
 var _ = url.Parse
 var _ = context.Background
