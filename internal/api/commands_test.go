@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,87 +9,114 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
 	"github.com/jesseliu/headless-alfred/internal/store"
 )
 
-func newTestStore(t *testing.T) *store.Store {
-	t.Helper()
-	s, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
-func TestListCommands_EmptyReturnsEmptyArray(t *testing.T) {
-	t.Skip("stub: reimplemented in P5T3")
-	s := newTestStore(t)
-	h := ListCommandsHandler(s)
-	req := httptest.NewRequest("GET", "/api/commands", nil)
+func TestListCommandsForSession_ReturnsEmptyArrayOnUnknownSession(t *testing.T) {
+	m := newTestManager(t)
+	h := ListCommandsHandler(m)
+	req := httptest.NewRequest("GET", "/api/sessions/unknown/commands", nil)
+	req = mustChi(req, "sid", "unknown")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("code = %d", rec.Code)
 	}
-	body := rec.Body.String()
-	if body != "[]\n" && body != "[]" {
-		t.Fatalf("body should be empty JSON array, got %q", body)
+	if rec.Body.String() != "[]\n" {
+		t.Fatalf("body = %q, want []", rec.Body.String())
+	}
+}
+
+func TestListCommandsForSession_ReturnsCommandsScopedToSession(t *testing.T) {
+	m := newTestManager(t)
+	sessA, _ := m.Create("A")
+	sessB, _ := m.Create("B")
+	now := time.Now().UTC()
+	_ = m.StoreFor().Save(sessA.ID, store.Record{
+		ID: "1", SessionID: sessA.ID, Command: "ls",
+		Status: store.StatusCompleted, StartedAt: now,
+	})
+	_ = m.StoreFor().Save(sessB.ID, store.Record{
+		ID: "2", SessionID: sessB.ID, Command: "pwd",
+		Status: store.StatusCompleted, StartedAt: now.Add(time.Second),
+	})
+	h := ListCommandsHandler(m)
+	req := httptest.NewRequest("GET", "/api/sessions/"+sessA.ID+"/commands", nil)
+	req = mustChi(req, "sid", sessA.ID)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var got []store.Record
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) != 1 || got[0].ID != "1" {
+		t.Fatalf("got %+v, want [{id:1}]", got)
+	}
+}
+
+func TestGetCommand_RetrievesFullRecord(t *testing.T) {
+	m := newTestManager(t)
+	sess, _ := m.Create("A")
+	_ = m.StoreFor().Save(sess.ID, store.Record{
+		ID: "1", SessionID: sess.ID, Command: "ls",
+		Status: store.StatusCompleted, StartedAt: time.Now().UTC(),
+	})
+	_ = m.StoreFor().WriteOutput(sess.ID, "1", []byte("foo\nbar\n"))
+	h := GetCommandHandler(m)
+	req := httptest.NewRequest("GET", "/api/sessions/"+sess.ID+"/commands/1", nil)
+	req = mustChi(req, "sid", sess.ID)
+	req = mustChi(req, "id", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["output"] != "foo\nbar\n" {
+		t.Fatalf("output = %v", got["output"])
 	}
 }
 
 func TestGetCommand_NotFound(t *testing.T) {
-	t.Skip("stub: reimplemented in P5T3")
-	s := newTestStore(t)
-	r := chi.NewRouter()
-	r.Get("/api/commands/{id}", GetCommandHandler(s).ServeHTTP)
-	req := httptest.NewRequest("GET", "/api/commands/missing", nil)
+	m := newTestManager(t)
+	sess, _ := m.Create("A")
+	h := GetCommandHandler(m)
+	req := httptest.NewRequest("GET", "/api/sessions/"+sess.ID+"/commands/nope", nil)
+	req = mustChi(req, "sid", sess.ID)
+	req = mustChi(req, "id", "nope")
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
+	h.ServeHTTP(rec, req)
+	if rec.Code != 404 {
 		t.Fatalf("code = %d", rec.Code)
 	}
 }
 
-func TestGetCommand_ReturnsRecord(t *testing.T) {
-	t.Skip("stub: reimplemented in P5T3")
-	s := newTestStore(t)
-	_ = s.Save("", store.Record{ID: "X", Command: "ls", Status: store.StatusCompleted, StartedAt: time.Now()})
-	r := chi.NewRouter()
-	r.Get("/api/commands/{id}", GetCommandHandler(s).ServeHTTP)
-	req := httptest.NewRequest("GET", "/api/commands/X", nil)
+func TestStopCommand_UnknownSessionReturns404(t *testing.T) {
+	m := newTestManager(t)
+	h := StopCommandHandler(m)
+	req := httptest.NewRequest("POST", "/api/sessions/nope/commands/1/stop", nil)
+	req = mustChi(req, "sid", "nope")
+	req = mustChi(req, "id", "1")
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("code = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var got struct {
-		ID      string `json:"id"`
-		Command string `json:"command"`
-		Output  string `json:"output"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Command != "ls" {
-		t.Fatalf("command = %q", got.Command)
+	h.ServeHTTP(rec, req)
+	if rec.Code != 404 {
+		t.Fatalf("code = %d", rec.Code)
 	}
 }
 
-func TestGetCommand_IncludesOutputContent(t *testing.T) {
-	t.Skip("stub: reimplemented in P5T3")
-	s := newTestStore(t)
-	_ = s.Save("", store.Record{ID: "Y", Command: "ls", Status: store.StatusCompleted, StartedAt: time.Now()})
-	_ = s.WriteOutput("", "Y", []byte("file1\nfile2\n"))
-	r := chi.NewRouter()
-	r.Get("/api/commands/{id}", GetCommandHandler(s).ServeHTTP)
-	req := httptest.NewRequest("GET", "/api/commands/Y", nil)
+func TestStopCommand_CommandNotRunningReturns409(t *testing.T) {
+	m := newTestManager(t)
+	sess, _ := m.Create("A")
+	h := StopCommandHandler(m)
+	req := httptest.NewRequest("POST", "/api/sessions/"+sess.ID+"/commands/missing/stop", nil)
+	req = mustChi(req, "sid", sess.ID)
+	req = mustChi(req, "id", "missing")
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	var got struct {
-		Output string `json:"output"`
-	}
-	_ = json.NewDecoder(rec.Body).Decode(&got)
-	if got.Output != "file1\nfile2\n" {
-		t.Fatalf("output = %q", got.Output)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("code = %d", rec.Code)
 	}
 }
+
+var _ = context.Background // silence unused import
+var _ = chi.NewRouter

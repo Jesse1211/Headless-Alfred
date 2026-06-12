@@ -210,9 +210,13 @@ func TestDeleteSession_NotFound(t *testing.T) {
 }
 
 // mustChi sets a chi URL param on the request context for handler tests
-// that bypass the router.
+// that bypass the router. If the context already has a chi route context,
+// the new key/val is appended to it (so chained calls accumulate params).
 func mustChi(r *http.Request, key, val string) *http.Request {
-	rctx := chi.NewRouteContext()
+	rctx, _ := r.Context().Value(chi.RouteCtxKey).(*chi.Context)
+	if rctx == nil {
+		rctx = chi.NewRouteContext()
+	}
 	rctx.URLParams.Add(key, val)
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }

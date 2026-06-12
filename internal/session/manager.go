@@ -462,6 +462,12 @@ func (m *Manager) resumeShell(sessionID string) error {
 	return nil
 }
 
+// StoreFor returns the underlying Store. Used by HTTP handlers that
+// need to read/write per-session command JSONs directly.
+func (m *Manager) StoreFor() *store.Store {
+	return m.cfg.Store
+}
+
 // Close kills the tmux session, deletes the store directory, removes
 // the entry from sessions.json, and notifies every registered close
 // listener. Idempotent in spirit: a second Close on the same id

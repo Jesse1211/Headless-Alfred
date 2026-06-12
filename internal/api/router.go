@@ -45,9 +45,9 @@ func NewRouter(d Deps) http.Handler {
 	// Authenticated REST.
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(d.Auth))
-		r.Get("/api/commands", ListCommandsHandler(d.Store).ServeHTTP)
-		r.Get("/api/commands/{id}", GetCommandHandler(d.Store).ServeHTTP)
-		r.Post("/api/commands/{id}/stop", StopCommandHandler(d.Shell).ServeHTTP)
+		r.Get("/api/commands", ListCommandsHandler(nil).ServeHTTP)
+		r.Get("/api/commands/{id}", GetCommandHandler(nil).ServeHTTP)
+		r.Post("/api/commands/{id}/stop", StopCommandHandler(nil).ServeHTTP)
 	})
 
 	// Static (lowest priority — only hit if nothing above matched).
