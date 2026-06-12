@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
 )
@@ -165,9 +166,132 @@ func (ts *TmuxShell) Close() error {
 	return nil
 }
 
+// Write submits a user command for execution.
+// Returns ErrBusy if another command is already running,
+// ErrUnavailable if the shell is closed.
+func (ts *TmuxShell) Write(cmdID, userCmd string) error {
+	ts.mu.Lock()
+	if ts.closed || !ts.started {
+		ts.mu.Unlock()
+		return ErrUnavailable
+	}
+	if ts.currentCmd != nil {
+		ts.mu.Unlock()
+		return ErrBusy
+	}
+	ts.currentCmd = &RunningCommand{
+		ID:        cmdID,
+		Command:   userCmd,
+		StartedAt: timeNowUTC(),
+	}
+	ts.mu.Unlock()
+
+	wrapped := Wrap(ts.cfg.Nonce, cmdID, userCmd)
+	if err := ts.cfg.Runner.SendText(ts.cfg.SessionID, wrapped); err != nil {
+		ts.mu.Lock()
+		ts.currentCmd = nil
+		ts.mu.Unlock()
+		return fmt.Errorf("send wrapper: %w", err)
+	}
+	if err := ts.cfg.Runner.SendEnter(ts.cfg.SessionID); err != nil {
+		ts.mu.Lock()
+		ts.currentCmd = nil
+		ts.mu.Unlock()
+		return fmt.Errorf("send enter: %w", err)
+	}
+	return nil
+}
+
+// CurrentCommand returns a copy of the running command state, or nil if idle.
+func (ts *TmuxShell) CurrentCommand() *RunningCommand {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if ts.currentCmd == nil {
+		return nil
+	}
+	cp := *ts.currentCmd
+	cp.Buffer = append([]byte{}, ts.currentCmd.Buffer...)
+	return &cp
+}
+
+// SubscribeEvents returns a typed-event subscriber plus a cancel func.
+// Mirrors shell.Shell.SubscribeEvents so callers can swap one type for
+// the other without changing event-consumption code.
+func (ts *TmuxShell) SubscribeEvents(buffer int) (*EventSubscriber, func()) {
+	sub := ts.evtBcast.Subscribe(buffer)
+	return sub, sub.Close
+}
+
+// SubscribeRaw returns the raw byte stream subscriber. Used by the
+// disk-writer in api/ws.go (a future plan; defined here for parity).
+func (ts *TmuxShell) SubscribeRaw(buffer int) *Subscriber {
+	return ts.rawBcast.Subscribe(buffer)
+}
+
+// timeNowUTC is a var so tests can stub if needed; not stubbed in this plan.
+var timeNowUTC = func() time.Time { return time.Now().UTC() }
+
 // onParserEvent is the bridge from sentinel parser events to
-// CommandEvent broadcaster publishes. Implementation lands with
-// the Write path in Task 2.
+// CommandEvent broadcaster publishes.
 func (ts *TmuxShell) onParserEvent(e ParseEvent) {
-	// Implemented in Task 2.
+	ts.mu.Lock()
+	switch e.Kind {
+	case EventStart:
+		// Fill in cwd, publish Started.
+		if ts.currentCmd != nil && ts.currentCmd.ID == e.CmdID {
+			ts.currentCmd.Cwd = e.Cwd
+		} else {
+			// Sentinel for a command we don't have a record of —
+			// synthesize one (e.g., parsing a residual sentinel from
+			// before a Go restart while currentCmd was already cleared).
+			ts.currentCmd = &RunningCommand{
+				ID:        e.CmdID,
+				Cwd:       e.Cwd,
+				StartedAt: timeNowUTC(),
+			}
+		}
+		evt := CommandEvent{Started: &StartedEvent{
+			CmdID:     ts.currentCmd.ID,
+			Command:   ts.currentCmd.Command,
+			Cwd:       ts.currentCmd.Cwd,
+			StartedAt: ts.currentCmd.StartedAt,
+		}}
+		ts.mu.Unlock()
+		ts.evtBcast.Publish(evt)
+	case EventChunk:
+		if ts.currentCmd == nil {
+			ts.mu.Unlock()
+			return
+		}
+		drop := false
+		if len(ts.currentCmd.Buffer)+len(e.Bytes) <= MaxBufferBytes {
+			ts.currentCmd.Buffer = append(ts.currentCmd.Buffer, e.Bytes...)
+		} else if !ts.currentCmd.Truncated {
+			ts.currentCmd.Truncated = true
+			drop = true
+		}
+		evt := CommandEvent{Chunk: &ChunkEvent{
+			CmdID: ts.currentCmd.ID,
+			Bytes: append([]byte{}, e.Bytes...),
+			Drop:  drop,
+		}}
+		ts.mu.Unlock()
+		ts.evtBcast.Publish(evt)
+	case EventEnd:
+		if ts.currentCmd == nil {
+			ts.mu.Unlock()
+			return
+		}
+		truncated := ts.currentCmd.Truncated
+		buffer := ts.currentCmd.Buffer
+		ts.currentCmd = nil
+		ts.mu.Unlock()
+		ts.evtBcast.Publish(CommandEvent{Ended: &EndedEvent{
+			CmdID:      e.CmdID,
+			ExitCode:   e.ExitCode,
+			FinishedAt: timeNowUTC(),
+			Truncated:  truncated,
+			Output:     buffer,
+		}})
+	}
 }
