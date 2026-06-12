@@ -116,7 +116,7 @@ func (ts *TmuxShell) Start() error {
 	ts.parser = NewParser(ts.cfg.Nonce)
 	ts.parser.OnEvent = ts.onParserEvent
 
-	reader, err := tmuxio.NewStreamReader(ts.cfg.StreamPath, ts.cfg.OffsetPath, parserSink{ts.parser})
+	reader, err := tmuxio.NewStreamReader(ts.cfg.StreamPath, ts.cfg.OffsetPath, parserSink{p: ts.parser, rawBc: ts.rawBcast})
 	if err != nil {
 		return fmt.Errorf("open stream reader: %w", err)
 	}
@@ -268,6 +268,24 @@ func (ts *TmuxShell) Stop() {
 		return
 	}
 	respawned = true
+
+	// Synthesize an Ended event for the killed command. The bash that
+	// would have produced the END sentinel was SIGKILL'd, so without
+	// this synthetic event currentCmd would stay set forever and the
+	// next Write call would hit ErrBusy.
+	ts.mu.Lock()
+	stopped := ts.currentCmd
+	ts.currentCmd = nil
+	ts.mu.Unlock()
+	if stopped != nil {
+		ts.evtBcast.Publish(CommandEvent{Ended: &EndedEvent{
+			CmdID:      stopped.ID,
+			ExitCode:   -1,
+			FinishedAt: time.Now().UTC(),
+			Truncated:  stopped.Truncated,
+			Output:     stopped.Buffer,
+		}})
+	}
 }
 
 func (ts *TmuxShell) onParserEvent(e ParseEvent) {
@@ -360,11 +378,17 @@ const StreamTruncateThreshold = 8 * 1024 * 1024
 
 // parserSink adapts the shell.Parser (concrete type) to the
 // tmuxio.ParserSink interface so StreamReader can deliver bytes.
+// It also publishes the raw bytes to the rawBcast for any subscriber
+// that wants un-parsed PTY chunks (mirrors legacy shell.Shell).
 type parserSink struct {
-	p *Parser
+	p     *Parser
+	rawBc *Broadcaster
 }
 
 func (s parserSink) Feed(b []byte) {
+	if s.rawBc != nil {
+		s.rawBc.Publish(b)
+	}
 	s.p.Feed(b)
 }
 

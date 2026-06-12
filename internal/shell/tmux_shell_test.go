@@ -313,6 +313,48 @@ func TestTmuxShell_PaneDeadPoller_FiresExitCallback(t *testing.T) {
 	}
 }
 
+func TestTmuxShell_Stop_ClearsCurrentCmdAndAllowsNextWrite(t *testing.T) {
+	fr := tmuxio.NewFakeRunner()
+	ts, _ := newTestTmuxShell(t, fr)
+	_ = ts.Start()
+	defer ts.Close()
+	ts.killPID = func(int) error { return nil }
+
+	sub, cancel := ts.SubscribeEvents(8)
+	defer cancel()
+
+	_ = ts.Write("cmd-stop", "sleep 60")
+	ts.Stop()
+
+	// Stop must publish an Ended event with negative ExitCode so the
+	// upstream WS/store layers know the command was killed, not finished.
+	sawStopEnded := false
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && !sawStopEnded {
+		select {
+		case ev := <-sub.C:
+			if ev.Ended != nil && ev.Ended.CmdID == "cmd-stop" {
+				sawStopEnded = true
+				if ev.Ended.ExitCode != -1 {
+					t.Fatalf("exit code = %d, want -1", ev.Ended.ExitCode)
+				}
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !sawStopEnded {
+		t.Fatal("Stop did not publish Ended event")
+	}
+
+	// After Stop the shell must accept a new Write — currentCmd cleared.
+	if cur := ts.CurrentCommand(); cur != nil {
+		t.Fatalf("CurrentCommand still set after Stop: %+v", cur)
+	}
+	if err := ts.Write("post-stop", "ls"); err != nil {
+		t.Fatalf("Write after Stop should succeed, got %v", err)
+	}
+}
+
 func TestTmuxShell_PaneDeadPoller_SuppressedDuringRespawn(t *testing.T) {
 	fr := tmuxio.NewFakeRunner()
 	ts, _ := newTestTmuxShell(t, fr)
