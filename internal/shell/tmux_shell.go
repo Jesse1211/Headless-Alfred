@@ -109,6 +109,16 @@ func (ts *TmuxShell) Start() error {
 	if err := r.SendEnter(ts.cfg.SessionID); err != nil {
 		return fmt.Errorf("send stty -echo enter: %w", err)
 	}
+	// Disable readline's bracketed-paste mode. Otherwise bash emits
+	// \x1b[?2004h / \x1b[?2004l around each prompt, and those escapes
+	// (plus the visible "bash-5.2$ " prompt itself) end up tail-bleeding
+	// into the END-sentinel boundary of the previous command's output.
+	if err := r.SendText(ts.cfg.SessionID, "bind 'set enable-bracketed-paste off'"); err != nil {
+		return fmt.Errorf("send bracketed-paste off text: %w", err)
+	}
+	if err := r.SendEnter(ts.cfg.SessionID); err != nil {
+		return fmt.Errorf("send bracketed-paste off enter: %w", err)
+	}
 	if err := r.PipePane(ts.cfg.SessionID, ts.pipeCmd()); err != nil {
 		return fmt.Errorf("start pipe-pane: %w", err)
 	}
@@ -265,6 +275,14 @@ func (ts *TmuxShell) Stop() {
 	}
 	if err := ts.cfg.Runner.SendEnter(ts.cfg.SessionID); err != nil {
 		ts.cfg.Logger.Error("Stop: SendEnter failed", "err", err)
+		return
+	}
+	if err := ts.cfg.Runner.SendText(ts.cfg.SessionID, "bind 'set enable-bracketed-paste off'"); err != nil {
+		ts.cfg.Logger.Error("Stop: SendText bracketed-paste off failed", "err", err)
+		return
+	}
+	if err := ts.cfg.Runner.SendEnter(ts.cfg.SessionID); err != nil {
+		ts.cfg.Logger.Error("Stop: SendEnter (bracketed-paste) failed", "err", err)
 		return
 	}
 	respawned = true

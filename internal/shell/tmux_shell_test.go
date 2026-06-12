@@ -43,8 +43,10 @@ func TestTmuxShell_Start_CreatesSessionAndConfigures(t *testing.T) {
 	//   SetOption sess-1 remain-on-exit on
 	//   SendText sess-1 "stty -echo"
 	//   SendEnter sess-1
+	//   SendText sess-1 "bind 'set enable-bracketed-paste off'"
+	//   SendEnter sess-1
 	//   PipePane sess-1 "cat >> <streamPath>"
-	wantMethods := []string{"NewSession", "SetOption", "SendText", "SendEnter", "PipePane"}
+	wantMethods := []string{"NewSession", "SetOption", "SendText", "SendEnter", "SendText", "SendEnter", "PipePane"}
 	if len(calls) < len(wantMethods) {
 		t.Fatalf("only %d calls, want at least %d: %+v", len(calls), len(wantMethods), calls)
 	}
@@ -60,7 +62,10 @@ func TestTmuxShell_Start_CreatesSessionAndConfigures(t *testing.T) {
 		t.Fatalf("SetOption args: %+v", calls[1].Args)
 	}
 	if calls[2].Args[1] != "stty -echo" {
-		t.Fatalf("SendText args: %+v", calls[2].Args)
+		t.Fatalf("stty -echo SendText args: %+v", calls[2].Args)
+	}
+	if calls[4].Args[1] != "bind 'set enable-bracketed-paste off'" {
+		t.Fatalf("bracketed-paste SendText args: %+v", calls[4].Args)
 	}
 }
 
@@ -264,6 +269,7 @@ func TestTmuxShell_Stop_KillsPanePIDAndRespawns(t *testing.T) {
 	//   2. killPID(<pid>)
 	//   3. RespawnPane(sess-1, bash, --noprofile, --norc)
 	//   4. SendText stty -echo + SendEnter
+	//   5. SendText bind 'set enable-bracketed-paste off' + SendEnter
 	calls := fr.Calls()
 	sawPanePID, sawRespawn := false, false
 	for _, c := range calls {
