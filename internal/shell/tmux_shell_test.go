@@ -64,8 +64,8 @@ func TestTmuxShell_Start_CreatesSessionAndConfigures(t *testing.T) {
 	if calls[2].Args[1] != "stty -echo" {
 		t.Fatalf("stty -echo SendText args: %+v", calls[2].Args)
 	}
-	if calls[4].Args[1] != "bind 'set enable-bracketed-paste off'" {
-		t.Fatalf("bracketed-paste SendText args: %+v", calls[4].Args)
+	if calls[4].Args[1] != "bind 'set enable-bracketed-paste off'; PS1=''; PS2=''" {
+		t.Fatalf("prompt-tame SendText args: %+v", calls[4].Args)
 	}
 }
 
