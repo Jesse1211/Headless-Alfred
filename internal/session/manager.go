@@ -62,6 +62,7 @@ type Manager struct {
 	// TestWS_SessionClosed_BroadcastsToConnectedClients).
 	closeListeners  []func(sessionID string)
 	renameListeners []func(sessionID, newName string)
+	createListeners []func(sessionID string)
 }
 
 // NewManager validates the config but does NOT contact tmux or load
@@ -130,6 +131,24 @@ func (m *Manager) AddRenameListener(fn func(sessionID, newName string)) (remove 
 		defer m.mu.Unlock()
 		if idx < len(m.renameListeners) {
 			m.renameListeners[idx] = nil
+		}
+	}
+}
+
+// AddCreateListener — same pattern as AddCloseListener. Fired AFTER a
+// new session is fully spun up (tmux shell started, sessions.json
+// persisted). WS clients use this to subscribe to the new session's
+// event stream without having to reconnect.
+func (m *Manager) AddCreateListener(fn func(sessionID string)) (remove func()) {
+	m.mu.Lock()
+	m.createListeners = append(m.createListeners, fn)
+	idx := len(m.createListeners) - 1
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if idx < len(m.createListeners) {
+			m.createListeners[idx] = nil
 		}
 	}
 }
@@ -237,6 +256,20 @@ func (m *Manager) Create(name string) (store.SessionMeta, error) {
 			_ = sh.Close()
 		}
 		return store.SessionMeta{}, fmt.Errorf("persist sessions.json: %w", err)
+	}
+
+	// Snapshot listeners under the lock; fire them outside it (same shape
+	// as Close / Rename use).
+	m.mu.Lock()
+	listeners := make([]func(string), 0, len(m.createListeners))
+	for _, fn := range m.createListeners {
+		if fn != nil {
+			listeners = append(listeners, fn)
+		}
+	}
+	m.mu.Unlock()
+	for _, fn := range listeners {
+		fn(id)
 	}
 	return meta, nil
 }

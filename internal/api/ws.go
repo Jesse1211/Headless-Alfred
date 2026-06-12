@@ -135,6 +135,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 
 	closedCh := make(chan string, 4)
 	renamedCh := make(chan namedRename, 4)
+	createdCh := make(chan string, 4)
 	removeClose := m.AddCloseListener(func(sid string) {
 		select {
 		case closedCh <- sid:
@@ -147,8 +148,16 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 		default:
 		}
 	})
+	removeCreate := m.AddCreateListener(func(sid string) {
+		select {
+		case createdCh <- sid:
+		default:
+			slog.Warn("ws: createdCh full, dropping created event", "session", sid)
+		}
+	})
 	defer removeClose()
 	defer removeRename()
+	defer removeCreate()
 
 	events := make(chan FanInEvent, 64)
 	stop := make(chan struct{})
@@ -191,6 +200,42 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 			_ = write(outMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
 			_ = write(outMsg{Type: "session_renamed", SessionID: rn.ID, Name: rn.Name})
+		case sid := <-createdCh:
+			// New session was just created via REST. Subscribe to its
+			// events and forward them onto the existing FanIn channel
+			// so they reach this WS client without forcing a reconnect.
+			// Also send an "idle" frame so the client knows the
+			// subscription is live (mirrors the on-connect handshake).
+			sh, err := m.Get(sid)
+			if err != nil {
+				continue
+			}
+			sub, cancel := sh.SubscribeEvents(16)
+			cancels = append(cancels, cancel)
+			go forwardSubscriber(sid, sub, events, stop)
+			_ = write(outMsg{Type: "idle", SessionID: sid})
+		}
+	}
+}
+
+// forwardSubscriber pumps events from a newly-attached session's
+// subscriber onto the shared FanIn output channel until either the
+// subscriber's channel closes (shell shut down) or stop closes (WS
+// client disconnected).
+func forwardSubscriber(sid string, sub *shell.EventSubscriber, out chan<- FanInEvent, stop <-chan struct{}) {
+	for {
+		select {
+		case ev, ok := <-sub.C:
+			if !ok {
+				return
+			}
+			select {
+			case out <- FanInEvent{SessionID: sid, Event: ev}:
+			case <-stop:
+				return
+			}
+		case <-stop:
+			return
 		}
 	}
 }
