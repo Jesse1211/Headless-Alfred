@@ -28,6 +28,8 @@ If you find yourself violating any of these, stop and think.
 
 Bash is born when Go starts and dies when Go stops. The set of WebSocket connections is orthogonal. If you add code that ties a bash command to a specific connection, you have introduced a regression that breaks the entire premise of the project (long-running jobs surviving a closed laptop).
 
+**Strengthening (multi-session):** Bash lifecycle ≠ Go-process lifecycle either. The tmux server outlives alfred-server. `kubectl rollout` does NOT terminate in-flight commands; the in-flight command keeps streaming into `pty.stream`, and the new alfred-server process resumes parsing it from `pty.offset` and re-emits any pending `Started`/`Ended` events to reconnecting clients. Pod restart DOES terminate them; this is an accepted trade-off documented in spec §1 non-goals.
+
 ### 2. Output buffer lives where commands live: in `shell.Shell`.
 
 The `EndedEvent.Output` field carries the buffer at the moment of completion. **Do not** try to read the buffer via `Shell.CurrentCommand()` after a command ends — `currentCmd` is already nil by then. This bit us during Plan 2; the fix was to attach the buffer to the event itself.
@@ -43,7 +45,7 @@ When bash dies, `waitLoop` must clear `currentCmd`, `available`, `cmd`, `pty` **
 | Choice | Why |
 |---|---|
 | Single user, hardcoded credentials | Personal tool. Per spec §8: K8s Secret env vars, static long-random token, no JWT/session. Acceptable trade-off given Secret rotation = pod restart. |
-| One bash, one command at a time | Spec §3. Concurrency is what `&` is for. Multi-tab/session was explicitly deferred (spec §14). |
+| Up to 8 bash sessions, one command at a time per session | Each session is an isolated tmux session (own cwd / env / aliases) but shares the container FS. Concurrency *within* a session is what `&` is for; concurrency *across* sessions is what the sidebar is for. Was originally single-bash (spec §3, since superseded by `docs/superpowers/specs/2026-06-11-multi-session-tmux-design.md`). |
 | Output **first** 10 MB kept, not last | When a `npm run train` blows up, the head of output usually contains the actual failure. Simpler than rolling truncation. |
 | `OutputPath` removed from `Record` | Was duplicated state. Path is deterministic — `store.outputPath(id)`. Storing it caused a lost-update race between `Save(rec)` and `WriteOutput(id)`. |
 | Stop = SIGKILL bash + restart | We tried SIGINT through the PTY — terminal line discipline on macOS dropped queued sentinel printfs and we never got a clean END event. Killing bash is simple, reliable, and produces a non-zero exit code. Trade-off: cwd/env/aliases reset on Stop. |
@@ -66,6 +68,9 @@ If you change any of these, you will probably hit the same bug we already fixed.
 | Login rate limiter is per-IP (`X-Forwarded-For` from Traefik) | Tests that all log in from `127.0.0.1` burn the same bucket | E2E tests set `X-Forwarded-For` per `t.Name()`; production deals with this naturally |
 | Bash PTY echo is on by default — every byte written into the master is echoed back through the slave | The echoed wrapper (`printf 'START…'`, the user command, `__alfred_ec=$?`, `printf 'END…'`) arrives **after** the START sentinel has flipped the parser to `stateInside`, so it leaks into the visible output as garbage like `__alfred_ec=$?` and `printf '\\x1eALFRED_END_…'` | `startLocked` writes `stty -echo\n` to the PTY immediately after `pty.Start`; that command's own echo lands in `stateOutside` and is discarded |
 | React `<StrictMode>` calls every state updater **twice** in dev to detect non-idempotent side effects | A naive `setMessages((m) => [...m, newOne])` on `done` events appends each completed command twice in the chat stream (server store is correct, only the UI doubles) | `useShell` mirrors `running` into a ref, reads the snapshot synchronously, and writes via an idempotent updater that no-ops if `msgs.some(m => m.id === snapshot.id)` |
+| `tmux send-keys -l` sends `\n` as a literal character, not Enter | bash never executes the wrapper-script line; sentinel never fires; UI hangs forever waiting for `Started` | `TmuxRunner` splits into `SendText` + `SendEnter`; covered by `TestExecRunner_SendTextThenEnter_ExecutesCommand` |
+| `tmux pipe-pane` writer holds `pty.stream` open across a naive rename, so output ends up in the unlinked inode | Subsequent commands' bytes silently lost; persisted output appears truncated | `StreamReader.TruncateConsumed` does stop-pipe → truncate → restart-pipe; covered by `TestStreamReader_TruncateAtIdleBoundary` |
+| A FIFO consumer disappearing during Go restart SIGPIPEs bash → tmux session dies → violates invariant #1 | Lost session + lost in-flight command on every Go restart | spec §3 chose regular-file + byte-offset over FIFO; covered by `TestStreamReader_ResumesFromPersistedOffset` and the E2E `TestE2E_GoRestart_DuringStreamingChunks` |
 
 ---
 
@@ -115,5 +120,9 @@ static/      (embed.FS of web/dist with SPA fallback)
 | Container build | `Dockerfile` + `scripts/build-image.sh` |
 | K8s manifests | `deploy/manifests/` |
 | Cluster prerequisites + ops runbook | `deploy/README.md` |
+| Add a new tmux operation | `internal/shell/tmuxio/runner.go` (also add to `FakeRunner`) |
+| Modify session lifecycle (create, close, reconcile) | `internal/session/manager.go` |
+| Change WS protocol | `internal/api/ws.go` + `web/src/lib/ws.ts` (keep in sync — type unions on both sides) |
+| Change the sidebar UI | `web/src/features/sessions/SessionsSidebar.tsx` |
 
 When in doubt: read the regression test for the area before reading the production code. Tests document the bugs the code is shaped against.
