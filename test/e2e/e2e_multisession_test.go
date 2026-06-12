@@ -47,3 +47,57 @@ func drainStartupMessages(t *testing.T, conn *websocket.Conn, until time.Duratio
 		_ = m
 	}
 }
+
+func TestE2E_GoRestart_SessionsSurvive(t *testing.T) {
+	tok, _ := login(t, testUser, testPassword)
+	sid := createSession(t, tok, "long")
+	conn := dialWS(t, tok)
+	drainStartupMessages(t, conn, time.Second)
+
+	// Kick off the long command and wait for started.
+	cmd := "sleep 8 && echo HELLO_AFTER_RESTART"
+	if err := conn.WriteJSON(map[string]any{"type": "run", "sessionID": sid, "command": cmd}); err != nil {
+		t.Fatalf("write run: %v", err)
+	}
+	waitForStarted(t, conn, sid, 5*time.Second)
+	_ = conn.Close()
+
+	// Restart alfred-server while bash continues running in tmux.
+	restartAlfredProcess(t)
+
+	// Re-login (process is new), reconnect, drain reattach.
+	tok2, _ := login(t, testUser, testPassword)
+	conn2 := dialWS(t, tok2)
+	// Wait for the EVENTUAL done event for our session.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = conn2.SetReadDeadline(deadline)
+		var m wsMsgMulti
+		if err := conn2.ReadJSON(&m); err != nil {
+			t.Fatalf("read after restart: %v", err)
+		}
+		if m.SessionID == sid && m.Type == "done" {
+			if m.ExitCode != 0 {
+				t.Fatalf("exit=%d", m.ExitCode)
+			}
+			return
+		}
+	}
+	t.Fatal("never saw done for the surviving command")
+}
+
+func waitForStarted(t *testing.T, conn *websocket.Conn, sessionID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(deadline)
+		var m wsMsgMulti
+		if err := conn.ReadJSON(&m); err != nil {
+			t.Fatalf("ws read: %v", err)
+		}
+		if m.SessionID == sessionID && m.Type == "started" {
+			return
+		}
+	}
+	t.Fatal("no started")
+}
