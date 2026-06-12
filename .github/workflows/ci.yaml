@@ -26,6 +26,10 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # tmux is required by internal/shell/tmuxio integration tests; without
+      # it those tests t.Skip and we lose multi-session test coverage.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
       # Embed the frontend dist into internal/static/dist/ so go:embed has
       # files to compile against and the static handler tests don't skip.
       - name: Build + embed frontend
