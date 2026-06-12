@@ -175,7 +175,7 @@ A few notes that come up:
 [Pod — single replica]
    Go binary:
      • Static React build (embedded via go:embed)
-     • HTTP API: /api/login, /api/commands/*, /healthz, /readyz
+     • HTTP API: /api/login, /api/sessions, /api/sessions/{sid}/commands/*, /healthz, /readyz
      • WebSocket: /ws (token in query string)
      • One persistent bash via PTY (sentinel-wrapped commands)
      • Per-command JSON metadata + .log output files

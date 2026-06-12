@@ -65,21 +65,37 @@ if [ "${CODE}" != "401" ]; then
 fi
 
 # Authenticated request without token → 401.
-CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/commands")
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/sessions")
 if [ "${CODE}" != "401" ]; then
-  echo "FAIL: unauth /api/commands code = ${CODE}, want 401"
+  echo "FAIL: unauth /api/sessions code = ${CODE}, want 401"
   exit 1
 fi
 
-# With token → 200 + empty array.
-BODY=$(curl -sf "${BASE}/api/commands" -H "Authorization: Bearer ${TOKEN}")
+# Sessions list with token → 200 + empty array (fresh data dir).
+BODY=$(curl -sf "${BASE}/api/sessions" -H "Authorization: Bearer ${TOKEN}")
 if ! echo "${BODY}" | grep -qE '^\[\]'; then
-  echo "FAIL: /api/commands empty body = '${BODY}'"
+  echo "FAIL: /api/sessions empty body = '${BODY}'"
   exit 1
 fi
 
-# 404 for unknown command id.
-CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/commands/nope" -H "Authorization: Bearer ${TOKEN}")
+# Create a session, then list its (empty) commands.
+SID=$(curl -sf -X POST "${BASE}/api/sessions" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"smoke"}' | grep -oE '"id":"[^"]+"' | head -1 | cut -d'"' -f4)
+if [ -z "${SID}" ]; then
+  echo "FAIL: create session returned no id"
+  exit 1
+fi
+
+BODY=$(curl -sf "${BASE}/api/sessions/${SID}/commands" -H "Authorization: Bearer ${TOKEN}")
+if ! echo "${BODY}" | grep -qE '^\[\]'; then
+  echo "FAIL: /api/sessions/${SID}/commands empty body = '${BODY}'"
+  exit 1
+fi
+
+# 404 for unknown command id within the session.
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/sessions/${SID}/commands/nope" -H "Authorization: Bearer ${TOKEN}")
 if [ "${CODE}" != "404" ]; then
   echo "FAIL: missing command code = ${CODE}, want 404"
   exit 1

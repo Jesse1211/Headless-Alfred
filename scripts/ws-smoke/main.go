@@ -76,6 +76,12 @@ func run() error {
 		return fmt.Errorf("login token mismatch: got %q want %q", gotTok, tok)
 	}
 
+	// Create a session via REST (multi-session protocol: WS run requires sessionID).
+	sid, err := createSession(base, gotTok, "ws-smoke")
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+
 	// Dial WS.
 	u, _ := url.Parse(strings.Replace(base, "http://", "ws://", 1) + "/ws")
 	u.RawQuery = "token=" + tok
@@ -85,17 +91,27 @@ func run() error {
 	}
 	defer conn.Close()
 
-	// First message must be "idle".
-	first, err := readMsg(conn, 3*time.Second)
-	if err != nil {
-		return fmt.Errorf("read idle: %w", err)
+	// On connect the server emits one idle/reattach frame per known session.
+	// Drain until we see an idle for our session (or timeout).
+	drainDeadline := time.Now().Add(3 * time.Second)
+	gotIdle := false
+	for time.Now().Before(drainDeadline) && !gotIdle {
+		m, err := readMsg(conn, 1*time.Second)
+		if err != nil {
+			break
+		}
+		if m.Type == "idle" && m.SessionID == sid {
+			gotIdle = true
+		}
 	}
-	if first.Type != "idle" {
-		return fmt.Errorf("first msg type = %q, want idle", first.Type)
+	if !gotIdle {
+		return fmt.Errorf("never saw idle for session %s", sid)
 	}
 
-	// Run a command.
-	if err := conn.WriteJSON(map[string]string{"type": "run", "command": "echo hello-ws-smoke"}); err != nil {
+	// Run a command, scoped to our session.
+	if err := conn.WriteJSON(map[string]string{
+		"type": "run", "sessionID": sid, "command": "echo hello-ws-smoke",
+	}); err != nil {
 		return fmt.Errorf("send run: %w", err)
 	}
 
@@ -137,13 +153,24 @@ func run() error {
 		return fmt.Errorf("body = %q, want contains hello-ws-smoke", body.String())
 	}
 
-	// Verify the record landed in the REST API too.
-	rec, err := getCommand(base, gotTok, cmdID)
-	if err != nil {
-		return fmt.Errorf("get command: %w", err)
+	// Verify the record landed in the REST API too (session-scoped path).
+	// Persistence runs in a separate goroutine (Manager.startPersister), so the
+	// "done" WS frame can arrive before the store transitions running→completed.
+	// Poll briefly.
+	var rec record
+	pollDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(pollDeadline) {
+		rec, err = getCommand(base, gotTok, sid, cmdID)
+		if err != nil {
+			return fmt.Errorf("get command: %w", err)
+		}
+		if rec.Status == "completed" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if rec.Status != "completed" {
-		return fmt.Errorf("rec.status = %q, want completed", rec.Status)
+		return fmt.Errorf("rec.status = %q, want completed (after poll)", rec.Status)
 	}
 	if !strings.Contains(rec.Output, "hello-ws-smoke") {
 		return fmt.Errorf("rec.output = %q, want contains hello-ws-smoke", rec.Output)
@@ -190,8 +217,8 @@ type record struct {
 	Output string `json:"output"`
 }
 
-func getCommand(base, tok, id string) (record, error) {
-	req, _ := http.NewRequest("GET", base+"/api/commands/"+id, nil)
+func getCommand(base, tok, sid, id string) (record, error) {
+	req, _ := http.NewRequest("GET", base+"/api/sessions/"+sid+"/commands/"+id, nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -208,13 +235,37 @@ func getCommand(base, tok, id string) (record, error) {
 	return r, nil
 }
 
+func createSession(base, tok, name string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"name": name})
+	req, _ := http.NewRequest("POST", base+"/api/sessions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return "", fmt.Errorf("status %d", resp.StatusCode)
+	}
+	var out struct{ ID string `json:"id"` }
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.ID == "" {
+		return "", fmt.Errorf("empty session id in response")
+	}
+	return out.ID, nil
+}
+
 type wsMsg struct {
-	Type     string `json:"type"`
-	CmdID    string `json:"cmdId,omitempty"`
-	Data     string `json:"data,omitempty"`
-	ExitCode int    `json:"exitCode,omitempty"`
-	Code     string `json:"code,omitempty"`
-	Message  string `json:"message,omitempty"`
+	Type      string `json:"type"`
+	SessionID string `json:"sessionID,omitempty"`
+	CmdID     string `json:"cmdId,omitempty"`
+	Data      string `json:"data,omitempty"`
+	ExitCode  int    `json:"exitCode,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 func readMsg(c *websocket.Conn, timeout time.Duration) (wsMsg, error) {
