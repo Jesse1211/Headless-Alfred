@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -102,6 +103,10 @@ func runInSession(t *testing.T, conn *websocket.Conn, sessionID, command string,
 // otherwise the wrapping `sh -c "..."` process would itself match (its cmdline
 // contains the literal "alfred-server") and get SIGKILLed mid-exec, returning
 // exit code 137 from kubectl.
+//
+// The local kubectl port-forward dies the moment alfred's :8080 listener is
+// reset (connection reset by peer → pf process exits). After the kill we
+// always re-launch port-forward and poll healthz over the new tunnel.
 func restartAlfredProcess(t *testing.T) {
 	t.Helper()
 	cmd := exec.Command("kubectl", "-n", "alfred", "exec", "deployment/alfred", "--",
@@ -110,7 +115,16 @@ func restartAlfredProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart alfred: %v output=%s", err, out)
 	}
-	// Wait for the new process to bind :8080 (via port-forward to 18080).
+
+	// The killed alfred resets its tcp listener; the local kubectl
+	// port-forward sees "connection reset by peer" and exits. We have to
+	// re-launch it AFTER the new alfred is actually listening on :8080
+	// inside the pod — starting pf earlier causes its first probe-attempt
+	// to land while pod:8080 still refuses connections, killing the pf
+	// process again. Strategy: poll pod:8080 from inside the pod via
+	// kubectl exec, then start pf, then poll healthz.
+	waitForAlfredListeningInPod(t, 30*time.Second)
+	relaunchPortForward(t)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(baseHTTP + "/healthz")
@@ -118,9 +132,56 @@ func restartAlfredProcess(t *testing.T) {
 			resp.Body.Close()
 			return
 		}
-		time.Sleep(200 * time.Millisecond)
+		// pf may have died on first probe; restart it and try again.
+		relaunchPortForward(t)
+		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatal("alfred-server did not become ready within 30s after restart")
+}
+
+// waitForAlfredListeningInPod polls inside the pod (via kubectl exec) for
+// alfred to be listening on :8080. Go's net.Listen("tcp", ":8080") opens
+// an IPv6 dual-stack socket, which shows up only in /proc/net/tcp6 — not
+// /proc/net/tcp. We scan both for a LISTEN row (state 0A) at port 0x1F90.
+func waitForAlfredListeningInPod(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	check := `awk '$2 ~ /:1F90$/ && $4 == "0A" {found=1} END {exit !found}' /proc/net/tcp /proc/net/tcp6`
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if exec.Command("kubectl", "-n", "alfred", "exec",
+			"deployment/alfred", "--", "sh", "-c", check,
+		).Run() == nil {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("alfred never started listening on :8080 inside pod")
+}
+
+// relaunchPortForward kills any stale `kubectl port-forward svc/alfred`
+// process and starts a fresh one in the background. Idempotent. Mirrors
+// what test/e2e/setup.sh does — we don't shell out to setup.sh because we
+// don't want its image-rebuild side effects on every test restart.
+func relaunchPortForward(t *testing.T) {
+	t.Helper()
+	_ = exec.Command("pkill", "-f", "kubectl.*port-forward.*svc/alfred").Run()
+	// pkill is async; give the OS a moment to release :18080.
+	time.Sleep(300 * time.Millisecond)
+	logFile, err := os.Create("/tmp/alfred-e2e-pf.log")
+	if err != nil {
+		t.Fatalf("open pf log: %v", err)
+	}
+	defer logFile.Close()
+	pf := exec.Command("kubectl", "-n", "alfred", "port-forward",
+		"svc/alfred", "18080:8080")
+	pf.Stdout = logFile
+	pf.Stderr = logFile
+	if err := pf.Start(); err != nil {
+		t.Fatalf("start port-forward: %v", err)
+	}
+	// Detach so the OS reaps it; we don't track the PID further. The next
+	// restart will pkill any stale instance.
+	_ = pf.Process.Release()
 }
 
 // killTmuxServerInPod terminates the tmux server inside the alfred pod,
