@@ -2,6 +2,45 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Status (2026-06-12)
+
+| Test | Result |
+|---|---|
+| `TestE2E_TwoSessions_FilesystemShared` | ✅ PASS |
+| `TestE2E_GoRestart_SessionsSurvive` | ✅ PASS (8s — sleep completes through restart) |
+| `TestE2E_GoRestart_DuringStreamingChunks` | ⚠️ Record completes but output is missing the chunks consumed by the old alfred before it died (post-restart chunks 52..100 are captured; pre-restart 1..51 are gone). See "Remaining gap" below. |
+
+### What the first E2E pass uncovered
+
+Six bugs that the unit tests couldn't see — three in the runtime/deployment, three in the backend layering. All fixed on `feature/multi-session-tmux`:
+
+1. **Dockerfile didn't install `tmux`** — multi-session arch needs it; alfred crashed at boot with "tmux: executable file not found".
+2. **Dockerfile didn't install `procps`** — `pkill` for the restart helper didn't exist in the image.
+3. **`ENTRYPOINT ["tini", "--", "alfred-server"]` killed the container when alfred died** → tmux server (running inside the container) died too, defeating "Go-restart sessions survive" entirely. Replaced with `tini -- /usr/local/bin/entrypoint.sh`, a tiny respawn loop. tmux daemonizes on first `new-session`, is reparented to PID 1 (tini), and lives through alfred respawns. (`deploy/entrypoint.sh`, commit `fe658ac`.)
+4. **Sentinel nonce was per-process random.** Each alfred boot generated a fresh nonce. After a Go-restart, sentinels emitted by the previous alfred (still being written by bash inside tmux) were unrecognized by the new alfred's parser → `EventEnd` never fired → record stuck at `running` forever. Fixed by persisting the nonce to `/data/nonce` on first boot and reading it back on subsequent boots. (`cmd/alfred-server/main.go`, commit `0da48d0`.)
+5. **Record persistence used to live inside the WS handler.** Any `Ended` event that fired with no active WS subscriber (the test closes its conn before killing alfred; users disconnect between submit and completion) was silently dropped. Moved persistence into `Manager.startPersister`, which subscribes to every shell at `Start` / `Resume` and never goes away. WS handler now only forwards the `done` message. (`internal/session/manager.go`, `internal/api/ws.go`, commit `0da48d0`.)
+6. **Parser started in `stateOutside` after Resume.** When the previous alfred died mid-command, the START sentinel was already past `pty.offset`; the new parser, in `stateOutside`, silently dropped body bytes until the END sentinel arrived. Added `Parser.ResumeInside(cmdID)` and call it from `TmuxShell.Resume` when there's a seed, so post-restart chunks are attributed to the seeded `currentCmd`. (`internal/shell/sentinel.go`, `internal/shell/tmux_shell.go`, commit `0da48d0`.)
+
+### What was wrong with the plan
+
+- `helpers_multisession.go` referenced `baseHTTP` / `testIP` which are defined in `e2e_test.go` (a `_test.go` file). Non-test files can't see test-only symbols. Renamed to `helpers_multisession_test.go`. (Commit `93fa3ea`.)
+- `drainStartupMessages` forced a read timeout to detect end-of-burst, but `gorilla/websocket` caches the read error on the conn — every subsequent `ReadJSON` returns the same i/o timeout regardless of `SetReadDeadline`. Removed it entirely; `runInSession` / `waitForStarted` naturally skip non-matching types (`idle`, `reattach`, `started`). (Commit `4930d8e`.)
+- `pkill -KILL -f alfred-server` matched its own wrapping shell (`sh -c "pkill ... alfred-server"`) and SIGKILLed it mid-exec, returning 137 from kubectl. Switched to `pgrep -x` matching by exact comm. (Commit `4930d8e`.)
+- The plan also asserted "tini supervises so the container stays alive" — false under the original Dockerfile. The corrected behavior (container survives because the entrypoint loop respawns alfred while tmux lives on under tini) is implemented now and the helper's doc comment was rewritten to match.
+
+### Remaining gap — `GoRestart_DuringStreamingChunks`
+
+The test now reaches `status=completed` quickly, but the on-disk output file contains only the bytes consumed by the **new** alfred after restart (e.g. `52..100\n`). The bytes consumed by the **old** alfred before it died (`1..51\n`) were accumulated in the in-memory `currentCmd.Buffer`; when alfred died the buffer was lost, and the new alfred's `StreamReader` resumes from `pty.offset` which has already advanced past them.
+
+To close this gap, one of:
+
+- **Save the START sentinel's stream offset.** When the parser sees `EventStart`, persist its file position to `commands/<cmdid>.start_offset`. In `TmuxShell.Resume`, if `seed != nil` and the file exists, `StreamReader.SetOffset` rolls the reader back to that position and the parser re-walks the whole command from `stateOutside`. ~20 lines. Cost: chunks emitted again after restart — invisible because no WS client is connected during the restart window.
+- **Persist the output buffer incrementally.** Append every `EventChunk` to `commands/<cmdid>.output` directly. On Resume, load the existing file into `currentCmd.Buffer` and keep appending. ~50 lines, more disk I/O, no chunk replay.
+
+Punted to a follow-up. The Plan 11 INDEX entry marks this scenario as "partial".
+
+---
+
 **Goal:** Land the three highest-value E2E scenarios from spec §9:
 1. `TwoSessions_FilesystemShared`
 2. `GoRestart_SessionsSurvive`

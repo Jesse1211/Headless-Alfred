@@ -19,7 +19,7 @@ stay small.
 | 8 | [useSessions hook](2026-06-11-multi-session-tmux-08-use-sessions.md) | replaces useShell; per-session state Map | `npm test` |
 | 9 | [SessionsSidebar](2026-06-11-multi-session-tmux-09-sidebar.md) | left sidebar, hover-×, double-click rename | `npm test` |
 | 10 | [Frontend integration](2026-06-11-multi-session-tmux-10-frontend-integration.md) | WorkspacePage, ConfirmDialog, lazy history | `npm test && npm run build` |
-| 11 | [E2E batch A](2026-06-11-multi-session-tmux-11-e2e-a.md) | 3 must-pass scenarios bundled (fs share + Go-restart + chunks) | `make e2e -run …` |
+| 11 | [E2E batch A](2026-06-11-multi-session-tmux-11-e2e-a.md) | 3 must-pass scenarios bundled (fs share + Go-restart + chunks). **Status: 2/3 PASS**; DuringStreamingChunks completes but pre-restart chunks are lost — see plan doc "Remaining gap". | `make e2e -run …` |
 | 12 | [E2E Reconcile_StoredButNotLive](2026-06-11-multi-session-tmux-12-e2e-reconcile.md) | pod-restart branch | `make e2e -run …` |
 | 13 | [E2E PtyStream_Truncation](2026-06-11-multi-session-tmux-13-e2e-truncation.md) | racy truncation no-bytes-lost | `make e2e -run …` |
 | 14 | [E2E CrossSession_NoOutputBleed](2026-06-11-multi-session-tmux-14-e2e-no-bleed.md) | sentinel routing isolation | `make e2e -run …` |
