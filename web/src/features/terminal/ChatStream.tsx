@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { CompletedMsg } from './useShell'
-import { RunningCmd } from './types'
+import { CompletedMsg, RunningCmd } from './types'
 
 interface Props {
   messages: CompletedMsg[]

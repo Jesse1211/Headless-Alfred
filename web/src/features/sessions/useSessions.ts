@@ -67,15 +67,137 @@ export function useSessions(token: string) {
     localStorage.setItem(STORAGE_KEY, id)
   }, [])
 
-  // WS plumbed in Task 5; this skeleton just opens a no-op socket.
   const socket = useMemo(
     () =>
       new ShellSocket({
         url: location.protocol === 'https:' ? `wss://${location.host}/ws` : `ws://${location.host}/ws`,
         getToken: () => tokenRef.current,
         onState: setConnState,
-        onMessage: (_m: ServerMsg) => {
-          // Task 5 fills this in.
+        onMessage: (m: ServerMsg) => {
+          switch (m.type) {
+            case 'idle':
+              setPerSession((prev) => {
+                const next = new Map(prev)
+                next.set(m.sessionID, { ...(next.get(m.sessionID) ?? emptyPerSessionState()), running: null })
+                return next
+              })
+              break
+            case 'reattach':
+              setPerSession((prev) => {
+                const next = new Map(prev)
+                next.set(m.sessionID, {
+                  ...(next.get(m.sessionID) ?? emptyPerSessionState()),
+                  running: {
+                    id: m.cmdId,
+                    command: m.command,
+                    startedAt: m.startedAt,
+                    output: b64decode(m.outputSoFar),
+                    truncatedLossWarned: false,
+                  },
+                })
+                return next
+              })
+              break
+            case 'started':
+              setPerSession((prev) => {
+                const next = new Map(prev)
+                next.set(m.sessionID, {
+                  ...(next.get(m.sessionID) ?? emptyPerSessionState()),
+                  running: {
+                    id: m.cmdId,
+                    command: m.command,
+                    startedAt: m.startedAt,
+                    output: '',
+                    truncatedLossWarned: false,
+                  },
+                })
+                return next
+              })
+              break
+            case 'chunk':
+              setPerSession((prev) => {
+                const cur = prev.get(m.sessionID)
+                if (!cur || !cur.running || cur.running.id !== m.cmdId) return prev
+                const next = new Map(prev)
+                next.set(m.sessionID, {
+                  ...cur,
+                  running: { ...cur.running, output: cur.running.output + b64decode(m.data) },
+                })
+                return next
+              })
+              break
+            case 'done':
+              setPerSession((prev) => {
+                const cur = prev.get(m.sessionID)
+                if (!cur || !cur.running || cur.running.id !== m.cmdId) return prev
+                if (cur.messages.some((mm) => mm.id === m.cmdId)) return prev
+                const completed: CompletedMsg = {
+                  id: m.cmdId,
+                  command: cur.running.command,
+                  output: cur.running.output,
+                  startedAt: cur.running.startedAt,
+                  finishedAt: m.finishedAt,
+                  exitCode: m.exitCode,
+                  status: m.exitCode === 0 ? 'completed' : 'completed',
+                  truncated: false,
+                }
+                const next = new Map(prev)
+                next.set(m.sessionID, {
+                  ...cur,
+                  running: null,
+                  messages: [...cur.messages, completed],
+                })
+                // Fire-and-forget: fetch the authoritative record.
+                const fetchCmd = getCommand(m.sessionID, m.cmdId)
+                if (!fetchCmd || typeof fetchCmd.then !== 'function') return next
+                fetchCmd.then((full) => {
+                  setPerSession((prev2) => {
+                    const cur2 = prev2.get(m.sessionID)
+                    if (!cur2) return prev2
+                    const idx = cur2.messages.findIndex((mm) => mm.id === full.id)
+                    if (idx < 0) return prev2
+                    const updated = [...cur2.messages]
+                    updated[idx] = {
+                      id: full.id,
+                      command: full.command,
+                      output: full.output,
+                      startedAt: full.started_at,
+                      finishedAt: full.finished_at,
+                      exitCode: full.exit_code,
+                      status: full.status,
+                      truncated: full.output_truncated,
+                    }
+                    const next2 = new Map(prev2)
+                    next2.set(m.sessionID, { ...cur2, messages: updated })
+                    return next2
+                  })
+                }).catch(() => {})
+                return next
+              })
+              break
+            case 'session_closed':
+              setSessions((prev) => prev.filter((s) => s.id !== m.sessionID))
+              setPerSession((prev) => {
+                const next = new Map(prev)
+                next.delete(m.sessionID)
+                return next
+              })
+              setSelectedSessionID((prev) => {
+                if (prev !== m.sessionID) return prev
+                const remaining = sessionsRef.current.filter((s) => s.id !== m.sessionID)
+                const next = remaining[0]?.id ?? null
+                if (next) localStorage.setItem(STORAGE_KEY, next)
+                else localStorage.removeItem(STORAGE_KEY)
+                return next
+              })
+              break
+            case 'session_renamed':
+              setSessions((prev) => prev.map((s) => (s.id === m.sessionID ? { ...s, name: m.name } : s)))
+              break
+            case 'error':
+              setLastError({ code: m.code, message: m.message })
+              break
+          }
         },
       }),
     [],
@@ -86,22 +208,62 @@ export function useSessions(token: string) {
     return () => socket.stop()
   }, [socket])
 
+  const submit = useCallback(
+    (command: string) => {
+      const sid = selectedSessionID
+      if (!sid) return
+      setLastError(null)
+      socket.send({ type: 'run', sessionID: sid, command })
+    },
+    [socket, selectedSessionID],
+  )
+
+  const stop = useCallback(
+    async (cmdID: string) => {
+      const sid = selectedSessionID
+      if (!sid) return
+      try { await apiStopCommand(sid, cmdID) } catch {}
+    },
+    [selectedSessionID],
+  )
+
+  const createSession = useCallback(async (name?: string) => {
+    try {
+      const created = await apiCreateSession(name)
+      setSessions((prev) => [...prev, created])
+      selectSession(created.id)
+      return created
+    } catch (e: any) {
+      setLastError({ code: e.code ?? 'create_failed', message: e.message ?? 'failed' })
+      return null
+    }
+  }, [selectSession])
+
+  const renameSession = useCallback(async (id: string, name: string) => {
+    try {
+      await apiRenameSession(id, name)
+      setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, name } : s)))
+    } catch (e: any) {
+      setLastError({ code: e.code ?? 'rename_failed', message: e.message ?? 'failed' })
+    }
+  }, [])
+
+  const closeSession = useCallback(async (id: string) => {
+    try {
+      await apiDeleteSession(id)
+      // Server will also broadcast session_closed, which removes from state.
+      // We don't optimistically remove here to keep cross-tab semantics simple.
+    } catch (e: any) {
+      setLastError({ code: e.code ?? 'close_failed', message: e.message ?? 'failed' })
+    }
+  }, [])
+
   const clearError = useCallback(() => setLastError(null), [])
 
   return {
-    connState,
-    sessions,
-    selectedSessionID,
-    selectSession,
-    perSession,
-    lastError,
-    clearError,
-    // Placeholders so consumers compile during Task 5:
-    submit: (_cmd: string) => {},
-    stop: (_cmdID: string) => {},
-    createSession: async (_name?: string) => null as Session | null,
-    renameSession: async (_id: string, _name: string) => {},
-    closeSession: async (_id: string) => {},
+    connState, sessions, selectedSessionID, selectSession, perSession,
+    submit, stop, createSession, renameSession, closeSession,
+    lastError, clearError,
   }
 }
 

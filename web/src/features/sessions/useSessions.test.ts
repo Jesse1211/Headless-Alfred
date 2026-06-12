@@ -71,3 +71,90 @@ describe('useSessions — initial load', () => {
     expect(localStorage.getItem('alfred_selected_session')).toBe('sess-B')
   })
 })
+
+function b64(s: string): string {
+  return Buffer.from(s, 'utf8').toString('base64')
+}
+
+describe('useSessions — WS events', () => {
+  it('idle for session sets perSession state to empty running', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() => _onMessage!({ type: 'idle', sessionID: 'sess-A' }))
+    const ps = result.current.perSession.get('sess-A')
+    expect(ps?.running).toBeNull()
+  })
+
+  it('started/chunk/done update running and append to messages', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() =>
+      _onMessage!({
+        type: 'started',
+        sessionID: 'sess-A',
+        cmdId: 'X',
+        command: 'ls',
+        startedAt: 'now',
+      }),
+    )
+    expect(result.current.perSession.get('sess-A')?.running?.id).toBe('X')
+
+    act(() => _onMessage!({ type: 'chunk', sessionID: 'sess-A', cmdId: 'X', data: b64('hello\n') }))
+    expect(result.current.perSession.get('sess-A')?.running?.output).toBe('hello\n')
+
+    act(() =>
+      _onMessage!({
+        type: 'done',
+        sessionID: 'sess-A',
+        cmdId: 'X',
+        exitCode: 0,
+        finishedAt: 'fin',
+      }),
+    )
+    const psA = result.current.perSession.get('sess-A')!
+    expect(psA.running).toBeNull()
+    expect(psA.messages.length).toBe(1)
+    expect(psA.messages[0].id).toBe('X')
+  })
+
+  it('chunks for one session do not disturb another sessions running state', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() => _onMessage!({ type: 'started', sessionID: 'sess-A', cmdId: 'A1', command: 'a', startedAt: 't' }))
+    act(() => _onMessage!({ type: 'started', sessionID: 'sess-B', cmdId: 'B1', command: 'b', startedAt: 't' }))
+    act(() => _onMessage!({ type: 'chunk', sessionID: 'sess-A', cmdId: 'A1', data: b64('A-data') }))
+    expect(result.current.perSession.get('sess-A')?.running?.output).toBe('A-data')
+    expect(result.current.perSession.get('sess-B')?.running?.output).toBe('')
+  })
+
+  it('session_closed removes session and clears perSession', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() => _onMessage!({ type: 'session_closed', sessionID: 'sess-A' }))
+    expect(result.current.sessions.find((s) => s.id === 'sess-A')).toBeUndefined()
+    expect(result.current.perSession.get('sess-A')).toBeUndefined()
+  })
+
+  it('session_closed reassigns selectedSessionID if it pointed at the closed one', async () => {
+    localStorage.setItem('alfred_selected_session', 'sess-A')
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.selectedSessionID).toBe('sess-A'))
+    act(() => _onMessage!({ type: 'session_closed', sessionID: 'sess-A' }))
+    expect(result.current.selectedSessionID).toBe('sess-B')
+  })
+
+  it('session_renamed updates the name', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() => _onMessage!({ type: 'session_renamed', sessionID: 'sess-A', name: 'training' }))
+    expect(result.current.sessions.find((s) => s.id === 'sess-A')?.name).toBe('training')
+  })
+
+  it('submit sends run with sessionID', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() => result.current.selectSession('sess-B'))
+    act(() => result.current.submit('ls -la'))
+    expect(sendMock).toHaveBeenCalledWith({ type: 'run', sessionID: 'sess-B', command: 'ls -la' })
+  })
+})
