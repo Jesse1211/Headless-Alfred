@@ -36,8 +36,10 @@ func CreateSessionHandler(m *session.Manager) http.Handler {
 		var req struct {
 			Name string `json:"name"`
 		}
-		// Empty body is OK (auto-name).
-		if r.ContentLength > 0 {
+		// Empty body is OK (auto-name). ContentLength != 0 covers both
+		// known-positive bodies and chunked transfers (ContentLength = -1)
+		// where a proxy or HTTP/2 stream has stripped the header.
+		if r.ContentLength != 0 {
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
 				writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON body")
 				return

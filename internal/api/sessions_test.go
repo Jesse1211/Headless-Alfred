@@ -209,6 +209,27 @@ func TestDeleteSession_NotFound(t *testing.T) {
 	}
 }
 
+func TestCreateSession_ChunkedTransferEncoding(t *testing.T) {
+	// Simulate a chunked request where Go's httptest sets ContentLength
+	// to -1. The handler must still parse the body, not auto-name.
+	m := newTestManager(t)
+	h := CreateSessionHandler(m)
+	body := `{"name":"training"}`
+	req := httptest.NewRequest("POST", "/api/sessions", bytes.NewBufferString(body))
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 201 {
+		t.Fatalf("code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var meta store.SessionMeta
+	_ = json.Unmarshal(rec.Body.Bytes(), &meta)
+	if meta.Name != "training" {
+		t.Fatalf("name = %q, want training (body was lost due to ContentLength=-1)", meta.Name)
+	}
+}
+
 // mustChi sets a chi URL param on the request context for handler tests
 // that bypass the router. If the context already has a chi route context,
 // the new key/val is appended to it (so chained calls accumulate params).
