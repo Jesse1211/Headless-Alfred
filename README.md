@@ -7,26 +7,22 @@ Close the laptop, the session keeps running. Come back, pick up where you left o
 Domain: **agent.jesseliu.me** (production). Single user. Personal tool.
 
 ```
-┌─────────────────────────────────────────────┐
-│ Headless Alfred                  ● Sign out │
-├─────────────────────────────────────────────┤
-│                                       [ ls ]│
-│  CONTEXT.md Makefile deploy go.mod          │
-│  Dockerfile README.md docs   go.sum         │
-│  exit 0                                     │
-│ ─────────────────────────────────────────── │
-│                                      [ pwd ]│
-│  /Users/jesseliu/Desktop/Chore/Headless-... │
-│  exit 0                                     │
-│ ─────────────────────────────────────────── │
-│                                    [ train ]│
-│  epoch 1/100 loss=0.83                      │
-│  epoch 2/100 loss=0.71                      │
-│  epoch 3/100 loss=0.62  ● live              │
-├─────────────────────────────────────────────┤
-│ (  Type a command…                     ↑  )│
-└─────────────────────────────────────────────┘
+┌──────────────────┬──────────────────────────────────────┐
+│ + New chat       │ training                  ● Sign out │
+├──────────────────┼──────────────────────────────────────┤
+│ ACTIVE SESSIONS  │                                [ ls ]│
+│  • Session 1     │   CONTEXT.md Makefile deploy go.mod  │
+│  • training ←sel │   exit 0                             │
+│  • db-debug      │ ──────────────────────────────────── │
+│                  │                              [ pwd ] │
+│                  │   /Users/jesseliu/Desktop/...        │
+│                  │   exit 0                             │
+│                  ├──────────────────────────────────────┤
+│                  │ ( Type a command…                ↑ ) │
+└──────────────────┴──────────────────────────────────────┘
 ```
+
+Up to 8 concurrent bash sessions, each independent (own cwd / env / aliases) but sharing the container's filesystem. `mkdir foo` in one session is visible from another. Sessions survive Go-process restarts (e.g. `kubectl rollout`); Pod restarts reset them but keep the per-command history on the PVC.
 
 ChatGPT-style chat stream: your command on the right, output on the
 left, a thin separator between each turn. Long history scrolls the whole
