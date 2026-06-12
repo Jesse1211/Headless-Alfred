@@ -3,7 +3,6 @@ import { ShellSocket, ServerMsg, ConnState } from '../../lib/ws'
 import {
   Session,
   listSessions,
-  listCommands,
   getCommand,
   createSession as apiCreateSession,
   renameSession as apiRenameSession,
