@@ -261,7 +261,7 @@ export function useSessions(token: string) {
   const clearError = useCallback(() => setLastError(null), [])
 
   return {
-    connState, sessions, selectedSessionID, selectSession, perSession,
+    connState, sessions, selectedSessionID, selectSession, perSession, setPerSession,
     submit, stop, createSession, renameSession, closeSession,
     lastError, clearError,
   }
