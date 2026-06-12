@@ -3,18 +3,15 @@ package shell
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
 )
 
-// TmuxShell is a Shell-compatible facade over one tmux session. It
-// reuses the existing Broadcaster / EventBroadcaster / Parser from
-// the shell package and adds tmux-specific lifecycle handling.
-//
-// One TmuxShell == one tmux session == one bash. The Manager (Plan 4)
-// owns N of these and maps sessionIDs to instances.
+// TmuxShell is a Shell-compatible facade over one tmux session.
 type TmuxShell struct {
 	cfg TmuxShellConfig
 
@@ -30,35 +27,26 @@ type TmuxShell struct {
 
 	stopReadLoop chan struct{}
 	stopPoller   chan struct{}
+
+	// Test hooks. killPID defaults to syscall.Kill SIGKILL; tests
+	// override it to avoid actually signalling foreign PIDs.
+	// pollerInterval defaults to 1 second; tests shorten it.
+	// OnUserExit is invoked once when the pane goes dead voluntarily
+	// (bash `exit` / Ctrl-D) — i.e., not as part of Stop+respawn.
+	killPID        func(pid int) error
+	pollerInterval time.Duration
+	OnUserExit     func()
 }
 
-// TmuxShellConfig is the immutable dependencies a TmuxShell needs.
-// Construction never starts goroutines; call Start() for that.
 type TmuxShellConfig struct {
-	// SessionID is the tmux session name AND the sessionID used by
-	// upstream code (store, API). Caller is responsible for uniqueness.
-	SessionID string
-
-	// Nonce is the random hex string sentinel printfs embed. One nonce
-	// per Go process; the Parser uses it to ignore stale sentinels
-	// that may already be in pty.stream from a prior process.
-	Nonce string
-
-	// Runner is the TmuxRunner the shell talks to. FakeRunner in tests,
-	// ExecRunner in production.
-	Runner tmuxio.TmuxRunner
-
-	// StreamPath is the regular file tmux pipe-pane appends to.
-	// OffsetPath is the byte-offset checkpoint. Both files are managed
-	// by the StreamReader internally.
+	SessionID  string
+	Nonce      string
+	Runner     tmuxio.TmuxRunner
 	StreamPath string
 	OffsetPath string
-
-	Logger *slog.Logger
+	Logger     *slog.Logger
 }
 
-// NewTmuxShell validates the config but does NOT contact tmux. Call
-// Start to actually create the session.
 func NewTmuxShell(cfg TmuxShellConfig) (*TmuxShell, error) {
 	if cfg.SessionID == "" {
 		return nil, fmt.Errorf("TmuxShellConfig.SessionID required")
@@ -76,27 +64,23 @@ func NewTmuxShell(cfg TmuxShellConfig) (*TmuxShell, error) {
 		return nil, fmt.Errorf("TmuxShellConfig.Logger required")
 	}
 	return &TmuxShell{
-		cfg:          cfg,
-		rawBcast:     NewBroadcaster(),
-		evtBcast:     NewEventBroadcaster(),
-		stopReadLoop: make(chan struct{}),
-		stopPoller:   make(chan struct{}),
+		cfg:            cfg,
+		rawBcast:       NewBroadcaster(),
+		evtBcast:       NewEventBroadcaster(),
+		stopReadLoop:   make(chan struct{}),
+		stopPoller:     make(chan struct{}),
+		killPID:        func(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) },
+		pollerInterval: 1 * time.Second,
 	}, nil
 }
 
-// pipeCmd returns the shell command pipe-pane runs to forward bytes
-// into our StreamPath. Kept as a method so tests can stub via
-// the StreamPath field.
 func (ts *TmuxShell) pipeCmd() string {
-	// Always append; never truncate via this path. Truncation is the
-	// StreamReader's responsibility (spec §4.4).
 	return "cat >> " + ts.cfg.StreamPath
 }
 
 // Start creates the tmux session, sets remain-on-exit, disables PTY
-// echo, starts the pipe, and (in Plan 3 Task 3) launches the
-// read-loop + poller goroutines. Idempotent: calling Start twice
-// returns an error on the second call.
+// echo, starts the pipe, and launches the read-loop + poller
+// goroutines. Idempotent: calling Start twice returns an error.
 //
 // On partial failure (any tmux call after NewSession errors), the
 // session may exist in a half-configured state. Callers MUST call
@@ -112,15 +96,12 @@ func (ts *TmuxShell) Start() error {
 	ts.mu.Unlock()
 
 	r := ts.cfg.Runner
-
 	if err := r.NewSession(ts.cfg.SessionID, "bash", "--noprofile", "--norc"); err != nil {
 		return fmt.Errorf("create tmux session: %w", err)
 	}
 	if err := r.SetOption(ts.cfg.SessionID, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit: %w", err)
 	}
-	// Disable PTY echo (CONTEXT.md "traps": echo lets the wrapper bytes
-	// leak into the visible output).
 	if err := r.SendText(ts.cfg.SessionID, "stty -echo"); err != nil {
 		return fmt.Errorf("send stty -echo text: %w", err)
 	}
@@ -131,9 +112,17 @@ func (ts *TmuxShell) Start() error {
 		return fmt.Errorf("start pipe-pane: %w", err)
 	}
 
-	// Wire parser → broadcaster. (StreamReader hookup lands in Task 3.)
 	ts.parser = NewParser(ts.cfg.Nonce)
 	ts.parser.OnEvent = ts.onParserEvent
+
+	reader, err := tmuxio.NewStreamReader(ts.cfg.StreamPath, ts.cfg.OffsetPath, parserSink{ts.parser})
+	if err != nil {
+		return fmt.Errorf("open stream reader: %w", err)
+	}
+	ts.reader = reader
+
+	go ts.readLoop()
+	go ts.poller()
 
 	ts.cfg.Logger.Info("tmux shell started",
 		"session", ts.cfg.SessionID,
@@ -142,8 +131,6 @@ func (ts *TmuxShell) Start() error {
 	return nil
 }
 
-// Close kills the tmux session and stops background goroutines.
-// Safe to call multiple times.
 func (ts *TmuxShell) Close() error {
 	ts.mu.Lock()
 	if ts.closed {
@@ -153,12 +140,11 @@ func (ts *TmuxShell) Close() error {
 	ts.closed = true
 	ts.mu.Unlock()
 
-	// Signal goroutines (no-op until Task 3 starts them).
 	close(ts.stopReadLoop)
 	close(ts.stopPoller)
 
-	if ts.reader != nil {
-		_ = ts.reader.Close()
+	if r := ts.readerSnap(); r != nil {
+		_ = r.Close()
 	}
 	if err := ts.cfg.Runner.KillSession(ts.cfg.SessionID); err != nil {
 		return fmt.Errorf("kill tmux session: %w", err)
@@ -166,9 +152,6 @@ func (ts *TmuxShell) Close() error {
 	return nil
 }
 
-// Write submits a user command for execution.
-// Returns ErrBusy if another command is already running,
-// ErrUnavailable if the shell is closed.
 func (ts *TmuxShell) Write(cmdID, userCmd string) error {
 	ts.mu.Lock()
 	if ts.closed || !ts.started {
@@ -182,7 +165,7 @@ func (ts *TmuxShell) Write(cmdID, userCmd string) error {
 	ts.currentCmd = &RunningCommand{
 		ID:        cmdID,
 		Command:   userCmd,
-		StartedAt: timeNowUTC(),
+		StartedAt: time.Now().UTC(),
 	}
 	ts.mu.Unlock()
 
@@ -202,7 +185,6 @@ func (ts *TmuxShell) Write(cmdID, userCmd string) error {
 	return nil
 }
 
-// CurrentCommand returns a copy of the running command state, or nil if idle.
 func (ts *TmuxShell) CurrentCommand() *RunningCommand {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -214,40 +196,80 @@ func (ts *TmuxShell) CurrentCommand() *RunningCommand {
 	return &cp
 }
 
-// SubscribeEvents returns a typed-event subscriber plus a cancel func.
-// Mirrors shell.Shell.SubscribeEvents so callers can swap one type for
-// the other without changing event-consumption code.
 func (ts *TmuxShell) SubscribeEvents(buffer int) (*EventSubscriber, func()) {
 	sub := ts.evtBcast.Subscribe(buffer)
 	return sub, sub.Close
 }
 
-// SubscribeRaw returns the raw byte stream subscriber. Used by the
-// disk-writer in api/ws.go (a future plan; defined here for parity).
 func (ts *TmuxShell) SubscribeRaw(buffer int) *Subscriber {
 	return ts.rawBcast.Subscribe(buffer)
 }
 
-// timeNowUTC is a var so tests can stub if needed; not stubbed in this plan.
-var timeNowUTC = func() time.Time { return time.Now().UTC() }
+// Stop runs the safe sequence from spec §4.5:
+//   1. mark stoppingForRespawn (suppresses the poller)
+//   2. fetch the pane PID and SIGKILL it
+//   3. respawn-pane with a fresh bash
+//   4. resend stty -echo
+//   5. unmark stoppingForRespawn
+func (ts *TmuxShell) Stop() {
+	ts.mu.Lock()
+	if ts.currentCmd == nil {
+		ts.mu.Unlock()
+		return
+	}
+	ts.stoppingForRespawn = true
+	ts.mu.Unlock()
+	// On the success path we want to clear stoppingForRespawn. On a
+	// partial-failure path (kill succeeded, respawn or stty failed),
+	// the bash is dead, the session is half-broken, and OnUserExit
+	// would be wrong — leave the flag set so the poller stays silent.
+	respawned := false
+	defer func() {
+		if !respawned {
+			return
+		}
+		ts.mu.Lock()
+		ts.stoppingForRespawn = false
+		ts.mu.Unlock()
+	}()
 
-// onParserEvent is the bridge from sentinel parser events to
-// CommandEvent broadcaster publishes.
+	pid, err := ts.cfg.Runner.PanePID(ts.cfg.SessionID)
+	if err != nil {
+		ts.cfg.Logger.Error("Stop: PanePID failed", "err", err)
+		return
+	}
+	if pid > 0 {
+		if err := ts.killPID(pid); err != nil {
+			ts.cfg.Logger.Error("Stop: kill bash failed", "pid", pid, "err", err)
+			return
+		}
+	}
+	if err := ts.cfg.Runner.RespawnPane(ts.cfg.SessionID, "bash", "--noprofile", "--norc"); err != nil {
+		ts.cfg.Logger.Error("Stop: RespawnPane failed", "err", err)
+		return
+	}
+	if err := ts.cfg.Runner.SendText(ts.cfg.SessionID, "stty -echo"); err != nil {
+		ts.cfg.Logger.Error("Stop: SendText stty -echo failed", "err", err)
+		return
+	}
+	if err := ts.cfg.Runner.SendEnter(ts.cfg.SessionID); err != nil {
+		ts.cfg.Logger.Error("Stop: SendEnter failed", "err", err)
+		return
+	}
+	respawned = true
+}
+
 func (ts *TmuxShell) onParserEvent(e ParseEvent) {
 	ts.mu.Lock()
 	switch e.Kind {
 	case EventStart:
-		// Fill in cwd, publish Started.
 		if ts.currentCmd != nil && ts.currentCmd.ID == e.CmdID {
 			ts.currentCmd.Cwd = e.Cwd
 		} else {
-			// Sentinel for a command we don't have a record of —
-			// synthesize one (e.g., parsing a residual sentinel from
-			// before a Go restart while currentCmd was already cleared).
 			ts.currentCmd = &RunningCommand{
 				ID:        e.CmdID,
 				Cwd:       e.Cwd,
-				StartedAt: timeNowUTC(),
+				StartedAt: time.Now().UTC(),
 			}
 		}
 		evt := CommandEvent{Started: &StartedEvent{
@@ -289,9 +311,111 @@ func (ts *TmuxShell) onParserEvent(e ParseEvent) {
 		ts.evtBcast.Publish(CommandEvent{Ended: &EndedEvent{
 			CmdID:      e.CmdID,
 			ExitCode:   e.ExitCode,
-			FinishedAt: timeNowUTC(),
+			FinishedAt: time.Now().UTC(),
 			Truncated:  truncated,
 			Output:     buffer,
 		}})
+		// Sentinel-aligned truncation (spec §4.4): only safe to fire
+		// HERE, between commands. The reader is guaranteed to be in
+		// stateOutside (parser just emitted EventEnd) so the StopPipe
+		// → truncate → StartPipe sequence cannot strand bytes from a
+		// running command.
+		ts.maybeTruncate()
+	}
+}
+
+// maybeTruncate fires StreamReader.TruncateConsumed if pty.stream
+// has grown past StreamTruncateThreshold. No-op if the file is
+// smaller, or if Resume has not finished wiring the reader yet.
+func (ts *TmuxShell) maybeTruncate() {
+	r := ts.readerSnap()
+	if r == nil {
+		return
+	}
+	info, err := os.Stat(ts.cfg.StreamPath)
+	if err != nil || info.Size() < StreamTruncateThreshold {
+		return
+	}
+	if err := r.TruncateConsumed(ts.cfg.Runner, ts.cfg.SessionID, ts.pipeCmd()); err != nil {
+		ts.cfg.Logger.Error("truncate pty.stream", "session", ts.cfg.SessionID, "err", err)
+	}
+}
+
+// StreamTruncateThreshold is the on-disk size of pty.stream above
+// which we fire the truncation dance at the next idle boundary.
+// Aligned with spec §4.4: 8 MiB. Plan 13's E2E hits this directly
+// with two 6-MiB outputs around a small middle command.
+const StreamTruncateThreshold = 8 * 1024 * 1024
+
+// parserSink adapts the shell.Parser (concrete type) to the
+// tmuxio.ParserSink interface so StreamReader can deliver bytes.
+type parserSink struct {
+	p *Parser
+}
+
+func (s parserSink) Feed(b []byte) {
+	s.p.Feed(b)
+}
+
+// readerSnap returns the current StreamReader under mu. Nil if Close
+// has already released it.
+func (ts *TmuxShell) readerSnap() *tmuxio.StreamReader {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.reader
+}
+
+func (ts *TmuxShell) readLoop() {
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ts.stopReadLoop:
+			return
+		case <-tick.C:
+			r := ts.readerSnap()
+			if r == nil {
+				continue
+			}
+			if _, err := r.ReadOnce(); err != nil {
+				ts.cfg.Logger.Error("stream read error", "session", ts.cfg.SessionID, "err", err)
+			}
+		}
+	}
+}
+
+// poller checks #{pane_dead} every pollerInterval. If the pane is
+// dead AND we're not in a Stop-respawn cycle, the user voluntarily
+// exited (Ctrl-D or `exit`) → fire OnUserExit exactly once.
+func (ts *TmuxShell) poller() {
+	tick := time.NewTicker(ts.pollerInterval)
+	defer tick.Stop()
+	fired := false
+	for {
+		select {
+		case <-ts.stopPoller:
+			return
+		case <-tick.C:
+			dead, err := ts.cfg.Runner.PaneDead(ts.cfg.SessionID)
+			if err != nil {
+				continue
+			}
+			if !dead {
+				continue
+			}
+			ts.mu.Lock()
+			stopping := ts.stoppingForRespawn
+			ts.mu.Unlock()
+			if stopping {
+				continue
+			}
+			if fired {
+				continue
+			}
+			fired = true
+			if ts.OnUserExit != nil {
+				ts.OnUserExit()
+			}
+		}
 	}
 }

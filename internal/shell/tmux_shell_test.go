@@ -203,3 +203,135 @@ func TestTmuxShell_ParserEvent_PublishesEnded(t *testing.T) {
 func contains(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
 }
+
+func TestTmuxShell_ReadLoop_DeliversBytesToParser(t *testing.T) {
+	fr := tmuxio.NewFakeRunner()
+	ts, dir := newTestTmuxShell(t, fr)
+	_ = ts.Start()
+	defer ts.Close()
+
+	sub, cancel := ts.SubscribeEvents(8)
+	defer cancel()
+
+	_ = ts.Write("cmd-Z", "ls")
+	// Write the bytes that bash would have produced through pipe-pane.
+	wrapper := Wrap("nonce-x", "cmd-Z", "ls")
+	_ = wrapper // for readability; we synthesise the response directly
+	streamFile := filepath.Join(dir, "pty.stream")
+	body := "\x1eALFRED_START_nonce-x cmd-Z /tmp\x1eX\nhello\n\x1eALFRED_END_nonce-x cmd-Z 0\x1eX\n"
+	f, _ := os.OpenFile(streamFile, os.O_WRONLY|os.O_APPEND, 0o600)
+	_, _ = f.Write([]byte(body))
+	_ = f.Close()
+
+	sawEnded := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !sawEnded {
+		select {
+		case ev := <-sub.C:
+			if ev.Ended != nil && ev.Ended.CmdID == "cmd-Z" {
+				sawEnded = true
+				if ev.Ended.ExitCode != 0 {
+					t.Fatalf("exit code = %d", ev.Ended.ExitCode)
+				}
+				if string(ev.Ended.Output) != "hello\n" {
+					t.Fatalf("output = %q", ev.Ended.Output)
+				}
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !sawEnded {
+		t.Fatalf("read loop never produced Ended event")
+	}
+}
+
+func TestTmuxShell_Stop_KillsPanePIDAndRespawns(t *testing.T) {
+	fr := tmuxio.NewFakeRunner()
+	ts, _ := newTestTmuxShell(t, fr)
+	_ = ts.Start()
+	defer ts.Close()
+
+	_ = ts.Write("cmd-S", "sleep 60")
+	// Replace ts.killPID so tests don't actually syscall.Kill anything.
+	killed := 0
+	ts.killPID = func(pid int) error {
+		killed++
+		return nil
+	}
+	ts.Stop()
+	// Stop should have:
+	//   1. PanePID(sess-1)
+	//   2. killPID(<pid>)
+	//   3. RespawnPane(sess-1, bash, --noprofile, --norc)
+	//   4. SendText stty -echo + SendEnter
+	calls := fr.Calls()
+	sawPanePID, sawRespawn := false, false
+	for _, c := range calls {
+		if c.Method == "PanePID" {
+			sawPanePID = true
+		}
+		if c.Method == "RespawnPane" {
+			sawRespawn = true
+		}
+	}
+	if !sawPanePID {
+		t.Fatalf("Stop did not call PanePID: %+v", calls)
+	}
+	if killed != 1 {
+		t.Fatalf("Stop should call killPID once, got %d", killed)
+	}
+	if !sawRespawn {
+		t.Fatalf("Stop did not RespawnPane: %+v", calls)
+	}
+}
+
+func TestTmuxShell_PaneDeadPoller_FiresExitCallback(t *testing.T) {
+	fr := tmuxio.NewFakeRunner()
+	ts, _ := newTestTmuxShell(t, fr)
+
+	called := make(chan struct{}, 1)
+	ts.OnUserExit = func() {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+	}
+	// Make the poller tick very fast for the test.
+	ts.pollerInterval = 20 * time.Millisecond
+
+	_ = ts.Start()
+	defer ts.Close()
+
+	// Mark pane dead; the poller should observe and fire the callback.
+	fr.MarkPaneDead("sess-1")
+
+	select {
+	case <-called:
+		// good
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("OnUserExit was not called within 500ms after pane death")
+	}
+}
+
+func TestTmuxShell_PaneDeadPoller_SuppressedDuringRespawn(t *testing.T) {
+	fr := tmuxio.NewFakeRunner()
+	ts, _ := newTestTmuxShell(t, fr)
+	ts.OnUserExit = func() {
+		t.Fatal("OnUserExit fired while stoppingForRespawn=true — should be suppressed")
+	}
+	ts.pollerInterval = 20 * time.Millisecond
+
+	_ = ts.Start()
+	defer ts.Close()
+
+	// Force the suppression flag on directly. (Stop also sets it, but
+	// Stop runs synchronously and we want to assert the poller observes
+	// the flag and skips. Setting it here makes the test deterministic.)
+	ts.mu.Lock()
+	ts.stoppingForRespawn = true
+	ts.mu.Unlock()
+	fr.MarkPaneDead("sess-1")
+
+	// Give the poller at least 5 ticks. None should fire OnUserExit.
+	time.Sleep(150 * time.Millisecond)
+}
