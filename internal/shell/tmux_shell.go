@@ -27,6 +27,7 @@ type TmuxShell struct {
 
 	stopReadLoop chan struct{}
 	stopPoller   chan struct{}
+	wg           sync.WaitGroup
 
 	// Test hooks. killPID defaults to syscall.Kill SIGKILL; tests
 	// override it to avoid actually signalling foreign PIDs.
@@ -121,6 +122,7 @@ func (ts *TmuxShell) Start() error {
 	}
 	ts.reader = reader
 
+	ts.wg.Add(2)
 	go ts.readLoop()
 	go ts.poller()
 
@@ -138,10 +140,19 @@ func (ts *TmuxShell) Close() error {
 		return nil
 	}
 	ts.closed = true
+	wasStarted := ts.started
 	ts.mu.Unlock()
 
 	close(ts.stopReadLoop)
 	close(ts.stopPoller)
+
+	// If Start launched the goroutines, wait for them to exit before
+	// closing the reader — otherwise readLoop's ReadOnce can race with
+	// reader.Close on the same *os.File. If Start was never called,
+	// wg.Wait is a no-op (counter is 0).
+	if wasStarted {
+		ts.wg.Wait()
+	}
 
 	if r := ts.readerSnap(); r != nil {
 		_ = r.Close()
@@ -366,6 +377,7 @@ func (ts *TmuxShell) readerSnap() *tmuxio.StreamReader {
 }
 
 func (ts *TmuxShell) readLoop() {
+	defer ts.wg.Done()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -388,6 +400,7 @@ func (ts *TmuxShell) readLoop() {
 // dead AND we're not in a Stop-respawn cycle, the user voluntarily
 // exited (Ctrl-D or `exit`) → fire OnUserExit exactly once.
 func (ts *TmuxShell) poller() {
+	defer ts.wg.Done()
 	tick := time.NewTicker(ts.pollerInterval)
 	defer tick.Stop()
 	fired := false
