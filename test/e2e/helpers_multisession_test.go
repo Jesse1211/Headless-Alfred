@@ -36,6 +36,9 @@ type wsMsgMulti struct {
 }
 
 // createSession POSTs /api/sessions and returns the new session id.
+// Each created session registers a t.Cleanup that DELETEs it after the
+// test finishes, so back-to-back tests don't accumulate sessions and
+// trip the §6.1 session_limit on later tests.
 func createSession(t *testing.T, token, name string) string {
 	t.Helper()
 	body := []byte("{}")
@@ -60,7 +63,21 @@ func createSession(t *testing.T, token, name string) string {
 		ID string `json:"id"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&out)
+	t.Cleanup(func() { deleteSession(token, out.ID) })
 	return out.ID
+}
+
+// deleteSession best-effort cleanup. Errors are silenced; if a test left
+// the session in a state where DELETE fails, the next test's TestMain or
+// TestE2E_SessionLimit's prelude will hit the limit and surface the leak.
+func deleteSession(token, sid string) {
+	req, _ := http.NewRequest("DELETE", baseHTTP+"/api/sessions/"+sid, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
 }
 
 // runInSession sends one command and waits for done; returns full output.

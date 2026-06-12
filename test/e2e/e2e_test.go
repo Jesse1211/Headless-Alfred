@@ -18,6 +18,49 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// TestMain wipes any leftover sessions from a previous run before the
+// suite starts. Without this, leftover sessions from a manually-aborted
+// run (or the previous CI invocation in a reused cluster) consume slots
+// and push TestE2E_SessionLimit or any later createSession over the
+// §6.1 cap.
+func TestMain(m *testing.M) {
+	wipeAllSessions()
+	os.Exit(m.Run())
+}
+
+func wipeAllSessions() {
+	body, _ := json.Marshal(map[string]string{"user": "admin", "password": "e2etest"})
+	resp, err := http.Post(baseHTTP+"/api/login", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var out struct{ Token string }
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if out.Token == "" {
+		return
+	}
+	req, _ := http.NewRequest("GET", baseHTTP+"/api/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+out.Token)
+	listResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer listResp.Body.Close()
+	var sessions []struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(listResp.Body).Decode(&sessions)
+	for _, s := range sessions {
+		dreq, _ := http.NewRequest("DELETE", baseHTTP+"/api/sessions/"+s.ID, nil)
+		dreq.Header.Set("Authorization", "Bearer "+out.Token)
+		dr, err := http.DefaultClient.Do(dreq)
+		if err == nil {
+			dr.Body.Close()
+		}
+	}
+}
+
 // --- env / config ---------------------------------------------------------
 
 func envOr(k, def string) string {

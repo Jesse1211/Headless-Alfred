@@ -14,10 +14,12 @@ import (
 // TestE2E_SessionLimit creates 8 sessions and verifies the 9th POST is
 // rejected with HTTP 422 and {"code":"session_limit"}.
 //
-// Note: this test reaches the limit by creating sessions, so it should run
-// against a fresh cluster (or be the first test in a run). The teardown of
-// previous tests does not necessarily delete every session.
+// Wipes pre-existing sessions first — other tests in the same run register
+// t.Cleanup deletes for theirs, but anything migrated-from-legacy
+// ("Imported") or left over from a manually-aborted run would otherwise
+// push us past the 8 cap before we even start.
 func TestE2E_SessionLimit(t *testing.T) {
+	wipeAllSessions()
 	tok, _ := login(t, testUser, testPassword)
 	for i := 0; i < 8; i++ {
 		_ = createSession(t, tok, "")
