@@ -55,13 +55,26 @@ func main() {
 	socketPath := filepath.Join(dataDir, "alfred-tmux.sock")
 	runner := tmuxio.NewExecRunner(socketPath)
 
-	// Per-process nonce: shared by all TmuxShells the Manager creates.
-	var n [8]byte
-	if _, err := rand.Read(n[:]); err != nil {
-		logger.Error("nonce", "err", err)
-		os.Exit(2)
+	// Sentinel nonce, persisted to disk so it survives alfred restarts.
+	// In-flight sentinels emitted by a previous alfred would otherwise be
+	// unrecognized by the new alfred's parser (Go-restart resume would never
+	// see EventEnd, leaving the on-disk record stuck at "running" forever).
+	noncePath := filepath.Join(dataDir, "nonce")
+	var nonce string
+	if b, err := os.ReadFile(noncePath); err == nil && len(b) > 0 {
+		nonce = string(b)
+	} else {
+		var n [8]byte
+		if _, err := rand.Read(n[:]); err != nil {
+			logger.Error("nonce", "err", err)
+			os.Exit(2)
+		}
+		nonce = hex.EncodeToString(n[:])
+		if err := os.WriteFile(noncePath, []byte(nonce), 0600); err != nil {
+			logger.Error("persist nonce", "err", err)
+			os.Exit(2)
+		}
 	}
-	nonce := hex.EncodeToString(n[:])
 
 	mgr, err := session.NewManager(session.Config{
 		DataDir:      dataDir,

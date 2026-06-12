@@ -456,6 +456,11 @@ func (ts *TmuxShell) Resume(seed *RunningCommand) error {
 
 	ts.parser = NewParser(ts.cfg.Nonce)
 	ts.parser.OnEvent = ts.onParserEvent
+	if seed != nil {
+		// Seed parser into stateInside so body bytes past pty.offset are
+		// attributed to the seeded cmdID until END.
+		ts.parser.ResumeInside(seed.ID)
+	}
 
 	reader, err := tmuxio.NewStreamReader(ts.cfg.StreamPath, ts.cfg.OffsetPath, parserSink{p: ts.parser, rawBc: ts.rawBcast})
 	if err != nil {

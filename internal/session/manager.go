@@ -275,7 +275,47 @@ func (m *Manager) startShell(sessionID string) error {
 	m.mu.Lock()
 	m.shells[sessionID] = ts
 	m.mu.Unlock()
+	m.startPersister(sessionID, ts)
 	return nil
+}
+
+// startPersister subscribes to the shell's events and persists Ended events
+// to disk. Runs for the lifetime of the shell — independent of any WS client
+// — so command records get marked completed even when no one is connected
+// (user disconnected before completion, or alfred restarted and a new alfred
+// is consuming the pty.stream tail with no client yet attached).
+//
+// The shell's broadcaster closes the subscriber's channel when the shell is
+// closed; the goroutine exits naturally at that point.
+func (m *Manager) startPersister(sessionID string, sh Shell) {
+	sub, _ := sh.SubscribeEvents(64)
+	go func() {
+		for ev := range sub.C {
+			if ev.Ended == nil {
+				continue
+			}
+			e := ev.Ended
+			if err := m.cfg.Store.WriteOutput(sessionID, e.CmdID, e.Output); err != nil {
+				m.cfg.Logger.Warn("persist output", "session", sessionID, "cmd", e.CmdID, "err", err)
+			}
+			rec, err := m.cfg.Store.Get(sessionID, e.CmdID)
+			if err != nil {
+				m.cfg.Logger.Warn("persist get", "session", sessionID, "cmd", e.CmdID, "err", err)
+				continue
+			}
+			ec := e.ExitCode
+			fa := e.FinishedAt
+			rec.ExitCode = &ec
+			rec.FinishedAt = &fa
+			rec.OutputTruncated = e.Truncated
+			if rec.Status == store.StatusRunning {
+				rec.Status = store.StatusCompleted
+			}
+			if err := m.cfg.Store.Save(sessionID, rec); err != nil {
+				m.cfg.Logger.Warn("persist save", "session", sessionID, "cmd", e.CmdID, "err", err)
+			}
+		}
+	}()
 }
 
 // persistMetas writes m.metas atomically to sessions.json.
@@ -459,6 +499,7 @@ func (m *Manager) resumeShell(sessionID string) error {
 	m.mu.Lock()
 	m.shells[sessionID] = ts
 	m.mu.Unlock()
+	m.startPersister(sessionID, ts)
 	return nil
 }
 

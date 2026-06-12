@@ -186,7 +186,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 			if !ok {
 				return
 			}
-			writeEventToClient(ev, write, m)
+			writeEventToClient(ev, write)
 		case sid := <-closedCh:
 			_ = write(outMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
@@ -258,7 +258,7 @@ func handleInbound(msg inMsg, m *session.Manager, write func(outMsg) error) {
 	}
 }
 
-func writeEventToClient(ev FanInEvent, write func(outMsg) error, m *session.Manager) {
+func writeEventToClient(ev FanInEvent, write func(outMsg) error) {
 	switch {
 	case ev.Event.Started != nil:
 		s := ev.Event.Started
@@ -278,17 +278,10 @@ func writeEventToClient(ev FanInEvent, write func(outMsg) error, m *session.Mana
 			Data:      base64.StdEncoding.EncodeToString(c.Bytes),
 		})
 	case ev.Event.Ended != nil:
+		// Persistence (WriteOutput + Record status/exit_code/finished_at) lives
+		// in Manager.startPersister; that runs even with no WS client. Here we
+		// only forward the "done" message to the connected client.
 		e := ev.Event.Ended
-		_ = m.StoreFor().WriteOutput(ev.SessionID, e.CmdID, e.Output)
-		if rec, err := m.StoreFor().Get(ev.SessionID, e.CmdID); err == nil {
-			rec.ExitCode = ptrInt(e.ExitCode)
-			rec.FinishedAt = ptrTime(e.FinishedAt)
-			rec.OutputTruncated = e.Truncated
-			if rec.Status == store.StatusRunning {
-				rec.Status = store.StatusCompleted
-			}
-			_ = m.StoreFor().Save(ev.SessionID, rec)
-		}
 		_ = write(outMsg{
 			Type:       "done",
 			SessionID:  ev.SessionID,
@@ -298,8 +291,5 @@ func writeEventToClient(ev FanInEvent, write func(outMsg) error, m *session.Mana
 		})
 	}
 }
-
-func ptrInt(v int) *int              { return &v }
-func ptrTime(t time.Time) *time.Time { return &t }
 
 var _ = context.Background

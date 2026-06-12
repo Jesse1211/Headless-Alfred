@@ -68,6 +68,17 @@ func NewParser(nonce string) *Parser {
 	return &Parser{nonce: nonce, state: stateOutside}
 }
 
+// ResumeInside seeds the parser so it treats bytes fed before any
+// new START sentinel as body of the given cmdID. Used by TmuxShell.Resume
+// when a previous alfred died mid-command: the START sentinel was already
+// consumed (past pty.offset), the new reader resumes mid-stream, and
+// without this seed the parser would silently drop body bytes in
+// stateOutside until the END sentinel arrives.
+func (p *Parser) ResumeInside(cmdID string) {
+	p.cur = activeCmd{id: cmdID}
+	p.state = stateInside
+}
+
 // Feed appends bytes from the PTY and processes any complete sentinel lines.
 // Bytes that are part of a sentinel are consumed; bytes belonging to the
 // current command body are forwarded via OnEvent(EventChunk).
