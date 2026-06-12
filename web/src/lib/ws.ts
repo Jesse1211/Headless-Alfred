@@ -4,16 +4,18 @@
 // exponential backoff capped at 30 s.
 
 export type ServerMsg =
-  | { type: 'reattach'; cmdId: string; command: string; startedAt: string; outputSoFar: string }
-  | { type: 'idle' }
-  | { type: 'started'; cmdId: string; command: string; startedAt: string }
-  | { type: 'chunk'; cmdId: string; data: string }
-  | { type: 'done'; cmdId: string; exitCode: number; finishedAt: string }
-  | { type: 'error'; code: string; message: string }
+  | { type: 'reattach'; sessionID: string; cmdId: string; command: string; startedAt: string; outputSoFar: string }
+  | { type: 'idle'; sessionID: string }
+  | { type: 'started'; sessionID: string; cmdId: string; command: string; startedAt: string }
+  | { type: 'chunk'; sessionID: string; cmdId: string; data: string }
+  | { type: 'done'; sessionID: string; cmdId: string; exitCode: number; finishedAt: string }
+  | { type: 'session_closed'; sessionID: string }
+  | { type: 'session_renamed'; sessionID: string; name: string }
+  | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
 
 export type ClientMsg =
-  | { type: 'run'; command: string }
+  | { type: 'run'; sessionID: string; command: string }
   | { type: 'ping' }
 
 export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed'
