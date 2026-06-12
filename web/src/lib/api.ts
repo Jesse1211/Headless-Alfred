@@ -72,19 +72,60 @@ export interface CommandFull extends CommandSummary {
   output: string
 }
 
-export async function listCommands(opts: { limit?: number; before?: string } = {}): Promise<CommandSummary[]> {
+export interface Session {
+  id: string
+  name: string
+  created_at: string
+}
+
+export async function listSessions(): Promise<Session[]> {
+  const res = await request('/api/sessions')
+  return res.json()
+}
+
+export async function createSession(name?: string): Promise<Session> {
+  const body = name && name.trim() ? JSON.stringify({ name }) : undefined
+  const res = await request('/api/sessions', {
+    method: 'POST',
+    body,
+  })
+  return res.json()
+}
+
+export async function renameSession(id: string, name: string): Promise<void> {
+  await request(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export async function listCommands(
+  sessionID: string,
+  opts: { limit?: number; before?: string } = {},
+): Promise<CommandSummary[]> {
   const qs = new URLSearchParams()
   if (opts.limit != null) qs.set('limit', String(opts.limit))
   if (opts.before) qs.set('before', opts.before)
-  const res = await request(`/api/commands${qs.size ? '?' + qs.toString() : ''}`)
+  const res = await request(
+    `/api/sessions/${encodeURIComponent(sessionID)}/commands${qs.size ? '?' + qs.toString() : ''}`,
+  )
   return res.json()
 }
 
-export async function getCommand(id: string): Promise<CommandFull> {
-  const res = await request(`/api/commands/${encodeURIComponent(id)}`)
+export async function getCommand(sessionID: string, id: string): Promise<CommandFull> {
+  const res = await request(
+    `/api/sessions/${encodeURIComponent(sessionID)}/commands/${encodeURIComponent(id)}`,
+  )
   return res.json()
 }
 
-export async function stopCommand(id: string): Promise<void> {
-  await request(`/api/commands/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+export async function stopCommand(sessionID: string, id: string): Promise<void> {
+  await request(
+    `/api/sessions/${encodeURIComponent(sessionID)}/commands/${encodeURIComponent(id)}/stop`,
+    { method: 'POST' },
+  )
 }
