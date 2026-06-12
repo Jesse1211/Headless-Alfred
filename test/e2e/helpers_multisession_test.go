@@ -138,6 +138,19 @@ func killTmuxServerInPod(t *testing.T) {
 	}
 }
 
+// execInPod runs `sh -c "<script>"` inside the alfred pod and returns
+// stdout. Used to inspect bash process state and filesystem during E2E.
+func execInPod(t *testing.T, script string) string {
+	t.Helper()
+	cmd := exec.Command("kubectl", "-n", "alfred", "exec", "deployment/alfred", "--",
+		"sh", "-c", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("execInPod %q: %v output=%s", script, err, out)
+	}
+	return string(out)
+}
+
 // drainStartupMessages reads any idle/reattach frames the server emits on
 // connect (one per known session) and discards them. Returns when the read
 // deadline elapses with no new message.
