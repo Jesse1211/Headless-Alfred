@@ -7,9 +7,7 @@ import (
 
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/session"
-	"github.com/jesseliu/headless-alfred/internal/shell"
 	"github.com/jesseliu/headless-alfred/internal/static"
-	"github.com/jesseliu/headless-alfred/internal/store"
 )
 
 // Deps is the runtime dependency bundle. Plan 7 fills these in main.go.
@@ -18,12 +16,6 @@ type Deps struct {
 	Auth        auth.Auth
 	RateLimiter *auth.RateLimiter
 	Ready       func() bool
-
-	// Shell and Store are retained so the legacy WS handler still
-	// compiles in this plan. Plan 6 rewrites ws.go to use Manager
-	// and drops these fields.
-	Shell *shell.Shell
-	Store *store.Store
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -34,7 +26,7 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/healthz", HealthzHandler().ServeHTTP)
 	r.Get("/readyz", ReadyzHandler(d.Ready).ServeHTTP)
 	r.Post("/api/login", LoginHandler(d.Auth, d.RateLimiter).ServeHTTP)
-	r.Get("/ws", WSHandler(d.Shell, d.Store, d.Auth).ServeHTTP)
+	r.Get("/ws", WSHandler(d.Manager, d.Auth).ServeHTTP)
 
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(d.Auth))
