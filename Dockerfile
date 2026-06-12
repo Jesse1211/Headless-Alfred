@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # because the shell package spawns bash inside the container.
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
- && apt-get install -y --no-install-recommends bash ca-certificates tini \
+ && apt-get install -y --no-install-recommends bash ca-certificates procps tini tmux \
  && rm -rf /var/lib/apt/lists/* \
  && useradd -m -u 1000 -s /bin/bash alfred \
  && mkdir -p /data \
@@ -48,11 +48,15 @@ RUN apt-get update \
 USER 1000
 WORKDIR /home/alfred
 COPY --from=go-builder --chown=alfred:alfred /out/alfred-server /usr/local/bin/alfred-server
+COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 ENV ALFRED_ADDR=":8080"
 ENV ALFRED_DATA_DIR="/data"
 EXPOSE 8080
 VOLUME ["/data"]
 
-# tini supervises the Go process so SIGTERM is forwarded cleanly.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/alfred-server"]
+# tini supervises the entrypoint shell; the shell runs alfred-server in a
+# respawn loop so that killing alfred-server does NOT exit the container.
+# tmux server (started by alfred) daemonizes and is reparented to tini,
+# so it survives across alfred-server respawns.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
