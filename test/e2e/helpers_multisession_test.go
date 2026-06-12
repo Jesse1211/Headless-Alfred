@@ -94,13 +94,18 @@ func runInSession(t *testing.T, conn *websocket.Conn, sessionID, command string,
 }
 
 // restartAlfredProcess SIGKILLs alfred-server inside the pod and waits for the
-// container to come back online. Whether the same container respawns alfred or
-// kubelet restarts the whole container is an implementation detail of the
-// runtime; the test only relies on /healthz being reachable again afterwards.
+// entrypoint respawn loop to bring it back. The tmux server (daemonized,
+// reparented to PID 1 = tini) survives the alfred restart, so in-flight
+// commands keep running and the new alfred can reattach via Manager.Reconcile.
+//
+// We match alfred-server by exact comm name via pgrep -x (NOT pkill -f),
+// otherwise the wrapping `sh -c "..."` process would itself match (its cmdline
+// contains the literal "alfred-server") and get SIGKILLed mid-exec, returning
+// exit code 137 from kubectl.
 func restartAlfredProcess(t *testing.T) {
 	t.Helper()
 	cmd := exec.Command("kubectl", "-n", "alfred", "exec", "deployment/alfred", "--",
-		"sh", "-c", "pkill -KILL -f alfred-server || true")
+		"sh", "-c", `p=$(pgrep -x alfred-server); [ -n "$p" ] && kill -KILL $p; true`)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("restart alfred: %v output=%s", err, out)

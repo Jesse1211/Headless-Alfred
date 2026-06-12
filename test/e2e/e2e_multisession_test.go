@@ -22,7 +22,6 @@ func TestE2E_TwoSessions_FilesystemShared(t *testing.T) {
 	b := createSession(t, tok, "B")
 
 	conn := dialWS(t, tok)
-	drainStartupMessages(t, conn, time.Second)
 
 	dir := "/tmp/alfred-fs-test-" + a[:6]
 	code, _ := runInSession(t, conn, a, "mkdir -p "+dir+" && touch "+dir+"/shared && echo done", 5*time.Second)
@@ -38,24 +37,10 @@ func TestE2E_TwoSessions_FilesystemShared(t *testing.T) {
 	}
 }
 
-func drainStartupMessages(t *testing.T, conn *websocket.Conn, until time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(until)
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(deadline)
-		var m wsMsgMulti
-		if err := conn.ReadJSON(&m); err != nil {
-			return
-		}
-		_ = m
-	}
-}
-
 func TestE2E_GoRestart_SessionsSurvive(t *testing.T) {
 	tok, _ := login(t, testUser, testPassword)
 	sid := createSession(t, tok, "long")
 	conn := dialWS(t, tok)
-	drainStartupMessages(t, conn, time.Second)
 
 	// Kick off the long command and wait for started.
 	cmd := "sleep 8 && echo HELLO_AFTER_RESTART"
@@ -109,7 +94,6 @@ func TestE2E_GoRestart_DuringStreamingChunks(t *testing.T) {
 	tok, _ := login(t, testUser, testPassword)
 	sid := createSession(t, tok, "chunks")
 	conn := dialWS(t, tok)
-	drainStartupMessages(t, conn, time.Second)
 
 	cmd := `for i in $(seq 1 100); do echo $i; sleep 0.05; done`
 	if err := conn.WriteJSON(map[string]any{"type": "run", "sessionID": sid, "command": cmd}); err != nil {
