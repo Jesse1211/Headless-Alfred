@@ -420,6 +420,61 @@ func (ts *TmuxShell) readLoop() {
 	}
 }
 
+// Resume attaches to an already-running tmux session. The tmux
+// session is assumed to have been set up by a previous process:
+//
+//	remain-on-exit on, PTY echo off, pipe-pane writing to StreamPath.
+//
+// All Resume does is wire the parser, open the StreamReader, and
+// launch the read+poller goroutines.
+//
+// If seed is non-nil it is installed as the current command BEFORE
+// the read loop starts. Required for Go-restart resume: the START
+// sentinel for the in-flight command is already past pty.offset
+// (parsed by the previous process), so without a seed the parser
+// will only see chunks/end events for a "current command" it never
+// knew started — they get dropped and the user sees an empty
+// session. Manager.Reconcile passes the seed when it finds a
+// status=running record in the store.
+func (ts *TmuxShell) Resume(seed *RunningCommand) error {
+	ts.mu.Lock()
+	if ts.started {
+		ts.mu.Unlock()
+		return fmt.Errorf("TmuxShell %s already started", ts.cfg.SessionID)
+	}
+	ts.started = true
+	if seed != nil {
+		ts.currentCmd = &RunningCommand{
+			ID:        seed.ID,
+			Command:   seed.Command,
+			Cwd:       seed.Cwd,
+			StartedAt: seed.StartedAt,
+			Buffer:    append([]byte{}, seed.Buffer...),
+		}
+	}
+	ts.mu.Unlock()
+
+	ts.parser = NewParser(ts.cfg.Nonce)
+	ts.parser.OnEvent = ts.onParserEvent
+
+	reader, err := tmuxio.NewStreamReader(ts.cfg.StreamPath, ts.cfg.OffsetPath, parserSink{p: ts.parser, rawBc: ts.rawBcast})
+	if err != nil {
+		return fmt.Errorf("open stream reader: %w", err)
+	}
+	ts.reader = reader
+
+	ts.wg.Add(2)
+	go ts.readLoop()
+	go ts.poller()
+
+	ts.cfg.Logger.Info("tmux shell resumed",
+		"session", ts.cfg.SessionID,
+		"resume_offset", reader.Offset(),
+		"seeded_current_cmd", seed != nil,
+	)
+	return nil
+}
+
 // poller checks #{pane_dead} every pollerInterval. If the pane is
 // dead AND we're not in a Stop-respawn cycle, the user voluntarily
 // exited (Ctrl-D or `exit`) → fire OnUserExit exactly once.

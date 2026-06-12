@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -302,5 +303,128 @@ func TestManager_AddCloseListener_RemoveStopsCallbacks(t *testing.T) {
 	_ = m.Close(meta2.ID)
 	if called != 1 {
 		t.Fatalf("listener fired after remove(): called=%d", called)
+	}
+}
+
+func TestManager_Reconcile_StoredIntersectLive_ResumesWithoutRecreate(t *testing.T) {
+	m, fr := newTestManager(t)
+
+	// Pre-populate sessions.json + claim a live tmux session under the
+	// same id (simulates "Go restart while tmux kept running").
+	id := "01HXAA"
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	_ = m.cfg.SessionsFile.Save([]store.SessionMeta{
+		{ID: id, Name: "Resumed", CreatedAt: createdAt},
+	})
+	_ = fr.NewSession(id, "bash")
+	fr.Calls() // drain Calls so we can measure post-Reconcile only
+
+	pre := len(fr.Calls())
+	if err := m.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	list := m.List()
+	if len(list) != 1 || list[0].ID != id {
+		t.Fatalf("after reconcile list = %+v", list)
+	}
+	// Must NOT have called NewSession again for this id.
+	post := fr.Calls()
+	for _, c := range post[pre:] {
+		if c.Method == "NewSession" && c.Args[0] == id {
+			t.Fatalf("Reconcile re-created an already-live tmux session")
+		}
+	}
+}
+
+func TestManager_Reconcile_StoredMinusLive_RecreatesAndMarksInterrupted(t *testing.T) {
+	m, fr := newTestManager(t)
+
+	id := "01HXAB"
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	_ = m.cfg.SessionsFile.Save([]store.SessionMeta{
+		{ID: id, Name: "Rebuilt", CreatedAt: createdAt},
+	})
+	// Seed a "running" command in the store; reconciliation should mark it interrupted.
+	_ = m.cfg.Store.Save(id, store.Record{
+		ID: "running-cmd", SessionID: id, Command: "sleep 60",
+		StartedAt: time.Now().UTC(), Status: store.StatusRunning,
+	})
+
+	if err := m.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	calls := fr.Calls()
+	sawNew := false
+	for _, c := range calls {
+		if c.Method == "NewSession" && c.Args[0] == id {
+			sawNew = true
+		}
+	}
+	if !sawNew {
+		t.Fatalf("Reconcile did not create the missing tmux session: %+v", calls)
+	}
+	// The old running command should now be Interrupted.
+	rec, _ := m.cfg.Store.Get(id, "running-cmd")
+	if rec.Status != store.StatusInterrupted {
+		t.Fatalf("running command not marked interrupted: %s", rec.Status)
+	}
+}
+
+func TestManager_Reconcile_LiveMinusStored_KillsOrphan(t *testing.T) {
+	m, fr := newTestManager(t)
+	// Live but unknown id.
+	_ = fr.NewSession("ghost-session", "bash")
+	if err := m.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	calls := fr.Calls()
+	sawKill := false
+	for _, c := range calls {
+		if c.Method == "KillSession" && c.Args[0] == "ghost-session" {
+			sawKill = true
+		}
+	}
+	if !sawKill {
+		t.Fatalf("orphan tmux session not killed: %+v", calls)
+	}
+	if len(m.List()) != 0 {
+		t.Fatalf("orphan should not appear in list: %+v", m.List())
+	}
+}
+
+func TestManager_Reconcile_EmptyBoth_IsNoop(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(m.List()) != 0 {
+		t.Fatalf("list non-empty: %+v", m.List())
+	}
+}
+
+func TestManager_Reconcile_Idempotent(t *testing.T) {
+	m, fr := newTestManager(t)
+	id := "01HXAA"
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	_ = m.cfg.SessionsFile.Save([]store.SessionMeta{
+		{ID: id, Name: "X", CreatedAt: createdAt},
+	})
+	_ = fr.NewSession(id, "bash")
+
+	if err := m.Reconcile(); err != nil {
+		t.Fatalf("first Reconcile: %v", err)
+	}
+	// Second call must not error and must not duplicate any state.
+	if err := m.Reconcile(); err != nil {
+		t.Fatalf("second Reconcile: %v", err)
+	}
+	if len(m.List()) != 1 {
+		t.Fatalf("after 2x Reconcile list = %+v, want 1 entry", m.List())
+	}
+	// The second resumeShell logs an "already started" error from
+	// TmuxShell.Resume and moves on — verify our shells map still
+	// holds exactly one entry for the id.
+	if got, _ := m.Get(id); got == nil {
+		t.Fatalf("session %s no longer accessible via Get", id)
 	}
 }

@@ -377,3 +377,95 @@ func TestTmuxShell_PaneDeadPoller_SuppressedDuringRespawn(t *testing.T) {
 	// Give the poller at least 5 ticks. None should fire OnUserExit.
 	time.Sleep(150 * time.Millisecond)
 }
+
+func TestTmuxShell_Resume_StartsReadLoopWithoutNewSession(t *testing.T) {
+	fr := tmuxio.NewFakeRunner()
+	// Pretend a prior process already created the session.
+	_ = fr.NewSession("sess-1", "bash")
+	ts, dir := newTestTmuxShell(t, fr)
+	pre := len(fr.Calls())
+
+	if err := ts.Resume(nil); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer ts.Close()
+
+	calls := fr.Calls()
+	for _, c := range calls[pre:] {
+		if c.Method == "NewSession" {
+			t.Fatalf("Resume must not call NewSession: %+v", c)
+		}
+		if c.Method == "PipePane" {
+			t.Fatalf("Resume must not re-set pipe-pane: %+v", c)
+		}
+	}
+
+	// Verify the read loop actually consumes bytes that appear in the
+	// already-existing stream file.
+	sub, cancel := ts.SubscribeEvents(8)
+	defer cancel()
+	streamFile := filepath.Join(dir, "pty.stream")
+	body := "\x1eALFRED_START_nonce-x cmd-R /tmp\x1eX\nhi\n\x1eALFRED_END_nonce-x cmd-R 0\x1eX\n"
+	f, _ := os.OpenFile(streamFile, os.O_WRONLY|os.O_APPEND, 0o600)
+	_, _ = f.Write([]byte(body))
+	_ = f.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case ev := <-sub.C:
+			if ev.Ended != nil && ev.Ended.CmdID == "cmd-R" {
+				return
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	t.Fatal("Resume did not deliver Ended event for cmd-R")
+}
+
+func TestTmuxShell_Resume_WithSeed_DeliversEndedForInFlightCommand(t *testing.T) {
+	fr := tmuxio.NewFakeRunner()
+	_ = fr.NewSession("sess-1", "bash")
+	ts, dir := newTestTmuxShell(t, fr)
+
+	// Seed an in-flight command — the START sentinel was already
+	// processed by the previous process; only the END is to come.
+	seed := &RunningCommand{
+		ID:        "in-flight",
+		Command:   "sleep 5",
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	if err := ts.Resume(seed); err != nil {
+		t.Fatalf("Resume(seed): %v", err)
+	}
+	defer ts.Close()
+
+	if cur := ts.CurrentCommand(); cur == nil || cur.ID != "in-flight" {
+		t.Fatalf("CurrentCommand after seeded Resume = %+v, want id in-flight", cur)
+	}
+
+	sub, cancel := ts.SubscribeEvents(8)
+	defer cancel()
+	// Append only the END sentinel (no START) — exactly what the
+	// stream-readers's offset would advance to after a Go restart.
+	streamFile := filepath.Join(dir, "pty.stream")
+	body := "\x1eALFRED_END_nonce-x in-flight 0\x1eX\n"
+	f, _ := os.OpenFile(streamFile, os.O_WRONLY|os.O_APPEND, 0o600)
+	_, _ = f.Write([]byte(body))
+	_ = f.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case ev := <-sub.C:
+			if ev.Ended != nil && ev.Ended.CmdID == "in-flight" {
+				if ev.Ended.ExitCode != 0 {
+					t.Fatalf("exit = %d", ev.Ended.ExitCode)
+				}
+				return
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	t.Fatal("Resume(seed) did not deliver Ended event for in-flight command")
+}

@@ -332,6 +332,136 @@ func (m *Manager) Rename(sessionID, newName string) error {
 	return nil
 }
 
+// Reconcile is called once at boot, before the HTTP listener opens.
+// It walks sessions.json × `tmux ls` and:
+//
+//   - stored ∩ live: take ownership of the existing tmux session; the
+//     TmuxShell's stream reader resumes from pty.offset.
+//   - stored \ live: the tmux session is gone (Pod restart or tmux
+//     crash). Re-create the tmux session with a fresh bash. Mark any
+//     "running" command in the store as "interrupted".
+//   - live \ stored: an orphan tmux session we never recorded. Kill it.
+func (m *Manager) Reconcile() error {
+	stored, err := m.cfg.SessionsFile.Load()
+	if err != nil {
+		return fmt.Errorf("load sessions.json: %w", err)
+	}
+	liveNames, err := m.cfg.Runner.ListSessions()
+	if err != nil {
+		return fmt.Errorf("list tmux sessions: %w", err)
+	}
+	live := make(map[string]bool, len(liveNames))
+	for _, n := range liveNames {
+		live[n] = true
+	}
+	storedIDs := make(map[string]bool, len(stored))
+	for _, s := range stored {
+		storedIDs[s.ID] = true
+	}
+
+	for _, meta := range stored {
+		m.mu.Lock()
+		m.metas[meta.ID] = meta
+		m.mu.Unlock()
+
+		if live[meta.ID] {
+			// stored ∩ live: bash and pipe-pane are still running from
+			// the previous Go process. Just re-attach a TmuxShell with
+			// Resume (skips NewSession / PipePane setup).
+			if err := m.resumeShell(meta.ID); err != nil {
+				m.cfg.Logger.Error("resume tmux shell", "session", meta.ID, "err", err)
+			}
+			continue
+		}
+		// stored \ live: re-create.
+		if err := m.startShell(meta.ID); err != nil {
+			m.cfg.Logger.Error("recreate tmux shell", "session", meta.ID, "err", err)
+		}
+		// Mark any running commands as interrupted — the bash that was
+		// running them is gone.
+		if err := m.cfg.Store.SweepRunningToInterrupted([]string{meta.ID}); err != nil {
+			m.cfg.Logger.Error("sweep running→interrupted", "session", meta.ID, "err", err)
+		}
+	}
+
+	// live \ stored: kill orphans.
+	for _, name := range liveNames {
+		if storedIDs[name] {
+			continue
+		}
+		if err := m.cfg.Runner.KillSession(name); err != nil {
+			m.cfg.Logger.Error("kill orphan tmux session", "session", name, "err", err)
+		}
+	}
+	return nil
+}
+
+// resumeShell builds a TmuxShell for an already-live tmux session.
+// Unlike startShell it does NOT call NewSession; the existing
+// session and its pipe-pane are still running, so we just attach a
+// new readLoop + poller and pick up at pty.offset.
+//
+// If the store contains a status=running record for this session,
+// we seed it into the TmuxShell so WS reattach sees the in-flight
+// command. The previous process emitted the START sentinel before
+// dying; that byte is already past the new pty.offset, so without
+// this seed the new parser would silently drop the upcoming chunks
+// and END.
+//
+// Caller must NOT hold m.mu (we take it ourselves when registering).
+func (m *Manager) resumeShell(sessionID string) error {
+	cfg := shell.TmuxShellConfig{
+		SessionID:  sessionID,
+		Nonce:      m.cfg.Nonce,
+		Runner:     m.cfg.Runner,
+		StreamPath: m.streamPath(sessionID),
+		OffsetPath: m.offsetPath(sessionID),
+		Logger:     m.cfg.Logger,
+	}
+	ts, err := shell.NewTmuxShell(cfg)
+	if err != nil {
+		return err
+	}
+	id := sessionID
+	ts.OnUserExit = func() {
+		_ = m.Close(id)
+	}
+
+	// Find a status=running record (there is at most one per session
+	// because the shell only accepts one command at a time).
+	var seed *shell.RunningCommand
+	list, err := m.cfg.Store.List(sessionID, 0, "")
+	if err != nil {
+		m.cfg.Logger.Warn("list store for seed", "session", sessionID, "err", err)
+	}
+	for _, r := range list {
+		if r.Status == store.StatusRunning {
+			seed = &shell.RunningCommand{
+				ID:        r.ID,
+				Command:   r.Command,
+				Cwd:       r.Cwd,
+				StartedAt: r.StartedAt,
+			}
+			break
+		}
+	}
+
+	// Ensure the session dir + commands/outputs subdirs exist BEFORE
+	// the read loop opens pty.stream inside that dir. Plan 1's
+	// EnsureSessionDirs is idempotent.
+	if err := m.cfg.Store.EnsureSessionDirs(sessionID); err != nil {
+		return fmt.Errorf("ensure session dirs: %w", err)
+	}
+
+	if err := ts.Resume(seed); err != nil {
+		return fmt.Errorf("resume tmux shell: %w", err)
+	}
+	m.mu.Lock()
+	m.shells[sessionID] = ts
+	m.mu.Unlock()
+	return nil
+}
+
 // Close kills the tmux session, deletes the store directory, removes
 // the entry from sessions.json, and notifies every registered close
 // listener. Idempotent in spirit: a second Close on the same id
