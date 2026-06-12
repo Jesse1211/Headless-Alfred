@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -133,4 +135,84 @@ func TestCreateSession_BadNameReturns422(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("code = %d", rec.Code)
 	}
+}
+
+func TestRenameSession_Success(t *testing.T) {
+	m := newTestManager(t)
+	meta, _ := m.Create("Session 1")
+	h := RenameSessionHandler(m)
+	body := `{"name":"training"}`
+	req := httptest.NewRequest("PATCH", "/api/sessions/"+meta.ID, bytes.NewBufferString(body))
+	req = mustChi(req, "id", meta.ID)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if m.List()[0].Name != "training" {
+		t.Fatalf("name not updated: %+v", m.List()[0])
+	}
+}
+
+func TestRenameSession_NotFound(t *testing.T) {
+	m := newTestManager(t)
+	h := RenameSessionHandler(m)
+	body := `{"name":"x"}`
+	req := httptest.NewRequest("PATCH", "/api/sessions/nope", bytes.NewBufferString(body))
+	req = mustChi(req, "id", "nope")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 404 {
+		t.Fatalf("code = %d", rec.Code)
+	}
+}
+
+func TestRenameSession_BadName(t *testing.T) {
+	m := newTestManager(t)
+	meta, _ := m.Create("Session 1")
+	h := RenameSessionHandler(m)
+	body := `{"name":"   "}`
+	req := httptest.NewRequest("PATCH", "/api/sessions/"+meta.ID, bytes.NewBufferString(body))
+	req = mustChi(req, "id", meta.ID)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d", rec.Code)
+	}
+}
+
+func TestDeleteSession_Success(t *testing.T) {
+	m := newTestManager(t)
+	meta, _ := m.Create("Session 1")
+	h := DeleteSessionHandler(m)
+	req := httptest.NewRequest("DELETE", "/api/sessions/"+meta.ID, nil)
+	req = mustChi(req, "id", meta.ID)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 204 {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	if len(m.List()) != 0 {
+		t.Fatalf("session not deleted")
+	}
+}
+
+func TestDeleteSession_NotFound(t *testing.T) {
+	m := newTestManager(t)
+	h := DeleteSessionHandler(m)
+	req := httptest.NewRequest("DELETE", "/api/sessions/nope", nil)
+	req = mustChi(req, "id", "nope")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 404 {
+		t.Fatalf("code = %d", rec.Code)
+	}
+}
+
+// mustChi sets a chi URL param on the request context for handler tests
+// that bypass the router.
+func mustChi(r *http.Request, key, val string) *http.Request {
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(key, val)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
