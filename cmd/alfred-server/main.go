@@ -1,26 +1,27 @@
-// Command alfred-server runs the Headless Alfred backend: a single Go
-// process holding the bash session, persisting per-command output, and
-// serving HTTP/WebSocket to the React UI.
-//
-// Configuration is entirely via environment variables. See deploy/manifests/
-// for the K8s wiring.
+// Command alfred-server runs the Headless Alfred backend.
 package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/jesseliu/headless-alfred/internal/api"
 	"github.com/jesseliu/headless-alfred/internal/auth"
-	"github.com/jesseliu/headless-alfred/internal/shell"
+	"github.com/jesseliu/headless-alfred/internal/session"
+	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
 	"github.com/jesseliu/headless-alfred/internal/store"
+
+	"github.com/oklog/ulid/v2"
 )
 
 func main() {
@@ -30,9 +31,6 @@ func main() {
 	addr := envOr("ALFRED_ADDR", ":8080")
 	dataDir := envOr("ALFRED_DATA_DIR", "/data")
 
-	// Auth must be fully configured at startup. Refuse to boot otherwise —
-	// a misconfigured Pod with an empty token equals an open shell on the
-	// public internet.
 	a, err := auth.FromEnv()
 	if err != nil {
 		logger.Error("auth setup", "err", err)
@@ -44,29 +42,53 @@ func main() {
 		logger.Error("store setup", "err", err)
 		os.Exit(2)
 	}
-	// Any records left in "running" from a previous process were owned by
-	// a bash that's now gone. Re-classify them so the UI doesn't show them
-	// as alive.
-	if err := st.SweepRunningToInterrupted(); err != nil {
-		logger.Error("sweep", "err", err)
+
+	// One-shot legacy migration from /data/commands/* → /data/sessions/<imported>/...
+	if imported, err := store.MigrateLegacyLayout(dataDir, ulid.Make().String(), time.Now().UTC()); err != nil {
+		logger.Error("legacy migration failed", "err", err)
+		os.Exit(2)
+	} else if imported {
+		logger.Info("legacy data migrated into 'Imported' session")
 	}
 
-	sh := shell.NewShell(logger)
-	if err := sh.Start(); err != nil {
-		logger.Error("shell start", "err", err)
+	// Tmux socket lives next to sessions.json. Both are inside the PVC.
+	socketPath := filepath.Join(dataDir, "alfred-tmux.sock")
+	runner := tmuxio.NewExecRunner(socketPath)
+
+	// Per-process nonce: shared by all TmuxShells the Manager creates.
+	var n [8]byte
+	if _, err := rand.Read(n[:]); err != nil {
+		logger.Error("nonce", "err", err)
+		os.Exit(2)
+	}
+	nonce := hex.EncodeToString(n[:])
+
+	mgr, err := session.NewManager(session.Config{
+		DataDir:      dataDir,
+		Store:        st,
+		SessionsFile: store.NewSessionsFile(dataDir),
+		Runner:       runner,
+		Nonce:        nonce,
+		MaxSessions:  8,
+		Logger:       logger,
+	})
+	if err != nil {
+		logger.Error("manager setup", "err", err)
 		os.Exit(2)
 	}
 
-	// Once the shell and store are up, we mark ourselves ready.
+	// Reconcile MUST complete before we accept any HTTP request.
+	if err := mgr.Reconcile(); err != nil {
+		logger.Error("reconcile", "err", err)
+		os.Exit(2)
+	}
+
 	var ready atomic.Bool
 	ready.Store(true)
 
-	// 5 login attempts per minute per IP. See design.md §10.
 	rl := auth.NewRateLimiter(5, time.Minute)
-
 	router := api.NewRouter(api.Deps{
-		Shell:       sh,
-		Store:       st,
+		Manager:     mgr,
 		Auth:        a,
 		RateLimiter: rl,
 		Ready:       ready.Load,
@@ -78,7 +100,6 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// Run the server in a goroutine so main can wait on signals.
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("listening", "addr", addr)
@@ -90,7 +111,6 @@ func main() {
 		serveErr <- nil
 	}()
 
-	// Wait for SIGINT/SIGTERM or a listener failure.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	select {
@@ -99,21 +119,21 @@ func main() {
 	case err := <-serveErr:
 		if err != nil {
 			logger.Error("listener failed", "err", err)
-			os.Exit(1)
 		}
 	}
 
-	logger.Info("shutting down")
-	ready.Store(false)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
-	_ = sh.Close()
+
+	// Note: we do NOT KillSession on every TmuxShell at shutdown — the
+	// tmux server outliving the Go process is the entire point. Plan 14's
+	// CONTEXT.md update emphasises this.
 }
 
-func envOr(key, def string) string {
+func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
-	return def
+	return fallback
 }
