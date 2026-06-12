@@ -290,9 +290,84 @@ func (m *Manager) persistMetas() error {
 	return m.cfg.SessionsFile.Save(list)
 }
 
-// Close is implemented in Plan 4 Task 3. Stub here so startShell's
-// OnUserExit hook closure compiles in this commit.
+// Rename changes the display name of a session. Returns ErrBadName
+// for empty/over-length names, ErrSessionNotFound for unknown ids.
+func (m *Manager) Rename(sessionID, newName string) error {
+	cleaned := strings.TrimSpace(newName)
+	if cleaned == "" || len(cleaned) > MaxNameLength {
+		return ErrBadName
+	}
+	m.mu.Lock()
+	meta, ok := m.metas[sessionID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	meta.Name = cleaned
+	m.metas[sessionID] = meta
+	// Snapshot the metas slice and the listener slice TOGETHER under the
+	// lock, so a concurrent Close that deletes the just-renamed entry
+	// can't race us into persisting a stale list (previously, persistMetas
+	// re-acquired the lock and could see post-Close state, silently
+	// dropping the rename from sessions.json).
+	list := make([]store.SessionMeta, 0, len(m.metas))
+	for _, mt := range m.metas {
+		list = append(list, mt)
+	}
+	sortByCreatedAtAsc(list)
+	listeners := make([]func(string, string), 0, len(m.renameListeners))
+	for _, fn := range m.renameListeners {
+		if fn != nil {
+			listeners = append(listeners, fn)
+		}
+	}
+	m.mu.Unlock()
+
+	if err := m.cfg.SessionsFile.Save(list); err != nil {
+		return fmt.Errorf("persist: %w", err)
+	}
+	for _, fn := range listeners {
+		fn(sessionID, cleaned)
+	}
+	return nil
+}
+
+// Close kills the tmux session, deletes the store directory, removes
+// the entry from sessions.json, and notifies every registered close
+// listener. Idempotent in spirit: a second Close on the same id
+// returns ErrSessionNotFound.
 func (m *Manager) Close(sessionID string) error {
-	// TODO(plan-4-task-3): real implementation
+	m.mu.Lock()
+	sh, hasShell := m.shells[sessionID]
+	_, hasMeta := m.metas[sessionID]
+	if !hasMeta {
+		m.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	delete(m.shells, sessionID)
+	delete(m.metas, sessionID)
+	listeners := make([]func(string), 0, len(m.closeListeners))
+	for _, fn := range m.closeListeners {
+		if fn != nil {
+			listeners = append(listeners, fn)
+		}
+	}
+	m.mu.Unlock()
+
+	if hasShell {
+		if err := sh.Close(); err != nil {
+			m.cfg.Logger.Error("close tmux shell", "session", sessionID, "err", err)
+			// continue anyway — the in-memory state is gone
+		}
+	}
+	if err := m.cfg.Store.DeleteSession(sessionID); err != nil {
+		m.cfg.Logger.Error("delete store session dir", "session", sessionID, "err", err)
+	}
+	if err := m.persistMetas(); err != nil {
+		return fmt.Errorf("persist: %w", err)
+	}
+	for _, fn := range listeners {
+		fn(sessionID)
+	}
 	return nil
 }

@@ -148,3 +148,159 @@ func TestManager_Create_CallsTmuxNewSessionAndPipePane(t *testing.T) {
 		t.Fatalf("Create did not start tmux session+pipe: %+v", calls)
 	}
 }
+
+func TestManager_Rename_UpdatesAndPersists(t *testing.T) {
+	m, _ := newTestManager(t)
+	meta, _ := m.Create("Session 1")
+	if err := m.Rename(meta.ID, "training"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	list := m.List()
+	if list[0].Name != "training" {
+		t.Fatalf("name not updated: %+v", list[0])
+	}
+	persisted, _ := m.cfg.SessionsFile.Load()
+	if persisted[0].Name != "training" {
+		t.Fatalf("not persisted: %+v", persisted)
+	}
+}
+
+func TestManager_Rename_RejectsEmptyAndTooLong(t *testing.T) {
+	m, _ := newTestManager(t)
+	meta, _ := m.Create("Session 1")
+	if err := m.Rename(meta.ID, "   "); err != ErrBadName {
+		t.Fatalf("empty: expected ErrBadName, got %v", err)
+	}
+	long := ""
+	for i := 0; i < MaxNameLength+1; i++ {
+		long += "x"
+	}
+	if err := m.Rename(meta.ID, long); err != ErrBadName {
+		t.Fatalf("too-long: expected ErrBadName, got %v", err)
+	}
+}
+
+func TestManager_Rename_UnknownIDReturnsNotFound(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.Rename("nope", "x"); err != ErrSessionNotFound {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
+	}
+}
+
+func TestManager_Rename_FiresListener(t *testing.T) {
+	m, _ := newTestManager(t)
+	meta, _ := m.Create("Session 1")
+	called := make(chan struct{}, 1)
+	m.AddRenameListener(func(id, name string) {
+		if id == meta.ID && name == "training" {
+			called <- struct{}{}
+		}
+	})
+	_ = m.Rename(meta.ID, "training")
+	select {
+	case <-called:
+	default:
+		t.Fatal("listener not called")
+	}
+}
+
+func TestManager_Close_RemovesFromListAndDeletesStoreDir(t *testing.T) {
+	m, fr := newTestManager(t)
+	meta, _ := m.Create("Session 1")
+
+	// Place a marker file in the store dir to prove RemoveAll works.
+	_ = m.cfg.Store.WriteOutput(meta.ID, "marker", []byte("x"))
+
+	if err := m.Close(meta.ID); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(m.List()) != 0 {
+		t.Fatalf("after Close list should be empty: %+v", m.List())
+	}
+	// Tmux session killed.
+	calls := fr.Calls()
+	sawKill := false
+	for _, c := range calls {
+		if c.Method == "KillSession" && c.Args[0] == meta.ID {
+			sawKill = true
+		}
+	}
+	if !sawKill {
+		t.Fatalf("KillSession not called: %+v", calls)
+	}
+	// Store dir gone.
+	if _, err := os.Stat(m.cfg.Store.SessionDir(meta.ID)); !os.IsNotExist(err) {
+		t.Fatalf("store dir not removed: %v", err)
+	}
+	// sessions.json no longer mentions it.
+	persisted, _ := m.cfg.SessionsFile.Load()
+	if len(persisted) != 0 {
+		t.Fatalf("sessions.json not updated: %+v", persisted)
+	}
+}
+
+func TestManager_Close_UnknownIDReturnsNotFound(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.Close("nope"); err != ErrSessionNotFound {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
+	}
+}
+
+func TestManager_Close_FiresListener(t *testing.T) {
+	m, _ := newTestManager(t)
+	meta, _ := m.Create("")
+	called := make(chan string, 1)
+	m.AddCloseListener(func(id string) {
+		called <- id
+	})
+	_ = m.Close(meta.ID)
+	select {
+	case got := <-called:
+		if got != meta.ID {
+			t.Fatalf("listener got %q, want %q", got, meta.ID)
+		}
+	default:
+		t.Fatal("listener not called")
+	}
+}
+
+// Regression: multiple WS connections each Add their own listener;
+// Close must call EVERY registered listener, not just the last one.
+func TestManager_Close_FiresAllListeners_MultiSubscriber(t *testing.T) {
+	m, _ := newTestManager(t)
+	meta, _ := m.Create("")
+	got := make(chan int, 3)
+	m.AddCloseListener(func(string) { got <- 1 })
+	m.AddCloseListener(func(string) { got <- 2 })
+	m.AddCloseListener(func(string) { got <- 3 })
+	_ = m.Close(meta.ID)
+	seen := map[int]bool{}
+	for i := 0; i < 3; i++ {
+		select {
+		case v := <-got:
+			seen[v] = true
+		default:
+			t.Fatalf("only %d/3 listeners fired", i)
+		}
+	}
+	if !seen[1] || !seen[2] || !seen[3] {
+		t.Fatalf("missed listener: %+v", seen)
+	}
+}
+
+func TestManager_AddCloseListener_RemoveStopsCallbacks(t *testing.T) {
+	m, _ := newTestManager(t)
+	meta1, _ := m.Create("")
+	called := 0
+	remove := m.AddCloseListener(func(string) { called++ })
+	_ = m.Close(meta1.ID)
+	if called != 1 {
+		t.Fatalf("after first Close, called=%d, want 1", called)
+	}
+	meta2, _ := m.Create("")
+	remove()
+	_ = m.Close(meta2.ID)
+	if called != 1 {
+		t.Fatalf("listener fired after remove(): called=%d", called)
+	}
+}
