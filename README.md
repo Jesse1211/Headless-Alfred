@@ -67,6 +67,50 @@ cloning, or `git clone --depth 1` to save space.
 
 ---
 
+## Using Claude (alpha)
+
+The container also ships `node` + `@anthropic-ai/claude-code`. Inside
+any shell session, type **`/claude`** in the command input to flip
+that session into Claude mode. The chat-stream view is replaced with
+a real terminal (xterm.js), and `claude` is spawned **in the same
+tmux pane** so it inherits the current cwd, env, and any files you
+just `git clone`d.
+
+To exit, click the red **"Exit Claude"** button in the header. We
+send Ctrl+C twice — claude may need another keypress or `/exit` to
+finish cleanly. The button immediately flips the UI back to the
+chat view; if claude is stubborn, you can re-enter the session to
+finish it off.
+
+**Authentication.** `claude` reads `ANTHROPIC_API_KEY` from the
+process environment. If unset (the default), it shows "Not logged
+in · Please run /login" — that's expected. A future UI will let
+you save the key from the browser; for now, set it via a session
+command:
+
+```bash
+echo 'export ANTHROPIC_API_KEY=sk-ant-…' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Note that `~/.bashrc` is NOT sourced by alfred's bash today (we
+launch with `--noprofile --norc` to keep the sentinel parser happy),
+so this only works inside a Claude session that bash explicitly
+sources later — see CONTEXT.md for the trade-off.
+
+**Caveats:**
+- Mode is **persisted** to `sessions.json`. Restart `alfred-server`
+  (e.g. `kubectl rollout`) and your Claude session resumes; restart
+  the Pod and tmux dies, so does Claude — mode is reset to shell on
+  Reconcile.
+- A session can run **either** a normal shell command **or** Claude
+  at a time, never both. The `Claude` button is disabled while a
+  shell command is busy.
+- xterm.js renders ANSI colors / box-drawing correctly. Resize-aware
+  PTY isn't wired up yet — Claude sees a fixed 80x24 and wraps.
+
+---
+
 ## Usage flow
 
 ### 0. One-time setup of the cloud server
