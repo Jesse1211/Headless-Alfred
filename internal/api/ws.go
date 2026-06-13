@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -595,6 +596,20 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 		// prompt; we'll fork `claude -p ...` on demand from
 		// handleClaudePrompt. The frontend will mount ClaudeChatView
 		// and start sending claude_prompt frames.
+		//
+		// Make sure ~/.claude/settings.json points PreToolUse at our
+		// bridge script so tool calls trigger the approval flow.
+		// Idempotent — re-entering UI mode is cheap.
+		home, herr := os.UserHomeDir()
+		if herr == nil {
+			if err := claude.EnsureSettingsHook(home); err != nil {
+				slog.Warn("EnsureSettingsHook failed", "session", msg.SessionID, "err", err)
+				// Non-fatal: claude will still run, but tool use will
+				// be auto-approved instead of asking the user. We
+				// surface a soft warning frame so the UI can show it.
+				_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "settings_warning", Message: "could not configure PreToolUse hook: " + err.Error()})
+			}
+		}
 	}
 
 	if err := m.SetMode(msg.SessionID, store.ModeClaude); err != nil {
