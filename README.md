@@ -67,7 +67,7 @@ cloning, or `git clone --depth 1` to save space.
 
 ---
 
-## Using Claude (alpha)
+## Using Claude
 
 The container also ships `node` + `@anthropic-ai/claude-code`. Inside
 any shell session, type either **`claude`** (the actual CLI, like
@@ -114,9 +114,14 @@ chmod 600 ~/.alfred-env
 ```
 
 Then inside any session before running `claude`, do `source ~/.alfred-env`.
-(We don't source `.bashrc` automatically — see CONTEXT.md.) A
-nicer UI for this is a future task; option A is the recommended
-path today.
+(We don't source `.bashrc` automatically — see CONTEXT.md.) Option A
+is the recommended path because it reuses an existing subscription;
+Option B exists as a fallback for users who specifically want
+metered API access.
+
+**Verified end-to-end** with a real OAuth credential from a Mac
+Keychain pasted through the dialog — claude in the pod authenticates
+and proceeds straight to the main UI without a `/login` prompt.
 
 **Caveats:**
 - Mode is **persisted** to `sessions.json`. Restart `alfred-server`
