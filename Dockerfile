@@ -36,9 +36,29 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # bash + tini + ca-certificates. Distroless/scratch can't host this app
 # because the shell package spawns bash inside the container.
 FROM debian:bookworm-slim AS runtime
+
+# Three groups of packages:
+#   (1) Core: shell + signals + tmux multiplexer + git + ca-certs
+#   (2) Developer toolkit so the pod feels like a real workstation —
+#       network probes, editors, JSON/archive utilities. Asked for
+#       repeatedly in spec §8 of the claude-mode design.
+#   (3) Node 22 LTS (from NodeSource) so we can `npm install -g
+#       @anthropic-ai/claude-code`. The `claude` CLI is required by
+#       the claude-mode feature.
+#
+# We do everything in one RUN to keep the runtime image as small as
+# possible (each apt-get layer would otherwise pin its own caches).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends bash ca-certificates git openssh-client procps tini tmux \
- && rm -rf /var/lib/apt/lists/* \
+ && apt-get install -y --no-install-recommends \
+      bash ca-certificates procps tini tmux \
+      git openssh-client \
+      curl wget iputils-ping dnsutils \
+      vim-tiny nano less jq unzip xz-utils \
+ && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g @anthropic-ai/claude-code \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.npm \
  && useradd -m -u 1000 -s /bin/bash alfred \
  && mkdir -p /data \
  && chown alfred:alfred /data
