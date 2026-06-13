@@ -24,6 +24,11 @@ type Deps struct {
 	// frame arrives from the client. Can be nil when Claude UI is
 	// disabled; the WS handler degrades gracefully.
 	Bridge *claude.Bridge
+
+	// Dispatcher fans tool-approval requests from the bridge out to
+	// the appropriate WS client per Alfred session. Always paired
+	// with Bridge.
+	Dispatcher *claude.Dispatcher
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -34,7 +39,7 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/healthz", HealthzHandler().ServeHTTP)
 	r.Get("/readyz", ReadyzHandler(d.Ready).ServeHTTP)
 	r.Post("/api/login", LoginHandler(d.Auth, d.RateLimiter).ServeHTTP)
-	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge).ServeHTTP)
+	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher).ServeHTTP)
 
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(d.Auth))

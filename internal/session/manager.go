@@ -444,6 +444,26 @@ func (m *Manager) getClaudeConvoIDLocked(sessionID string) string {
 	return ""
 }
 
+// FindByClaudeConvoID returns the Alfred sessionID whose Claude
+// conversation UUID matches convoID. Returns "" if no match. Used
+// by the PreToolUse hook bridge: the hook payload carries Claude's
+// session_id, and we need to route the approval request to the
+// corresponding Alfred session's WS client. O(N) scan over sessions;
+// N <= 8, so a map index is over-engineering.
+func (m *Manager) FindByClaudeConvoID(convoID string) string {
+	if convoID == "" {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for sid, meta := range m.metas {
+		if meta.ClaudeSessionID == convoID {
+			return sid
+		}
+	}
+	return ""
+}
+
 // mutateAndPersist is a small refactoring helper: do an in-memory
 // mutation on a session's metadata under the lock, snapshot, then
 // persist outside the lock. Used by SetRenderer and

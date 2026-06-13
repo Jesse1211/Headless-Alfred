@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -43,26 +44,34 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// bridge accepts a nil for the legacy V0 path / tests that don't use
-// claude UI; callers that want claude UI must pass a started bridge.
-func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge) http.Handler {
+// bridge / dispatcher accept nil for the legacy V0 path / tests that
+// don't use claude UI; callers that want claude UI must pass both.
+func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *claude.Dispatcher) http.Handler {
+	runner := claude.NewRunner()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := r.URL.Query().Get("token")
 		if !a.VerifyToken(tok) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		_ = bridge // wired in Phase 3.4
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			slog.Error("ws upgrade", "err", err)
 			return
 		}
-		runClientLoop(conn, m)
+		runClientLoop(conn, m, bridge, disp, runner)
 	})
 }
 
-func runClientLoop(conn *websocket.Conn, m *session.Manager) {
+// claudeRunState tracks one in-flight `claude -p` invocation per
+// alfred session. Stored in a per-WS-connection map; lifetime ends
+// when the runner exits or the user clicks Stop.
+type claudeRunState struct {
+	cancel context.CancelFunc
+	stop   func()
+}
+
+func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner) {
 	defer conn.Close()
 	conn.SetReadLimit(maxInboundMessage)
 	_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
@@ -161,6 +170,34 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 
 	events := make(chan FanInEvent, 64)
 	go FanIn(subs, events, stop)
+
+	// Claude UI per-connection state.
+	asks := make(chan claude.PendingRequest, 16)
+	claudeEvents := make(chan claudeEvtForward, 64)
+	claudeRunStates := map[string]*claudeRunState{}
+	defer func() {
+		// On disconnect, stop any still-running claude prompts so we
+		// don't leak processes.
+		for _, st := range claudeRunStates {
+			if st.stop != nil {
+				st.stop()
+			}
+			if st.cancel != nil {
+				st.cancel()
+			}
+		}
+	}()
+
+	// Subscribe each existing session to the bridge's ask dispatcher.
+	// Forwards to the per-WS asks channel.
+	if disp != nil {
+		for _, meta := range sessions {
+			subCh, unsub := disp.SubscribeAsks(meta.ID)
+			cancels = append(cancels, unsub)
+			go forwardAsks(subCh, asks, stop)
+		}
+	}
+
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 
@@ -188,7 +225,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 			if !ok {
 				return
 			}
-			handleInbound(msg, m, write)
+			handleInbound(msg, m, bridge, runner, claudeEvents, claudeRunStates, write)
 		case ev, ok := <-events:
 			if !ok {
 				return
@@ -213,6 +250,38 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 				SessionID: ptyCh.sessionID,
 				Data:      base64.StdEncoding.EncodeToString(ptyCh.data),
 			})
+		case req := <-asks:
+			// PreToolUse hook fired. Push to the user for Allow/Deny.
+			alfredSID := m.FindByClaudeConvoID(req.SessionID)
+			if alfredSID == "" {
+				// Shouldn't happen — dispatcher already looked this up
+				// to find us — but degrade gracefully.
+				if bridge != nil {
+					bridge.Resolve(req.ToolUseID, claude.Decision{
+						Permission: "deny",
+						Reason:     "session vanished",
+					})
+				}
+				continue
+			}
+			var inputAny any
+			_ = json.Unmarshal(req.ToolInput, &inputAny)
+			_ = write(OutMsg{
+				Type:      "tool_approval_request",
+				SessionID: alfredSID,
+				ToolUseID: req.ToolUseID,
+				Tool:      req.ToolName,
+				ToolInput: inputAny,
+			})
+		case fwd := <-claudeEvents:
+			// One stream-json event from an in-flight claude -p
+			// invocation. Push as a claude_event frame.
+			_ = write(OutMsg{
+				Type:      "claude_event",
+				SessionID: fwd.sessionID,
+				EventKind: string(fwd.kind),
+				Payload:   fwd.payload,
+			})
 		case sid := <-closedCh:
 			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
@@ -233,6 +302,11 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 			rawSub := sh.SubscribeRaw(64)
 			cancels = append(cancels, rawSub.Close)
 			go forwardRaw(sid, rawSub, ptyChunks, stop)
+			if disp != nil {
+				subCh, unsub := disp.SubscribeAsks(sid)
+				cancels = append(cancels, unsub)
+				go forwardAsks(subCh, asks, stop)
+			}
 			_ = write(OutMsg{Type: "idle", SessionID: sid, Mode: "shell"})
 		}
 	}
@@ -243,6 +317,89 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 type ptyChunk struct {
 	sessionID string
 	data      []byte
+}
+
+// claudeEvtForward carries one parsed claude stream-json event from
+// a per-session runner goroutine to the WS write loop.
+type claudeEvtForward struct {
+	sessionID string
+	kind      claude.EventKind
+	payload   any
+}
+
+// forwardAsks pumps PendingRequests from the dispatcher's per-session
+// channel onto the per-WS shared asks channel.
+func forwardAsks(in <-chan claude.PendingRequest, out chan<- claude.PendingRequest, stop <-chan struct{}) {
+	for {
+		select {
+		case req, ok := <-in:
+			if !ok {
+				return
+			}
+			select {
+			case out <- req:
+			case <-stop:
+				return
+			}
+		case <-stop:
+			return
+		}
+	}
+}
+
+// forwardClaudeRunner reads parsed events from a Runner's channel and
+// ships each onto the per-WS claudeEvents channel for serialization.
+// Closes silently when the source channel closes.
+func forwardClaudeRunner(sessionID string, src <-chan claude.Event, out chan<- claudeEvtForward, stop <-chan struct{}) {
+	for {
+		select {
+		case ev, ok := <-src:
+			if !ok {
+				return
+			}
+			payload := claudeEventPayload(ev)
+			select {
+			case out <- claudeEvtForward{sessionID: sessionID, kind: ev.Kind, payload: payload}:
+			case <-stop:
+				return
+			}
+		case <-stop:
+			return
+		}
+	}
+}
+
+// claudeEventPayload extracts the concrete variant payload from an
+// Event for JSON marshalling. Returns nil for variants with no
+// payload (e.g. MessageStop).
+func claudeEventPayload(ev claude.Event) any {
+	switch ev.Kind {
+	case claude.KindSystem:
+		return ev.System
+	case claude.KindRateLimit:
+		return ev.RateLimit
+	case claude.KindTextDelta:
+		return ev.TextDelta
+	case claude.KindTextBlockEnd:
+		return ev.TextBlockEnd
+	case claude.KindToolUseStart:
+		return ev.ToolUseStart
+	case claude.KindToolUseEnd:
+		return ev.ToolUseEnd
+	case claude.KindToolResult:
+		return ev.ToolResult
+	case claude.KindMessageStart:
+		return ev.MessageStart
+	case claude.KindMessageDelta:
+		return ev.MessageDelta
+	case claude.KindMessageStop:
+		return nil
+	case claude.KindResult:
+		return ev.Result
+	case claude.KindUnknown:
+		return ev.Unknown
+	}
+	return nil
 }
 
 // forwardRaw pumps raw PTY bytes from the shell's raw broadcaster
@@ -301,7 +458,7 @@ type namedRename struct {
 	Name string
 }
 
-func handleInbound(msg InMsg, m *session.Manager, write func(OutMsg) error) {
+func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner *claude.Runner, claudeEvents chan<- claudeEvtForward, runStates map[string]*claudeRunState, write func(OutMsg) error) {
 	switch msg.Type {
 	case "ping":
 		_ = write(OutMsg{Type: "pong"})
@@ -362,8 +519,21 @@ func handleInbound(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 		handleEnterClaude(msg, m, write)
 	case "exit_claude":
 		handleExitClaude(msg, m, write)
+		// Interrupt any in-flight claude -p for this session.
+		if st, ok := runStates[msg.SessionID]; ok && st.stop != nil {
+			st.stop()
+			delete(runStates, msg.SessionID)
+		}
 	case "stdin":
 		handleStdin(msg, m, write)
+	case "claude_prompt":
+		handleClaudePrompt(msg, m, runner, claudeEvents, runStates, write)
+	case "tool_decision":
+		handleToolDecision(msg, bridge, write)
+	case "interrupt":
+		if st, ok := runStates[msg.SessionID]; ok && st.stop != nil {
+			st.stop()
+		}
 	default:
 		_ = write(OutMsg{Type: "error", Code: "bad_type", Message: "unknown message type"})
 	}
@@ -498,6 +668,107 @@ func handleStdin(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 	if err := sh.SendStdin(data); err != nil {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "stdin_failed", Message: err.Error()})
 		return
+	}
+}
+
+// handleClaudePrompt forks `claude -p ...` for one user prompt and
+// streams the parsed events back via claude_event frames. Only valid
+// when the session is in claude mode with renderer=ui. Refuses if a
+// prompt is already in flight (one at a time per session).
+func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, out chan<- claudeEvtForward, runStates map[string]*claudeRunState, write func(OutMsg) error) {
+	if msg.SessionID == "" {
+		_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "claude_prompt requires sessionID"})
+		return
+	}
+	if strings.TrimSpace(msg.Text) == "" {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "bad_request", Message: "prompt text required"})
+		return
+	}
+	if m.GetMode(msg.SessionID) != store.ModeClaude {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "mode_mismatch", Message: "claude_prompt is only valid in claude mode"})
+		return
+	}
+	if m.GetRenderer(msg.SessionID) != store.RendererUI {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "renderer_mismatch", Message: "claude_prompt requires renderer=ui"})
+		return
+	}
+	if _, busy := runStates[msg.SessionID]; busy {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "busy", Message: "another prompt is still in flight"})
+		return
+	}
+	convoID, err := m.EnsureClaudeConvoID(msg.SessionID)
+	if err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
+		return
+	}
+	// claude --resume requires running from the original cwd. We
+	// don't track per-session cwds today (V0 sessions inherit /home/
+	// alfred). For v1 we always invoke from /home/alfred — which is
+	// also where claude wrote its first transcript, so --resume
+	// works. If the user changed cwd inside a TUI claude before
+	// switching to UI, this would mismatch; punted to v1.5.
+	cwd := "/home/alfred"
+	ctx, cancel := context.WithCancel(context.Background())
+	pr, err := runner.Prompt(ctx, claude.PromptOptions{
+		SessionUUID:    convoID,
+		CWD:            cwd,
+		Prompt:         msg.Text,
+		PermissionMode: "default", // PreToolUse hook handles per-call asks
+	})
+	if err != nil {
+		cancel()
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "claude_spawn_failed", Message: err.Error()})
+		return
+	}
+	state := &claudeRunState{cancel: cancel, stop: pr.Stop}
+	runStates[msg.SessionID] = state
+
+	stopCh := make(chan struct{})
+	// Forward parsed events as long as the runner emits.
+	go func() {
+		defer close(stopCh)
+		for ev := range pr.Events {
+			payload := claudeEventPayload(ev)
+			select {
+			case out <- claudeEvtForward{sessionID: msg.SessionID, kind: ev.Kind, payload: payload}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	// Reap the process exit + clean up.
+	go func() {
+		<-stopCh
+		_ = pr.Wait()
+		// Remove this run from in-flight map. Best-effort — the
+		// state may have been cleared by exit_claude or interrupt.
+		delete(runStates, msg.SessionID)
+		cancel()
+	}()
+}
+
+// handleToolDecision unblocks a PreToolUse hook waiting in the
+// bridge. The toolUseID identifies which pending request to resolve.
+func handleToolDecision(msg InMsg, bridge *claude.Bridge, write func(OutMsg) error) {
+	if bridge == nil {
+		_ = write(OutMsg{Type: "error", Code: "unavailable", Message: "claude bridge not configured"})
+		return
+	}
+	if msg.ToolUseID == "" {
+		_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "tool_decision requires toolUseId"})
+		return
+	}
+	if msg.Decision != "allow" && msg.Decision != "deny" {
+		_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "decision must be 'allow' or 'deny'"})
+		return
+	}
+	if !bridge.Resolve(msg.ToolUseID, claude.Decision{
+		Permission: msg.Decision,
+		Reason:     msg.Reason,
+	}) {
+		// Pending request not found (timed out, already resolved).
+		// Don't error to the client — race condition is benign;
+		// nothing to do.
 	}
 }
 
