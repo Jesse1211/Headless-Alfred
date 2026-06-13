@@ -9,7 +9,7 @@ package api
 //   - V0 chat:           "run"
 //   - V0 claude (TUI):   "enter_claude", "exit_claude", "stdin"
 //   - V1 claude (UI):    "claude_prompt", "tool_decision", "interrupt"
-//                        + Renderer field on "enter_claude"
+//   - Renderer field on "enter_claude"
 type InMsg struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID,omitempty"`
@@ -28,13 +28,13 @@ type InMsg struct {
 //
 // Types added incrementally across rollouts:
 //   - V0 chat:           "idle", "reattach", "started", "chunk", "done",
-//                        "error", "session_closed", "session_renamed",
-//                        "session_created"
+//     "error", "session_closed", "session_renamed",
+//     "session_created"
 //   - V0 claude (TUI):   "claude_entered", "claude_exited", "pty_data"
-//                        + Mode field on idle/reattach
+//   - Mode field on idle/reattach
 //   - V1 claude (UI):    "claude_event", "tool_approval_request",
-//                        "claude_error"
-//                        + Renderer field on idle/reattach/claude_entered
+//     "claude_error"
+//   - Renderer field on idle/reattach/claude_entered
 type OutMsg struct {
 	Type        string `json:"type"`
 	SessionID   string `json:"sessionID,omitempty"`
