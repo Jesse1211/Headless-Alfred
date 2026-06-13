@@ -285,23 +285,54 @@ func (ts *TmuxShell) SendStdin(data []byte) error {
 	return ts.cfg.Runner.SendText(ts.cfg.SessionID, string(data))
 }
 
-// ExitClaude attempts to make claude quit. We don't kill it directly;
-// we send the user-visible signals claude listens to:
-//   - Ctrl+C (0x03) — interrupts whatever claude is doing
-//   - Ctrl+D (0x04) — EOF on stdin; from claude's prompt this exits
+// ExitClaude forces claude to quit and returns the pane to a fresh
+// bash prompt. Uses the same SIGKILL+respawn-pane path as Stop(),
+// because:
 //
-// If claude was mid-tool-call this may corrupt its session state; the
-// frontend warns the user before calling this path.
+//   - tmux's #{pane_pid} is the original bash, not the foreground
+//     process. SIGKILLing it would kill bash → trigger #{pane_dead}
+//     → the poller fires OnUserExit → Manager closes the whole
+//     session. That's much worse than "claude lingers".
+//   - We don't have a clean way to find claude's PID without parsing
+//     /proc (which fights with the runner abstraction).
+//
+// Trade-off: cwd / env / aliases the user had built up are LOST on
+// ExitClaude (same as shell-mode Stop). The frontend warns the user
+// in the README. This is acceptable for v1; if it bites, we can
+// later parse `#{pane_current_command}` and only kill when it's
+// "node" (claude is a node process).
+//
+// Worst-case data loss: anything claude hadn't written to disk
+// (in-flight tool call output). The frontend has a clear "Exit
+// Claude" button rather than an automatic timer.
 func (ts *TmuxShell) ExitClaude() error {
 	ts.mu.Lock()
 	if ts.closed || !ts.started {
 		ts.mu.Unlock()
 		return ErrUnavailable
 	}
+	ts.stoppingForRespawn = true
 	ts.mu.Unlock()
-	// Two Ctrl+C are sometimes needed to dismiss "Press Ctrl-C again to exit".
-	if err := ts.cfg.Runner.SendText(ts.cfg.SessionID, "\x03\x03"); err != nil {
-		return fmt.Errorf("send Ctrl+C: %w", err)
+	defer func() {
+		ts.mu.Lock()
+		ts.stoppingForRespawn = false
+		ts.mu.Unlock()
+	}()
+
+	pid, err := ts.cfg.Runner.PanePID(ts.cfg.SessionID)
+	if err != nil {
+		return fmt.Errorf("PanePID: %w", err)
+	}
+	if pid > 0 {
+		if err := ts.killPID(pid); err != nil {
+			ts.cfg.Logger.Warn("ExitClaude: kill returned non-fatal", "pid", pid, "err", err)
+		}
+	}
+	if err := ts.cfg.Runner.RespawnPane(ts.cfg.SessionID, "bash", "--noprofile", "--norc"); err != nil {
+		return fmt.Errorf("RespawnPane: %w", err)
+	}
+	if err := ts.configurePane(); err != nil {
+		return fmt.Errorf("configurePane: %w", err)
 	}
 	return nil
 }
