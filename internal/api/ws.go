@@ -241,6 +241,10 @@ func handleInbound(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "command_too_large", Message: "command exceeds 4096 bytes"})
 			return
 		}
+		if errMsg := validateGitCommit(msg.Command); errMsg != "" {
+			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "git_commit_needs_message", Message: errMsg})
+			return
+		}
 		sh, err := m.Get(msg.SessionID)
 		if errors.Is(err, session.ErrSessionNotFound) {
 			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "unknown_session", Message: "no such session"})
