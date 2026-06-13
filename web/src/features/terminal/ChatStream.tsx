@@ -1,5 +1,42 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
+import AnsiToHtml from 'ansi-to-html'
 import { CompletedMsg, RunningCmd } from './types'
+
+// One instance is enough — the converter is stateless across toHtml calls.
+// escapeXML:true is REQUIRED for safety: it tells the lib to HTML-escape
+// the raw text before injecting its own <span> tags for SGR codes.
+// Without it, command output containing literal '<script>' would render
+// as a real script tag when we dangerouslySetInnerHTML below.
+const ansi = new AnsiToHtml({
+  escapeXML: true,
+  newline: false,
+  stream: false,
+  // A palette that reads well on the dark surface used by the chat.
+  fg: '#e6e6e6',
+  bg: 'transparent',
+  colors: {
+    0: '#000000',
+    1: '#e06c75', // red
+    2: '#98c379', // green
+    3: '#e5c07b', // yellow
+    4: '#61afef', // blue
+    5: '#c678dd', // magenta
+    6: '#56b6c2', // cyan
+    7: '#dcdfe4',
+    8: '#5c6370',
+    9: '#e06c75',
+    10: '#98c379',
+    11: '#e5c07b',
+    12: '#61afef',
+    13: '#c678dd',
+    14: '#56b6c2',
+    15: '#ffffff',
+  },
+})
+
+function renderAnsi(text: string): string {
+  return ansi.toHtml(text)
+}
 
 interface Props {
   messages: CompletedMsg[]
@@ -92,9 +129,17 @@ function AssistantBlock({ output, live, exitCode, status, truncated }: Assistant
   const normalized = normalizeOutput(output)
   const hasOutput = normalized.length > 0
   const failed = !live && exitCode != null && exitCode !== 0
+  // Memoize: parsing ANSI is O(n) over the full buffer, and chunks
+  // arrive ~10x/sec for a live command.
+  const html = useMemo(() => (hasOutput ? renderAnsi(normalized) : ''), [normalized, hasOutput])
   return (
     <div className="msg msg--assistant">
-      {hasOutput && <pre className="msg__output">{normalized}</pre>}
+      {hasOutput && (
+        <pre
+          className="msg__output"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      )}
       {!hasOutput && live && <div className="msg__hint">running…</div>}
       {!hasOutput && !live && <div className="msg__hint">(no output)</div>}
       <div className="msg__meta">
