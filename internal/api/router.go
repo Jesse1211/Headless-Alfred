@@ -45,6 +45,12 @@ func NewRouter(d Deps) http.Handler {
 		// Git credentials (writes ~/.git-credentials so git clone/pull/push
 		// don't need the token on the command line and don't prompt).
 		r.Post("/api/git-credentials", GitCredentialsHandler().ServeHTTP)
+
+		// Anthropic OAuth credentials (writes ~/.claude/.credentials.json
+		// so the `claude` CLI in any session can authenticate without
+		// going through its own /login flow — which can't complete
+		// inside the chat UI).
+		r.Post("/api/anthropic-credentials", AnthropicCredentialsHandler().ServeHTTP)
 	})
 
 	r.NotFound(static.Handler().ServeHTTP)
