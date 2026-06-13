@@ -69,6 +69,10 @@ USER 1000
 WORKDIR /home/alfred
 COPY --from=go-builder --chown=alfred:alfred /out/alfred-server /usr/local/bin/alfred-server
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+# Claude PreToolUse hook — a small curl-based shell script that
+# blocks on the alfred-server bridge until the user decides. See
+# internal/claude/bridge.go.
+COPY --chmod=0755 deploy/alfred-claude-bridge.sh /usr/local/bin/alfred-claude-bridge
 
 ENV ALFRED_ADDR=":8080"
 ENV ALFRED_DATA_DIR="/data"
