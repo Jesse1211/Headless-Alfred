@@ -5,23 +5,43 @@
 
 ## 1. Goal
 
-The existing **Claude mode** (xterm.js + raw PTY passthrough) drops the
-user into Claude's native TUI. It works but loses the "Alfred-shaped"
-UX — no Markdown rendering, no inline diff cards, no permission-prompt
-UI, no Tool-use approval flow integrated with the rest of the workbench.
+This spec adds a **second renderer** for the Claude mode that already
+ships in Alfred. The current renderer is xterm.js running Claude's
+native TUI — full screen, ANSI, exactly what `claude` looks like in a
+real terminal. The new renderer is a ChatGPT-style React chat with
+Markdown, code blocks, and tool-use approval cards.
 
-This spec adds a **second view of the same Claude conversation**:
+Both renderers are **two views on the same conversation**. The user
+flips between them via a header toggle. Underneath, only the Claude
+process model changes — interactive CLI for TUI, programmatic
+`claude -p --resume <uuid>` for UI — both pointed at the same
+conversation UUID on disk. The user experience is "talking to the
+same Claude, just drawn differently".
 
-- A ChatGPT-style **chat UI** rendered by Alfred (the "UI mode").
-- A toggle in the header lets the user switch between TUI and UI **without
-  losing the conversation**. Both views are backed by the same
-  `claude --session-id <uuid>` transcript on the PVC.
-- Tool use (bash, edit, write, etc.) is **intercepted by Alfred** — Claude
-  asks, the React UI shows an "Approve / Deny" card, Alfred runs the tool
-  (or refuses), result goes back to Claude.
+Tool use (`Bash`, `Edit`, `Write`, etc.) is **intercepted by Alfred**
+in UI mode: Claude asks, the React UI shows an "Approve / Deny" card,
+Alfred returns the decision to Claude.
 
-This is **not** a replacement for the TUI. Users who like the native TUI
-keep it. Users who prefer Alfred-rendered chat get a parallel path.
+This is **not** a replacement for the TUI. We keep both renderers.
+
+### 1.0.1 What this is NOT
+
+It's worth being explicit about what's out of scope, because it shapes
+several decisions below:
+
+- **Not a shell.** Claude mode = talking to Claude. There is no
+  `cd`-ing inside Claude mode. If the user wants to navigate the
+  filesystem, they exit Claude mode (Exit button) and use the shell
+  view. Inside Claude mode, the only thing the user does is type
+  prompts; the only thing Claude does is respond and (with the user's
+  approval) call tools.
+- **Not a multi-conversation hub.** One Claude conversation per Alfred
+  session. To start a parallel chat, create a parallel Alfred session.
+- **Not a permission tuning surface.** v1 asks before every tool use.
+  No fine-grained allow-lists, no "auto-allow read tools" knob. The
+  user clicks Allow/Deny each time. (We can add "Allow always for
+  Bash" later via Claude's own `~/.claude/settings.json`, but it's
+  v1.5.)
 
 ### 1.1 Non-goals (v1)
 
@@ -38,60 +58,87 @@ keep it. Users who prefer Alfred-rendered chat get a parallel path.
 ## 2. User flow
 
 ```
-1. Alfred session with mode=shell, user pokes around.
-2. User types `claude` (or clicks Claude button) → enters Claude-mode TUI
-   (existing behavior). xterm.js renders Claude's native screen.
-3. NEW: header now shows three buttons: "TUI" (highlighted), "UI", "Exit Claude".
-4. User clicks "UI" → frontend switches view to chat-style ChatStream,
-   backend swaps the underlying `claude` process from interactive TUI
-   to `claude -p --output-format stream-json --resume <uuid>`. Same UUID.
-   Same on-disk transcript. Claude doesn't know it's "the same user
-   different view" — it just sees a new -p invocation with --resume.
-5. User types a prompt in the chat input → backend spawns ONE
-   `claude -p` process with the prompt → streams events back via WS
-   pty_data-shaped frames (but typed as claude_event) → React renders.
-6. Claude wants to run `bash: ls /` → PreToolUse hook → POSTs to
-   localhost:claude-bridge → Alfred backend → WS push to React:
-   "Claude wants to run bash: ls /. [Allow] [Deny] [Allow always]".
-   React resolves the prompt → backend returns to hook → hook returns
-   allow/deny to Claude → Claude proceeds (or doesn't).
-7. User clicks "TUI" → backend kills the current `claude -p` (if one is
-   running), respawns interactive `claude --resume <uuid>` in the tmux
-   pane, frontend switches back to xterm.js view.
-8. User clicks "Exit Claude" → existing flow. Both processes die,
-   tmux pane respawns bash.
+1. Alfred session in shell mode (the current default). User does
+   regular shell things, eventually navigates somewhere they want
+   Claude's attention.
+2. User clicks the Claude button (or types `claude` / `/claude`) →
+   enters Claude mode. The current behavior is "TUI renderer": the
+   xterm.js view shows Claude's native screen.
+3. NEW: header now shows three buttons: [ TUI ✓ ] [ UI ] [ Exit Claude ].
+   The first two are the renderer toggle; both are inside Claude mode.
+4. User clicks "UI" → renderer changes to the React chat view.
+   - The TUI's interactive `claude` process is killed.
+   - The conversation UUID (assigned the first time Claude was entered
+     in this Alfred session, stored in sessions.json) is reused.
+   - No `claude` process is running between user prompts in UI mode —
+     each prompt forks a fresh `claude -p --resume <uuid>` (§3).
+5. User types a prompt in the chat input → backend forks ONE
+   `claude -p` process → streams stream-json events back via WS frames
+   (`claude_event`) → React renders Markdown / code / etc.
+6. Claude wants to run `bash: ls /` → PreToolUse hook fires → blocks
+   on localhost endpoint → Alfred pushes `tool_approval_request` to
+   React → React shows "Claude wants to run bash: ls /. [Allow] [Deny]"
+   → user clicks → backend returns the decision to the hook → hook
+   returns to Claude → Claude proceeds or skips.
+7. User clicks "TUI" → backend respawns interactive `claude --resume
+   <uuid>` in the tmux pane → frontend switches back to xterm.js. The
+   same conversation is now visible in TUI (because --resume reads the
+   same transcript file).
+8. User clicks "Exit Claude" → both renderer paths tear down, tmux
+   pane goes back to bash (existing flow). The conversation UUID
+   stays on disk; entering Claude again resumes it.
 ```
 
-### 2.1 cwd / env
+The renderer toggle is the only new control. Everything else is wiring.
 
-`claude` is always invoked from the session's tmux pane (same as today).
-So whatever cwd the user navigated to in shell mode before entering
-Claude is what Claude sees. This is the same property the TUI has, and
-also satisfies the SDK's requirement that `--resume <uuid>` runs in the
-**same project directory** as where the session was originated.
+### 2.1 cwd
 
-### 2.2 Switching views mid-tool-use
+The conversation is bound to one cwd at creation time (Claude CLI
+requires it for `--resume`). cwd is "whatever the user's bash was in
+when they first entered Claude mode for this Alfred session". After
+that, cwd doesn't drift inside Claude mode, because **Claude mode is
+not a shell** — there is no `cd`. Switching between TUI and UI
+renderers does not change cwd: both renderers invoke claude from the
+same tmux pane that's still sitting at the same prompt.
 
-If the user clicks TUI while Claude is mid-stream (writing tokens, mid-
-tool-call), we let the current turn finish first then switch on the
-next idle:
+This rules out an entire class of edge cases the previous draft
+worried about.
 
-- **UI → TUI mid-stream**: refuse the switch with a toast "Wait for
-  Claude to finish this turn". The TUI button is disabled while
-  `inFlight=true`.
-- **TUI → UI mid-stream**: same. We can't read TUI's internal state
-  to know it's mid-tool-call, but we approximate via a "send anything
-  to Claude" inhibit: the user must click `/exit` -> wait for prompt
-  -> then UI toggle is enabled.
+### 2.2 Switching renderer mid-turn
 
-This avoids the bad case where switching kills Claude mid-call and
-leaves a half-finished tool execution.
+If the user clicks "UI" while the TUI is mid-conversation (Claude is
+streaming a response, or waiting on a tool), or vice versa, the
+toggle is **disabled** until the current turn finishes:
+
+- UI mode: backend tracks `inFlightPrompt` per session. While true,
+  both the "TUI" button and the prompt input show as busy.
+- TUI mode: harder — we can't peek into Claude's TUI state. Best
+  effort: the "UI" button is enabled but clicking it shows a confirm
+  dialog "Claude may be in the middle of work. Switch anyway?" with
+  a clear "Switching kills the current Claude process and starts a
+  fresh one on the next prompt". For v1 we accept this lossy switch
+  because we can't synchronously detect TUI activity.
 
 ---
 
 ## 3. Architecture: process model
 
-### 3.1 Two processes never run at the same time
+### 3.0 User-visible equivalence to "claude in a terminal"
+
+The user's mental model is "I'm chatting with one Claude, the same
+way I would in a terminal — I send a prompt, it replies, I send the
+next prompt, it remembers what we just talked about." Every
+implementation decision below must preserve that property: same
+conversation across the renderer toggle, same conversation across
+prompts, same conversation across Pod restarts (until the user
+chooses Exit Claude).
+
+Concretely, that's why we lean on `--resume <uuid>` rather than
+trying to keep a process alive: the Claude CLI's own session model
+already guarantees "next prompt continues the conversation", and
+we just route prompts to it.
+
+### 3.1 At most one Claude process at a time
 
 For a given Alfred session, at most ONE Claude process exists:
 
@@ -159,36 +206,41 @@ detail).
 
 ## 4. WS protocol additions
 
-New `InMsg` types (client → server):
+Mode terminology in this codebase (post-change): a session has a
+**mode** (`shell` | `claude`) and, when in `claude`, a **renderer**
+(`tui` | `ui`). The existing `claude_entered` / `claude_exited` events
+keep their meaning ("entered/left claude mode"); they carry the
+initial renderer in a new field.
+
+New `InMsg` (client → server):
 
 | Type | Fields | Semantics |
 |---|---|---|
-| `enter_claude_ui` | `sessionID` | Switch from shell or TUI-claude to UI claude. If TUI-claude was running, kill it first. |
-| `exit_claude_ui` | `sessionID` | Leave UI mode; if a prompt is in flight, refuse. |
-| `switch_to_tui` | `sessionID` | UI → TUI switch. Refused if `inFlight`. |
-| `switch_to_ui` | `sessionID` | TUI → UI switch. Refused if TUI is mid-tool-call (best-effort detected). |
-| `claude_prompt` | `sessionID`, `text` | Send one prompt in UI mode. Spawns claude -p. |
-| `tool_decision` | `sessionID`, `toolUseID`, `decision: "allow"\|"deny"`, `rememberFor?: string` | Resolve a pending tool-use approval request. |
-| `interrupt` | `sessionID` | Kill the current claude -p (user clicked "Stop"). Cleans up the on-disk lock. |
+| `set_renderer` | `sessionID`, `renderer: "tui" \| "ui"` | Switch between TUI and UI renderers without leaving Claude mode. Refused if `inFlightPrompt`; for TUI→UI, shows the user a "may interrupt Claude" confirm on the frontend before sending. |
+| `claude_prompt` | `sessionID`, `text` | UI-renderer only. Send one prompt; backend forks `claude -p --resume <uuid>` with this text. |
+| `tool_decision` | `sessionID`, `toolUseID`, `decision: "allow" \| "deny"` | Resolve a pending tool-use approval request raised by the PreToolUse hook. |
+| `interrupt` | `sessionID` | UI-renderer only. SIGINT the in-flight claude -p (user clicked "Stop"). |
 
-New `OutMsg` types (server → client):
+New `OutMsg` (server → client):
 
 | Type | Fields | Semantics |
 |---|---|---|
-| `claude_ui_entered` | `sessionID`, `convoID` | UI mode active. Frontend mounts the new view. |
-| `claude_ui_exited` | `sessionID` | Back to shell. |
-| `claude_event` | `sessionID`, `kind`, `payload` | One parsed stream-json event. `kind` is one of `system`, `text_delta`, `text_block_end`, `tool_use_start`, `tool_use_end`, `message_delta` (usage), `message_stop`, `result`. `payload` carries the relevant subset of the source event. |
-| `tool_approval_request` | `sessionID`, `toolUseID`, `tool`, `input`, `display: { title, summary, danger }` | Claude wants to run a tool; the frontend shows an Allow/Deny card. The backend BLOCKS Claude's process (via the PreToolUse hook) until `tool_decision` comes back. |
+| `renderer_changed` | `sessionID`, `renderer` | Backend completed a renderer switch. Frontend mounts the matching view. |
+| `claude_event` | `sessionID`, `kind`, `payload` | UI-renderer only. One parsed stream-json event. `kind` is one of `system`, `text_delta`, `text_block_end`, `tool_use_start`, `tool_use_end`, `message_delta` (usage), `message_stop`, `result`. `payload` carries the relevant subset of the source JSON. |
+| `tool_approval_request` | `sessionID`, `toolUseID`, `tool`, `input`, `display: { title, summary, danger }` | Claude wants to run a tool; frontend shows the Approve/Deny card. The PreToolUse hook is BLOCKED in the pod until `tool_decision` arrives. |
 | `claude_error` | `sessionID`, `code`, `message` | Spawn failed, parse failed, claude exited non-zero with no result event, etc. |
 
-The existing `idle` / `reattach` gain another mode value:
+Updated existing frames:
 
-```
-"mode": "shell" | "claude_tui" | "claude_ui"
-```
+- `claude_entered`: now also carries `renderer` (defaults to `"tui"`,
+  the legacy behavior). Frontend uses this on initial connect to pick
+  the view.
+- `idle` / `reattach`: gain a `renderer` field next to `mode`. Empty
+  string in legacy clients/sessions → assume `"tui"`.
 
-Old `claude_entered` / `claude_exited` are kept (they're the TUI path)
-but the new UI flow uses the more granular events above.
+We deliberately do NOT add `enter_claude_ui`-style events; entering
+Claude is one event (`claude_entered`), and renderer is just a sub-
+state of that.
 
 ---
 
@@ -254,23 +306,22 @@ Claude includes `session_id` in the hook payload, which Alfred uses
 to look up the right Alfred session via the `claudeSessionID` ↔
 `alfredSessionID` map.
 
-### 5.2 "Allow always" remembering
+### 5.2 v1: every tool use asks
 
-When the user clicks "Allow always for `bash`":
+There is **no "Allow always"** in v1. Every Bash / Edit / Write / Read /
+Glob / Grep / etc. call surfaces a card. Users dismiss them by
+clicking Allow or Deny. This is intentionally noisy — see §1.0.1.
 
-- Frontend includes `rememberFor: "bash"` in the `tool_decision` frame.
-- Backend appends to `~/.claude/settings.json`:
-  ```json
-  { "permissions": { "allow": ["Bash(*)"] } }
-  ```
-  (Claude reads this on the next hook invocation and pre-approves.)
+v1.5 will add an "Allow this and similar for the rest of this turn"
+checkbox or a per-session policy panel (TBD), and will use Claude's
+own `~/.claude/settings.json` `permissions.allow` array to persist.
+Out of scope here.
 
-This survives Pod restarts.
+### 5.3 Pre-blacklist (out of scope)
 
-### 5.3 Disallowed tools (v1.5)
-
-Out of scope for v1: letting the user pre-blacklist tools. Default is to
-ask every time, with the "Allow always" path to amortize.
+Letting the user pre-blacklist tools (e.g., "never let Claude touch
+the filesystem in this session") is also v1.5. v1 keeps the surface
+minimal: just the per-call Allow/Deny.
 
 ---
 
@@ -284,8 +335,8 @@ ask every time, with the "Allow always" path to amortize.
   turn and renders Markdown (assistant text), code blocks with syntax
   highlight (we already have a renderer for this in ChatStream — share
   it), thinking blocks (collapsed by default), tool_use cards.
-- `ToolApprovalCard.tsx`: the "Allow / Deny / Allow always" modal/
-  card.
+- `ToolApprovalCard.tsx`: the per-tool-call "Allow / Deny" card
+  (v1 only — no "always" button, per §5.2).
 - `useClaudeStream.ts`: hook that accumulates `claude_event` frames
   into a per-turn message structure, exposes the current turn's state
   (text streaming in, tool requested, finished, etc.).
@@ -342,14 +393,22 @@ Claude conversation UUID). New methods:
 ### 7.3 `internal/api/ws.go`
 
 - Handle new `InMsg` types (§4).
-- `enter_claude_ui`: kill TUI claude if running (via existing
-  `ExitClaude`), persist `mode = claude_ui`, write `claude_ui_entered`.
-- `claude_prompt`: launch via `claude.Runner.Prompt(...)`, forward
-  each event as a `claude_event` frame.
-- `tool_decision`: call `Manager.ResolveTool`.
-- `switch_to_tui` / `switch_to_ui`: refuse if inFlight; otherwise
-  flip the mode flag and (for TUI) re-send `claude --resume <id>` via
-  `EnterClaude`.
+- `set_renderer { renderer: "ui" }`: kill any live TUI `claude`
+  process in the pane (via existing `ExitClaude`-like cleanup but
+  WITHOUT respawning bash — we'll just leave the pane at the prompt
+  for the next claude -p to use). Update session state
+  `renderer = "ui"`. Send `renderer_changed` back.
+- `set_renderer { renderer: "tui" }`: if a `claude -p` is in flight,
+  refuse with an error (frontend already disables the button, this
+  is a backstop). Otherwise, send-keys `claude --resume <uuid>` into
+  the pane and update `renderer = "tui"`. Send `renderer_changed`.
+- `claude_prompt`: only valid when `renderer == "ui"`. Launch via
+  `claude.Runner.Prompt(...)`, forward each parsed event as a
+  `claude_event` frame.
+- `tool_decision`: call `Manager.ResolveTool(toolUseID, decision)`.
+- `interrupt`: SIGINT the in-flight `claude -p` PID. The Runner's
+  reader goroutine will see EOF, finish flushing, and we send a
+  `claude_event { kind: "interrupted" }` followed by inflight=false.
 
 ### 7.4 Dockerfile
 
@@ -390,17 +449,14 @@ managed by Claude. We don't touch them.
    wins; the second sees a "stale" message acknowledging.
 
 5. **User clicks "Stop" mid-tool-execution**: backend sends SIGINT
-   to the claude -p process. Claude SDK's behavior on SIGINT in
+   to the claude -p process. Claude CLI's behavior on SIGINT in
    stream-json mode is undocumented; assume it exits with a non-zero
    code. We treat it as if the turn ended with an error. The hook may
    or may not return before SIGINT propagates — we don't care, the
    user wanted out.
 
-6. **claude --resume on a stale cwd**: if the user shell-mode `cd`'d
-   away from the cwd where the conversation was originated, `--resume`
-   fails (per SDK docs §4). Mitigation: store cwd at convo-creation
-   time, `cd` back before each `claude -p` invocation. Or: refuse to
-   enter UI mode if cwd has drifted. v1: refuse, surface a clear error.
+6. **(Removed — cwd doesn't drift because the user can't `cd`
+   inside Claude mode; see §1.0.1 and §2.1.)**
 
 7. **Claude wants to run a tool we don't have a UI affordance for**
    (e.g. a fancy MCP server tool): the approval card just shows the
@@ -423,21 +479,41 @@ managed by Claude. We don't touch them.
 
 ## 9. Phasing
 
-1. **Phase 1**: backend `internal/claude/runner.go` (spawn + parse
-   stream-json), exposed via a smoke endpoint or test. No UI yet.
-2. **Phase 2**: localhost bridge for tool intercept, configured via
-   settings.json. Demo: a manual `curl` proves "Claude waited, decision
-   came back, Claude resumed".
-3. **Phase 3**: WS protocol additions; UI mode entry/exit; React
-   `ClaudeChatView` skeleton that renders raw events.
-4. **Phase 4**: Markdown / code block / thinking rendering.
-5. **Phase 5**: Tool approval card UI.
-6. **Phase 6**: header "TUI / UI / Exit Claude" 3-way toggle.
-7. **Phase 7**: usage footer (token count + dollar estimate).
-8. **Phase 8**: edge-case hardening (cwd drift, hook timeout UX,
-   stop button), CONTEXT.md + README docs.
+1. **Phase 1**: backend `internal/claude/runner.go` — spawn
+   `claude -p --resume <uuid> --output-format stream-json
+   --include-partial-messages`, parse stdout line-by-line into typed
+   events, ship via a Go channel. Unit-tested with a fake
+   stream-json fixture. No tmux, no UI yet.
+2. **Phase 2**: `internal/claude/bridge.go` — the localhost HTTP
+   listener that backs the PreToolUse hook. Plus the shell-script
+   hook itself shipped in the Dockerfile. Manual `curl` smoke
+   verifies "Claude calls a tool → hook hangs on the bridge →
+   /resolve endpoint sets the decision → hook returns → Claude
+   proceeds".
+3. **Phase 3**: WS protocol — add `set_renderer`, `claude_prompt`,
+   `tool_decision`, `interrupt` inbound; `renderer_changed`,
+   `claude_event`, `tool_approval_request`, `claude_error` outbound.
+   `Manager` learns the per-session `Renderer` and the
+   `ClaudeSessionID` (UUID). `idle`/`reattach`/`claude_entered`
+   gain the renderer field.
+4. **Phase 4**: React `ClaudeChatView` skeleton — renders incoming
+   `claude_event` frames as raw blocks (no Markdown yet, just text).
+   Composer textarea + Stop button. End-to-end: type prompt, see
+   raw text stream back. Tool calls show as unstyled "Allow / Deny"
+   buttons.
+5. **Phase 5**: rich rendering — react-markdown + remark-gfm for
+   assistant text; syntax-highlighted code blocks; collapsed
+   thinking blocks. Tool-call cards get proper styling.
+6. **Phase 6**: header three-way toggle "TUI ✓ / UI / Exit Claude".
+   Backend `set_renderer` flips between interactive `claude` in
+   the tmux pane and the on-demand `claude -p`. Confirm dialog on
+   TUI→UI mid-turn.
+7. **Phase 7**: edge-case hardening + token/cost footer (from
+   `message_delta.usage`, with client-side dollar estimate using
+   published pricing) + Pod-restart replay + CONTEXT.md + README
+   docs.
 
-Estimate: 15–25 hours focused work, 3–5 calendar days.
+Estimate: 15–22 hours focused work, 3–4 calendar days.
 
 ---
 
@@ -448,8 +524,9 @@ Done when:
   chat. Types a question → tokens stream in.
 - Claude asks to run `bash: ls` → card appears → user clicks Allow →
   result appears under the card → Claude continues.
-- "Allow always for `bash`" persists across page refresh (settings.json
-  on PVC).
+- Every tool use yields a card; user clicks Allow → tool runs and
+  result appears below the card; Deny → tool is skipped and Claude
+  sees a "user denied" message.
 - Click "TUI" → back to xterm.js → conversation continuation visible
   in TUI (proves `--resume <uuid>` works across modes).
 - Pod restart (`kubectl rollout`) preserves transcript: re-enter UI,
