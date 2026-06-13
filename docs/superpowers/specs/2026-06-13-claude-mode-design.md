@@ -61,7 +61,23 @@ applications. The product *is* a shell + AI workbench.
    continues normal shell ops.
 ```
 
-### 2.1 Alternative path: "Exit Claude" button
+### 2.1 cwd / env preservation across Claude
+
+`claude` runs as a child of the session's bash. Per Unix process
+semantics, a child can change its OWN cwd and env, but cannot mutate
+the parent's. So:
+
+- Whatever directory the user was in when they typed `/claude` is
+  the directory Claude sees on startup.
+- Anything Claude does to its cwd / env is local to the Claude
+  process and dies with it.
+- Files Claude creates, edits, or deletes on the filesystem persist
+  (the FS is shared across sessions per spec §1 of the multi-session
+  doc).
+- When Claude exits, bash's cwd is exactly what it was — the user
+  resumes shell-mode work at the same prompt position.
+
+### 2.2 Alternative path: "Exit Claude" button
 
 The header (or wherever we put the chat/claude toggle) shows an
 **"Exit Claude"** button while in claude mode.
@@ -104,19 +120,43 @@ The only cost is **sentinel parser disambiguation** — see §4.
 
 ### 3.1 What "mode" actually controls
 
-For a given session, `mode` is an in-memory flag (`shell | claude`)
-held by `Manager`. It changes three things in the WS handler:
+For a given session, `mode` is a flag (`shell | claude`) held by
+`Manager`. New sessions default to `shell`. The flag changes four
+things:
 
 | In shell mode | In claude mode |
 |---|---|
-| pipe-pane bytes → SentinelParser → `started`/`chunk`/`done` frames | pipe-pane bytes → raw → `pty_data` frame, base64-wrapped |
+| pipe-pane bytes → SentinelParser watches START/END/BACK → `started`/`chunk`/`done` frames | pipe-pane bytes → SentinelParser watches BACK only (START/END ignored) → raw bytes → `pty_data` frames, base64-wrapped |
 | Inbound `run` frame → wrap command, send-keys, append `printf END` | Inbound `run` frame → rejected (`mode_mismatch`); user should be using `stdin` frame |
-| Inbound `stdin` frame → rejected | Inbound `stdin` frame → `tmux send-keys -t <pane> -l <bytes>` |
-| Stop button → SIGKILL bash + respawn | Stop button → not shown; use Exit Claude instead |
+| Inbound `stdin` frame → rejected (`mode_mismatch`) | Inbound `stdin` frame → `tmux send-keys -t <pane> -l <bytes>` |
+| Stop button → SIGKILL bash + respawn | Stop button → not shown; use Exit Claude / Force Stop instead |
 
-Mode is NOT persisted to `sessions.json`. Pod restart → tmux gone →
-mode resets to shell (whatever bash was doing pre-Claude is gone
-anyway).
+Crucially, the SentinelParser **never** stops scanning. In claude
+mode it just becomes selective about which token classes it acts on
+— see §4.7. Claude's TUI output may incidentally contain bytes that
+match a START or END token shape; the parser must not flip
+`currentCmd` state in claude mode.
+
+#### 3.1.1 Mode persistence
+
+`mode` IS persisted in `sessions.json` (a new field per session).
+The reasoning:
+
+- **Go process restart** (e.g. `kubectl rollout`): tmux pane is
+  alive, possibly with a running Claude. The new alfred-server
+  reads `sessions.json`, sees `mode: claude`, immediately wires the
+  WS handler's claude-mode branch for that session. If it didn't,
+  the new server would default to shell mode, run the sentinel
+  parser against Claude's TUI bytes, and produce nonsense
+  `started`/`chunk` frames.
+- **Pod restart**: tmux dies, Claude dies. `Manager.Reconcile()`
+  rebuilds the session with mode reset to `shell`. The persisted
+  `mode: claude` is overwritten back to `shell` as part of
+  reconcile's "stored \\ live" branch. A client reconnecting sees
+  `mode: shell` in the next `idle`/`reattach` frame and snaps back
+  to the chat view.
+- **`mode` field migration**: older sessions.json without the field
+  parse as `mode: ""`; the loader treats empty as `shell`.
 
 ---
 
@@ -127,16 +167,24 @@ anyway).
 ```
 1. Client → server:   { type: "enter_claude", sessionID }
 2. Server:
-   - Reject if mode == claude already (already_in_claude error)
-   - Generate back-nonce (independent of the start/end sentinel nonce).
+   - Reject if mode == claude already (already_in_claude error).
+   - Reject if currentCmd != nil (session_busy error, §4.6).
+   - Generate back-nonce (independent of the start/end sentinel
+     nonce; a random 16-hex-byte token).
    - sh.EnterClaude(backNonce):
-     - SentinelParser stops emitting Started/Ended.
-     - Send-keys:  claude; printf '\x1eALFRED_BACK_<nonce>X'\n
-       (the trailing X disambiguates the sentinel exactly like the
+     - Register backNonce on the SentinelParser. (Parser keeps
+       scanning all bytes; in claude mode it ignores START/END
+       and acts on BACK. See §4.7.)
+     - Send-keys (no Write() / no currentCmd; see §4.8):
+         claude; printf '\x1eALFRED_BACK_<nonce>X'
+       then SendEnter.
+       (The trailing X disambiguates the sentinel exactly like the
         existing START/END parser does — see CONTEXT.md non-obvious
         trap row.)
-   - Manager marks session mode = claude.
+   - Manager.SetMode(sessionID, "claude") — persists.
    - Server → client: { type: "claude_entered", sessionID }
+   - WS handler registers itself as activeStdinClient for this
+     session (§10.11).
 ```
 
 The back-sentinel goes onto the bash command line ahead of time. If
@@ -170,7 +218,7 @@ Server: tmux resize-window -t <pane> -x N -y M
 2. bash runs the trailing `printf '\x1eALFRED_BACK_<nonce>X'`.
 3. Pipe-pane bytes still flowing — parser detects the back-sentinel,
    emits an internal BackEvent.
-4. ws.go on BackEvent: mode := shell; write { type: "claude_exited", sessionID }
+4. ws.go on BackEvent: mode := shell; persist; write { type: "claude_exited", sessionID }
 5. Subsequent pipe-pane bytes go BACK into the SentinelParser. (Note:
    there's a brief window of bytes between Claude exiting and the
    back-sentinel firing — those are mostly bash's prompt-restore
@@ -199,6 +247,51 @@ one. Client should disable the /claude slash while mode is claude.
 Reject with `error { code: "session_busy" }`. The client should first
 let the command finish or click Stop.
 
+### 4.7 SentinelParser state machine, both modes
+
+Today's parser (shell mode) has two top-level states: `Outside`,
+`Inside` (a wrapped command). On entering `Inside`, it accumulates
+bytes for the current cmdID's buffer and emits `chunk` events; on
+exiting via END, it emits `Ended`.
+
+Claude mode adds **one** new dimension: which token classes the
+parser *acts on*. The byte-by-byte scan keeps running unchanged
+(state never gets out of sync), but token-fire callbacks become
+mode-conditional:
+
+| Token observed | Parser action in shell mode | Parser action in claude mode |
+|---|---|---|
+| `\x1eALFRED_START_<nonce>X` | enter Inside, emit Started | **ignored** (no state change; bytes pass through to the pty_data forwarder) |
+| `\x1eALFRED_END_<nonce>X` | exit Inside, emit Ended | **ignored** |
+| `\x1eALFRED_BACK_<nonce>X` | **ignored** (no use for it in shell mode) | emit BackEvent, ws.go flips mode → shell |
+| any other byte | depends on Inside/Outside state | forwarded as `pty_data` |
+
+Note that we register a **per-session BACK nonce** at EnterClaude
+time. Each Claude entry uses a fresh BACK nonce that's discarded
+when mode flips back to shell — so a stale BACK nonce from a
+previous Claude entry cannot fire mid-shell-command.
+
+### 4.8 EnterClaude bypasses the Write() / currentCmd API
+
+Important implementation contract: `TmuxShell.EnterClaude(nonce)`
+does **not** call the same `Write()` path used for normal user
+commands. Specifically it MUST NOT:
+
+- create a `RunningCommand` record on `currentCmd`
+- write a `commands/<cmdID>.json` to the store
+- emit a `started` event
+- be subject to the `ErrBusy` check (we already checked busy at the
+  WS-handler level in §4.6)
+
+It only does two things:
+1. Register the back-nonce on the parser (claude-mode listener).
+2. `runner.SendText(sessionID, "claude; printf '\x1eALFRED_BACK_<nonce>X'")` +
+   `runner.SendEnter(sessionID)`.
+
+Symmetrically, the parser BackEvent does not touch `currentCmd`
+state — there was never a record for the `claude` command, so
+there's nothing to clean up.
+
 ---
 
 ## 5. WS protocol additions
@@ -220,13 +313,16 @@ New `OutMsg` types (from server):
 | `claude_entered` | `sessionID` | mode is now claude |
 | `claude_exited` | `sessionID` | mode is now shell |
 | `pty_data` | `sessionID`, `data` (b64) | raw bytes for xterm.write |
+| `pty_replay` | `sessionID`, `data` (b64) | bulk historical bytes for a reattaching client to repopulate the terminal; sent ONCE immediately after `reattach` when the reattaching session is in claude mode (§10.8) |
 
 The existing frames (`started`/`chunk`/`done`/`error`/`idle`/`reattach`
-/`session_closed`/`session_renamed`) are unchanged. `idle` /
-`reattach` SHOULD include a `mode` field so the client knows which
-view to mount on connect, though for v1 we accept that a reconnecting
-client briefly mounts the wrong view, then corrects on the first
-mode-change frame.
+/`session_closed`/`session_renamed`) are unchanged in shape EXCEPT
+both `idle` and `reattach` gain a **required** `mode: "shell" |
+"claude"` field. The client uses this to mount the correct view on
+connect without race. For sessions where mode=claude, the server
+follows the `reattach` frame with a `pty_replay` frame (~256 KiB of
+trailing pipe-pane bytes) so xterm.js can repopulate, then begins
+streaming live `pty_data`.
 
 ---
 
@@ -234,8 +330,21 @@ mode-change frame.
 
 ### 6.1 `internal/session/`
 
-- Add `Mode` to in-memory `SessionState` (not persisted).
-- Add `Manager.SetMode(sessionID, mode)`, `Manager.GetMode(sessionID)`.
+- Add `Mode` to `SessionMeta` (so it's persisted in `sessions.json`).
+  JSON tag `"mode,omitempty"`; loader treats `""` as `shell`.
+- `Manager.Create()` initializes `mode: "shell"`.
+- `Manager.SetMode(sessionID, mode)`: sets in-memory, then
+  `persistMetas()` atomically writes the new sessions.json.
+- `Manager.GetMode(sessionID)`.
+- `Manager.Reconcile()`: in the "stored \\ live" branch (tmux was
+  dead, pane recreated), force-reset the session's mode to `shell`
+  before persisting — because the running Claude was killed with
+  the pod and the new bash is back at the prompt.
+- Add a single-active-stdin-client registry: per session, an
+  `activeStdinWS *something` reference held by Manager. Methods
+  `ClaimStdin(sid, ws) bool` (returns false if already claimed by
+  another), `ReleaseStdin(sid, ws)` (called when the ws disconnects
+  or mode → shell). See §10.11.
 
 ### 6.2 `internal/shell/tmux_shell.go`
 
@@ -411,14 +520,51 @@ endpoint reads if no key has been set yet — out of scope v1.)
    entropy). Same threat model as the existing START/END sentinels.
 
 8. **Mode persistence across WS reconnect**: when the browser
-   reconnects, it must learn the current mode of each session. v1
-   solution: extend the `idle` / `reattach` frames to include `mode`.
-   v1.5: also include the most recent ~256KB of `pty_data` so the
-   terminal can be repopulated on reconnect (similar to
-   `outputSoFar` in `reattach` today).
+   reconnects, it must learn the current mode of each session. The
+   `idle` and `reattach` frames carry a `mode` field. For sessions
+   already in claude mode at reconnect time, the server also pushes
+   the most recent ~256 KiB of pty.stream bytes as a `pty_replay`
+   frame immediately after `reattach`. xterm.js consumes the replay
+   bytes as if they had streamed live; ANSI cursor-positioning
+   sequences re-establish the screen state. (Claude redraws fully
+   on most user input, so the post-replay terminal looks correct
+   after the next keystroke even if the replay was mid-frame.)
 
-9. **xterm.js bundle size**: ~250 KB minified. Acceptable for a tool
-   used by one person who already accepts ~75 KB gzip JS.
+9. **Cursor / screen state during reconnect**: as an extra safety
+   net, after sending the pty_replay the server send-keys a single
+   ASCII NUL (`\x00`) into Claude's stdin. NUL is a no-op for Claude
+   itself, but Claude's input loop typically schedules a screen
+   redraw on any input event — so the new client sees a fresh full
+   frame within ~100ms of reconnecting, even if mid-prompt.
+
+10. **xterm.js bundle size**: ~250 KB minified. Acceptable for a tool
+    used by one person who already accepts ~75 KB gzip JS.
+
+11. **Multi-tab concurrent stdin**: two browser tabs connected to
+    the same session, both in claude mode, both typing — their
+    bytes would interleave at the PTY and corrupt Claude's input.
+    Resolution: per session, the WS handler tracks an
+    `activeStdinClient *wsClient`. The first WS connection to
+    receive a `claude_entered` frame for that session becomes
+    active. Subsequent WS connections for the same session render
+    Claude's terminal in read-only mode: they receive `pty_data`
+    frames (so they see what's happening), but their `stdin` and
+    `resize` frames are rejected with `error { code:
+    "claude_not_active", message: "Drive Claude from the other
+    tab, or close that tab" }`. When the active client disconnects,
+    the role is released; the next stdin/resize/exit_claude frame
+    from any remaining client claims it. The active-client identity
+    is NOT persisted — Go restart clears it; any reconnecting tab
+    can claim. Active-client role is per-session, so the user can
+    drive session A from tab 1 and session B from tab 2.
+
+12. **Shell mode currentCmd state survives a claude excursion**:
+    when entering claude, `currentCmd` is required to be nil (§4.6).
+    Therefore exiting back to shell, `currentCmd` is still nil — the
+    parser's Outside-state byte counter (used for the buffer cap
+    accounting in `tmux_shell.go`) is unchanged. No interaction
+    between claude mode and the shell-mode StreamTruncateThreshold
+    bookkeeping.
 
 ---
 
