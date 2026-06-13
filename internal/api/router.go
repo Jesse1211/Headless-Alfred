@@ -41,6 +41,10 @@ func NewRouter(d Deps) http.Handler {
 		r.Get("/api/sessions/{sid}/commands", ListCommandsHandler(d.Manager).ServeHTTP)
 		r.Get("/api/sessions/{sid}/commands/{id}", GetCommandHandler(d.Manager).ServeHTTP)
 		r.Post("/api/sessions/{sid}/commands/{id}/stop", StopCommandHandler(d.Manager).ServeHTTP)
+
+		// Git credentials (writes ~/.git-credentials so git clone/pull/push
+		// don't need the token on the command line and don't prompt).
+		r.Post("/api/git-credentials", GitCredentialsHandler().ServeHTTP)
 	})
 
 	r.NotFound(static.Handler().ServeHTTP)
