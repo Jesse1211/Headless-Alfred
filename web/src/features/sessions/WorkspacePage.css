@@ -55,6 +55,40 @@
   color: var(--text);
 }
 
+.workspace__creds-menu {
+  position: relative;
+}
+
+.workspace__creds-menu-popup {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+}
+
+.workspace__creds-menu-popup button {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.workspace__creds-menu-popup button:hover {
+  background: var(--bubble);
+}
+
 .workspace__claude-btn {
   background: transparent;
   border: 1px solid var(--border);

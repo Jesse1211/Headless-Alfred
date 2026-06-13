@@ -146,3 +146,17 @@ export async function saveGitCredentials(c: GitCredentials): Promise<void> {
     body: JSON.stringify(c),
   })
 }
+
+// saveAnthropicCredentials uploads the raw JSON contents of the user's
+// ~/.claude/.credentials.json (the file claude writes after OAuth /login)
+// to the server, which installs it at the same path inside the pod.
+export async function saveAnthropicCredentials(credentialsJson: string): Promise<void> {
+  // Send the body verbatim — the server expects the exact bytes claude
+  // wrote, not a re-encoded version. Setting Content-Type so the
+  // server's MaxBytesReader can size-bound correctly.
+  await request('/api/anthropic-credentials', {
+    method: 'POST',
+    body: credentialsJson,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}

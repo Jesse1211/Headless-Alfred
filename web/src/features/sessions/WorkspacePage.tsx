@@ -4,6 +4,7 @@ import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { SessionsSidebar } from './SessionsSidebar'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
+import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
 import { ClaudeTerminal } from '../claude/ClaudeTerminal'
 import ChatStream from '../terminal/ChatStream'
 import CommandInput from '../terminal/CommandInput'
@@ -28,6 +29,8 @@ export function WorkspacePage({ token, onLogout }: Props) {
 
   const [pendingClose, setPendingClose] = useState<string | null>(null)
   const [gitCredsOpen, setGitCredsOpen] = useState(false)
+  const [claudeCredsOpen, setClaudeCredsOpen] = useState(false)
+  const [credsMenuOpen, setCredsMenuOpen] = useState(false)
 
   const selected = s.selectedSessionID
     ? s.sessions.find((x) => x.id === s.selectedSessionID)
@@ -77,16 +80,48 @@ export function WorkspacePage({ token, onLogout }: Props) {
               Claude
             </button>
           )}
-          <button
-            type="button"
-            className="workspace__icon-btn"
-            aria-label="Git credentials"
-            title="Git credentials"
-            onClick={() => setGitCredsOpen(true)}
-          >
-            {/* Lightweight gear glyph; no svg dep */}
-            ⚙
-          </button>
+          <div className="workspace__creds-menu">
+            <button
+              type="button"
+              className="workspace__icon-btn"
+              aria-label="Credentials"
+              aria-haspopup="menu"
+              aria-expanded={credsMenuOpen}
+              title="Credentials"
+              onClick={() => setCredsMenuOpen((v) => !v)}
+              onBlur={() => {
+                // Defer so the menu item click handler runs first.
+                setTimeout(() => setCredsMenuOpen(false), 150)
+              }}
+            >
+              {/* Lightweight gear glyph; no svg dep */}
+              ⚙
+            </button>
+            {credsMenuOpen && (
+              <div className="workspace__creds-menu-popup" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setCredsMenuOpen(false)
+                    setGitCredsOpen(true)
+                  }}
+                >
+                  Git credentials
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setCredsMenuOpen(false)
+                    setClaudeCredsOpen(true)
+                  }}
+                >
+                  Claude credentials
+                </button>
+              </div>
+            )}
+          </div>
           <button className="workspace__logout" onClick={onLogout}>Sign out</button>
         </header>
 
@@ -151,6 +186,10 @@ export function WorkspacePage({ token, onLogout }: Props) {
 
       {gitCredsOpen && (
         <GitCredentialsDialog onClose={() => setGitCredsOpen(false)} />
+      )}
+
+      {claudeCredsOpen && (
+        <ClaudeCredentialsDialog onClose={() => setClaudeCredsOpen(false)} />
       )}
 
       {pendingClose && (
