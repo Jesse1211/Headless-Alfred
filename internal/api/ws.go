@@ -77,6 +77,12 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 	sessions := m.List()
 	subs := make([]NamedSubscriber, 0, len(sessions))
 	cancels := []func(){}
+	// ptyChunks carries raw PTY bytes (claude mode). It's a single shared
+	// channel per WS connection; each session's raw subscriber pushes
+	// {sessionID, bytes} onto it via a small forwarder goroutine.
+	ptyChunks := make(chan ptyChunk, 64)
+	stop := make(chan struct{})
+	defer close(stop)
 	for _, meta := range sessions {
 		sh, err := m.Get(meta.ID)
 		if err != nil {
@@ -85,6 +91,10 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 		sub, cancel := sh.SubscribeEvents(16)
 		subs = append(subs, NamedSubscriber{SessionID: meta.ID, Sub: sub})
 		cancels = append(cancels, cancel)
+		// Also subscribe to raw bytes for potential claude-mode output.
+		rawSub := sh.SubscribeRaw(64)
+		cancels = append(cancels, rawSub.Close)
+		go forwardRaw(meta.ID, rawSub, ptyChunks, stop)
 	}
 	defer func() {
 		for _, c := range cancels {
@@ -97,9 +107,13 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 		if err != nil {
 			continue
 		}
+		mode := string(m.GetMode(meta.ID))
+		if mode == "" {
+			mode = "shell"
+		}
 		cur := sh.CurrentCommand()
 		if cur == nil {
-			_ = write(OutMsg{Type: "idle", SessionID: meta.ID})
+			_ = write(OutMsg{Type: "idle", SessionID: meta.ID, Mode: mode})
 		} else {
 			_ = write(OutMsg{
 				Type:        "reattach",
@@ -108,6 +122,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 				Command:     cur.Command,
 				StartedAt:   cur.StartedAt.UTC().Format(time.RFC3339Nano),
 				OutputSoFar: base64.StdEncoding.EncodeToString(cur.Buffer),
+				Mode:        mode,
 			})
 		}
 	}
@@ -139,8 +154,6 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 	defer removeCreate()
 
 	events := make(chan FanInEvent, 64)
-	stop := make(chan struct{})
-	defer close(stop)
 	go FanIn(subs, events, stop)
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
@@ -174,7 +187,26 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 			if !ok {
 				return
 			}
+			// In claude mode, sentinel-derived frames (started/chunk/done)
+			// are suppressed — the user sees raw PTY bytes via pty_data
+			// instead. The parser keeps running so nothing breaks; we
+			// just don't ship those frames to the client while in claude.
+			if m.GetMode(ev.SessionID) == store.ModeClaude {
+				continue
+			}
 			writeEventToClient(ev, write)
+		case ptyCh := <-ptyChunks:
+			// Raw PTY bytes only ship in claude mode. In shell mode the
+			// equivalent bytes are already being parsed into chunk frames
+			// (above), so shipping them as pty_data too would double-send.
+			if m.GetMode(ptyCh.sessionID) != store.ModeClaude {
+				continue
+			}
+			_ = write(OutMsg{
+				Type:      "pty_data",
+				SessionID: ptyCh.sessionID,
+				Data:      base64.StdEncoding.EncodeToString(ptyCh.data),
+			})
 		case sid := <-closedCh:
 			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
@@ -192,7 +224,46 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 			sub, cancel := sh.SubscribeEvents(16)
 			cancels = append(cancels, cancel)
 			go forwardSubscriber(sid, sub, events, stop)
-			_ = write(OutMsg{Type: "idle", SessionID: sid})
+			rawSub := sh.SubscribeRaw(64)
+			cancels = append(cancels, rawSub.Close)
+			go forwardRaw(sid, rawSub, ptyChunks, stop)
+			_ = write(OutMsg{Type: "idle", SessionID: sid, Mode: "shell"})
+		}
+	}
+}
+
+// ptyChunk carries raw PTY bytes from a claude-mode session to the
+// WS write loop.
+type ptyChunk struct {
+	sessionID string
+	data      []byte
+}
+
+// forwardRaw pumps raw PTY bytes from the shell's raw broadcaster
+// onto the per-WS ptyChunks channel until either the subscriber's
+// channel closes or stop closes. Drop messages (from the broadcaster's
+// overflow protection) are ignored — losing some claude output beats
+// blocking the publisher.
+func forwardRaw(sid string, sub *shell.Subscriber, out chan<- ptyChunk, stop <-chan struct{}) {
+	for {
+		select {
+		case msg, ok := <-sub.C:
+			if !ok {
+				return
+			}
+			if msg.Drop || len(msg.Bytes) == 0 {
+				continue
+			}
+			// Copy because the broadcaster reuses the slice across deliveries.
+			cp := make([]byte, len(msg.Bytes))
+			copy(cp, msg.Bytes)
+			select {
+			case out <- ptyChunk{sessionID: sid, data: cp}:
+			case <-stop:
+				return
+			}
+		case <-stop:
+			return
 		}
 	}
 }
@@ -281,8 +352,104 @@ func handleInbound(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 				_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "write_failed", Message: err.Error()})
 			}
 		}
+	case "enter_claude":
+		handleEnterClaude(msg, m, write)
+	case "exit_claude":
+		handleExitClaude(msg, m, write)
+	case "stdin":
+		handleStdin(msg, m, write)
 	default:
 		_ = write(OutMsg{Type: "error", Code: "bad_type", Message: "unknown message type"})
+	}
+}
+
+func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) {
+	if msg.SessionID == "" {
+		_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "enter_claude requires sessionID"})
+		return
+	}
+	if m.GetMode(msg.SessionID) == store.ModeClaude {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "already_in_claude", Message: "session is already in claude mode"})
+		return
+	}
+	sh, err := m.Get(msg.SessionID)
+	if errors.Is(err, session.ErrSessionNotFound) {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "unknown_session", Message: "no such session"})
+		return
+	}
+	if err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
+		return
+	}
+	if sh.CurrentCommand() != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "session_busy", Message: "let the current command finish first"})
+		return
+	}
+	if err := sh.EnterClaude(); err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "enter_failed", Message: err.Error()})
+		return
+	}
+	// Flip mode. Any error here is non-fatal for the user-visible state
+	// (bash already received `claude\n`); we log and proceed.
+	if err := m.SetMode(msg.SessionID, store.ModeClaude); err != nil {
+		slog.Warn("SetMode(claude) failed", "session", msg.SessionID, "err", err)
+	}
+	_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID})
+}
+
+func handleExitClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) {
+	if msg.SessionID == "" {
+		_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "exit_claude requires sessionID"})
+		return
+	}
+	if m.GetMode(msg.SessionID) != store.ModeClaude {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "not_in_claude", Message: "session is not in claude mode"})
+		return
+	}
+	sh, err := m.Get(msg.SessionID)
+	if err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "unknown_session", Message: "no such session"})
+		return
+	}
+	// Try to nudge claude to exit by sending Ctrl+C twice. We do NOT
+	// SIGKILL — claude may have an in-flight tool call. The UI warned
+	// the user.
+	if err := sh.ExitClaude(); err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "exit_failed", Message: err.Error()})
+		return
+	}
+	// Flip mode immediately — the frontend wants to switch view now.
+	// If claude is stubborn and stays alive, the user will see ChatStream
+	// with junk in the next idle frame; they can re-enter claude or
+	// click Stop on the bash level.
+	if err := m.SetMode(msg.SessionID, store.ModeShell); err != nil {
+		slog.Warn("SetMode(shell) failed", "session", msg.SessionID, "err", err)
+	}
+	_ = write(OutMsg{Type: "claude_exited", SessionID: msg.SessionID})
+}
+
+func handleStdin(msg InMsg, m *session.Manager, write func(OutMsg) error) {
+	if msg.SessionID == "" {
+		_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "stdin requires sessionID"})
+		return
+	}
+	if m.GetMode(msg.SessionID) != store.ModeClaude {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "mode_mismatch", Message: "stdin is only valid in claude mode"})
+		return
+	}
+	sh, err := m.Get(msg.SessionID)
+	if err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "unknown_session", Message: "no such session"})
+		return
+	}
+	data, err := base64.StdEncoding.DecodeString(msg.Data)
+	if err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "bad_request", Message: "stdin data must be base64"})
+		return
+	}
+	if err := sh.SendStdin(data); err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "stdin_failed", Message: err.Error()})
+		return
 	}
 }
 

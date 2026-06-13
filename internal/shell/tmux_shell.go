@@ -245,6 +245,67 @@ func (ts *TmuxShell) SubscribeRaw(buffer int) *Subscriber {
 	return ts.rawBcast.Subscribe(buffer)
 }
 
+// EnterClaude spawns `claude` inside the pane. The pane's bash is the
+// parent process; bash execs claude as a child. When the user exits
+// claude (e.g. /exit), bash regains the prompt.
+//
+// This does NOT go through Write() — no currentCmd is created, no
+// `started` event fires, no commands/<id>.json is persisted. It's a
+// pure tmux send-keys.
+//
+// Pre-condition: currentCmd == nil (caller, i.e. the WS handler, has
+// already rejected enter_claude while a normal command is running).
+func (ts *TmuxShell) EnterClaude() error {
+	ts.mu.Lock()
+	if ts.closed || !ts.started {
+		ts.mu.Unlock()
+		return ErrUnavailable
+	}
+	ts.mu.Unlock()
+	if err := ts.cfg.Runner.SendText(ts.cfg.SessionID, "claude"); err != nil {
+		return fmt.Errorf("send 'claude': %w", err)
+	}
+	if err := ts.cfg.Runner.SendEnter(ts.cfg.SessionID); err != nil {
+		return fmt.Errorf("send enter after claude: %w", err)
+	}
+	return nil
+}
+
+// SendStdin pipes raw bytes into the pane (claude's stdin). The bytes
+// are forwarded literally via tmux send-keys -l. ANSI escapes, control
+// characters (Ctrl+C = 0x03, Ctrl+D = 0x04, arrow keys = "\x1b[A" etc.)
+// all pass through unchanged because tmux's literal mode is byte-exact.
+func (ts *TmuxShell) SendStdin(data []byte) error {
+	ts.mu.Lock()
+	if ts.closed || !ts.started {
+		ts.mu.Unlock()
+		return ErrUnavailable
+	}
+	ts.mu.Unlock()
+	return ts.cfg.Runner.SendText(ts.cfg.SessionID, string(data))
+}
+
+// ExitClaude attempts to make claude quit. We don't kill it directly;
+// we send the user-visible signals claude listens to:
+//   - Ctrl+C (0x03) — interrupts whatever claude is doing
+//   - Ctrl+D (0x04) — EOF on stdin; from claude's prompt this exits
+//
+// If claude was mid-tool-call this may corrupt its session state; the
+// frontend warns the user before calling this path.
+func (ts *TmuxShell) ExitClaude() error {
+	ts.mu.Lock()
+	if ts.closed || !ts.started {
+		ts.mu.Unlock()
+		return ErrUnavailable
+	}
+	ts.mu.Unlock()
+	// Two Ctrl+C are sometimes needed to dismiss "Press Ctrl-C again to exit".
+	if err := ts.cfg.Runner.SendText(ts.cfg.SessionID, "\x03\x03"); err != nil {
+		return fmt.Errorf("send Ctrl+C: %w", err)
+	}
+	return nil
+}
+
 // Stop runs the safe sequence from spec §4.5:
 //   1. mark stoppingForRespawn (suppresses the poller)
 //   2. fetch the pane PID and SIGKILL it

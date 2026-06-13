@@ -13,4 +13,9 @@ type Shell interface {
 	Stop()
 	CurrentCommand() *shell.RunningCommand
 	SubscribeEvents(buffer int) (*shell.EventSubscriber, func())
+	// Claude-mode APIs.
+	SubscribeRaw(buffer int) *shell.Subscriber
+	EnterClaude() error
+	SendStdin(data []byte) error
+	ExitClaude() error
 }
