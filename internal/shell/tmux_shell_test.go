@@ -268,8 +268,7 @@ func TestTmuxShell_Stop_KillsPanePIDAndRespawns(t *testing.T) {
 	//   1. PanePID(sess-1)
 	//   2. killPID(<pid>)
 	//   3. RespawnPane(sess-1, bash, --noprofile, --norc)
-	//   4. SendText stty -echo + SendEnter
-	//   5. SendText bind 'set enable-bracketed-paste off' + SendEnter
+	//   4. configurePane (stty -echo + prompt-tame)
 	calls := fr.Calls()
 	sawPanePID, sawRespawn := false, false
 	for _, c := range calls {

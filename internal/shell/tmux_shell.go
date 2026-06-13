@@ -79,6 +79,38 @@ func (ts *TmuxShell) pipeCmd() string {
 	return "cat >> " + ts.cfg.StreamPath
 }
 
+// promptTame disables features that pollute the captured PTY stream:
+//   - stty -echo: bash would otherwise echo every byte we send into the
+//     master back through the slave, mixing wrapper printfs into the
+//     visible output.
+//   - bracketed-paste: readline emits \x1b[?2004h / \x1b[?2004l around
+//     each prompt; those bytes land just outside the START/END sentinel
+//     window and bleed into the previous command's stored output.
+//   - PS1=PS2='': the visible "bash-X.Y$ " prompt has the same problem.
+//     Empty prompts have nothing to bleed.
+const promptTame = "bind 'set enable-bracketed-paste off'; PS1=''; PS2=''"
+
+// configurePane runs the once-per-bash init sequence: disable terminal
+// echo, then disable readline bracketed-paste and blank out the prompt.
+// Called from both Start (initial bash) and Stop (after respawning a
+// bash to terminate a stuck command).
+func (ts *TmuxShell) configurePane() error {
+	r := ts.cfg.Runner
+	if err := r.SendText(ts.cfg.SessionID, "stty -echo"); err != nil {
+		return fmt.Errorf("send stty -echo: %w", err)
+	}
+	if err := r.SendEnter(ts.cfg.SessionID); err != nil {
+		return fmt.Errorf("send stty -echo enter: %w", err)
+	}
+	if err := r.SendText(ts.cfg.SessionID, promptTame); err != nil {
+		return fmt.Errorf("send prompt-tame: %w", err)
+	}
+	if err := r.SendEnter(ts.cfg.SessionID); err != nil {
+		return fmt.Errorf("send prompt-tame enter: %w", err)
+	}
+	return nil
+}
+
 // Start creates the tmux session, sets remain-on-exit, disables PTY
 // echo, starts the pipe, and launches the read-loop + poller
 // goroutines. Idempotent: calling Start twice returns an error.
@@ -103,24 +135,8 @@ func (ts *TmuxShell) Start() error {
 	if err := r.SetOption(ts.cfg.SessionID, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit: %w", err)
 	}
-	if err := r.SendText(ts.cfg.SessionID, "stty -echo"); err != nil {
-		return fmt.Errorf("send stty -echo text: %w", err)
-	}
-	if err := r.SendEnter(ts.cfg.SessionID); err != nil {
-		return fmt.Errorf("send stty -echo enter: %w", err)
-	}
-	// Disable readline's bracketed-paste mode AND blank out the prompts.
-	// Otherwise bash emits \x1b[?2004h / \x1b[?2004l around each prompt
-	// and a visible "bash-5.2$ " before every command — and because the
-	// prompt is printed *before* our wrapper's START sentinel, the
-	// prompt bytes land inside the previous command's STOP-to-next-START
-	// gap and pollute its stored output. Setting PS1=PS2='' makes the
-	// prompt zero-length, so there's nothing to bleed.
-	if err := r.SendText(ts.cfg.SessionID, "bind 'set enable-bracketed-paste off'; PS1=''; PS2=''"); err != nil {
-		return fmt.Errorf("send prompt-tame text: %w", err)
-	}
-	if err := r.SendEnter(ts.cfg.SessionID); err != nil {
-		return fmt.Errorf("send prompt-tame enter: %w", err)
+	if err := ts.configurePane(); err != nil {
+		return err
 	}
 	if err := r.PipePane(ts.cfg.SessionID, ts.pipeCmd()); err != nil {
 		return fmt.Errorf("start pipe-pane: %w", err)
@@ -272,20 +288,8 @@ func (ts *TmuxShell) Stop() {
 		ts.cfg.Logger.Error("Stop: RespawnPane failed", "err", err)
 		return
 	}
-	if err := ts.cfg.Runner.SendText(ts.cfg.SessionID, "stty -echo"); err != nil {
-		ts.cfg.Logger.Error("Stop: SendText stty -echo failed", "err", err)
-		return
-	}
-	if err := ts.cfg.Runner.SendEnter(ts.cfg.SessionID); err != nil {
-		ts.cfg.Logger.Error("Stop: SendEnter failed", "err", err)
-		return
-	}
-	if err := ts.cfg.Runner.SendText(ts.cfg.SessionID, "bind 'set enable-bracketed-paste off'; PS1=''; PS2=''"); err != nil {
-		ts.cfg.Logger.Error("Stop: SendText prompt-tame failed", "err", err)
-		return
-	}
-	if err := ts.cfg.Runner.SendEnter(ts.cfg.SessionID); err != nil {
-		ts.cfg.Logger.Error("Stop: SendEnter (prompt-tame) failed", "err", err)
+	if err := ts.configurePane(); err != nil {
+		ts.cfg.Logger.Error("Stop: configurePane failed", "err", err)
 		return
 	}
 	respawned = true
