@@ -84,11 +84,15 @@ export async function listSessions(): Promise<Session[]> {
 }
 
 export async function createSession(name?: string): Promise<Session> {
-  const body = name && name.trim() ? JSON.stringify({ name }) : undefined
-  const res = await request('/api/sessions', {
+  // Send an empty JSON body when no name. Sending no body at all (body:
+  // undefined) means fetch omits Content-Length, which some browsers
+  // surface to handlers as length=-1 and which our handler treats as
+  // "chunked" — usually fine, but {} is unambiguous and tiny.
+  const init: RequestInit = {
     method: 'POST',
-    body,
-  })
+    body: JSON.stringify(name && name.trim() ? { name } : {}),
+  }
+  const res = await request('/api/sessions', init)
   return res.json()
 }
 

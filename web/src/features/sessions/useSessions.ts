@@ -233,7 +233,12 @@ export function useSessions(token: string) {
       selectSession(created.id)
       return created
     } catch (e: any) {
-      setLastError({ code: e.code ?? 'create_failed', message: e.message ?? 'failed' })
+      // eslint-disable-next-line no-console
+      console.error('createSession failed', e)
+      setLastError({
+        code: e?.code ?? 'create_failed',
+        message: e?.message ? `${e.message} (status ${e.status ?? '?'})` : 'failed',
+      })
       return null
     }
   }, [selectSession])
