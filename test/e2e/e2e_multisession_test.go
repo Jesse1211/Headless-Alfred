@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/jesseliu/headless-alfred/internal/api"
 )
 
 func TestE2E_TwoSessions_FilesystemShared(t *testing.T) {
@@ -60,7 +62,7 @@ func TestE2E_GoRestart_SessionsSurvive(t *testing.T) {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		_ = conn2.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := conn2.ReadJSON(&m); err != nil {
 			t.Fatalf("read after restart: %v", err)
 		}
@@ -79,7 +81,7 @@ func waitForStarted(t *testing.T, conn *websocket.Conn, sessionID string, timeou
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := conn.ReadJSON(&m); err != nil {
 			t.Fatalf("ws read: %v", err)
 		}
@@ -105,7 +107,7 @@ func TestE2E_GoRestart_DuringStreamingChunks(t *testing.T) {
 	deadline := time.Now().Add(2500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := conn.ReadJSON(&m); err != nil {
 			break
 		}

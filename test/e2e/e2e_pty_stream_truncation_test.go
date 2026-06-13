@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/jesseliu/headless-alfred/internal/api"
 )
 
 // Plan 3 defines `shell.StreamTruncateThreshold = 8 MiB`. Two 6 MiB
@@ -86,7 +88,7 @@ func waitForStartedReturnID(t *testing.T, conn *websocket.Conn, sessionID string
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := conn.ReadJSON(&m); err != nil {
 			t.Fatalf("ws: %v", err)
 		}
@@ -103,7 +105,7 @@ func waitForDone(t *testing.T, conn *websocket.Conn, sessionID, cmdID string, ti
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := conn.ReadJSON(&m); err != nil {
 			t.Fatalf("ws read: %v", err)
 		}

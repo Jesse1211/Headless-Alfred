@@ -52,7 +52,7 @@ func TestWS_OnConnect_SendsIdleForEverySession(t *testing.T) {
 	endBy := time.Now().Add(3 * time.Second)
 	for len(seen) < 2 && time.Now().Before(endBy) {
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		var msg outMsg
+		var msg OutMsg
 		if err := conn.ReadJSON(&msg); err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -71,9 +71,9 @@ func TestWS_RunWithUnknownSessionID_ReturnsError(t *testing.T) {
 	url, _ := setupWSServerMulti(t)
 	conn := dialWS(t, url, "tok")
 	defer conn.Close()
-	_ = conn.WriteJSON(inMsg{Type: "run", SessionID: "nope", Command: "ls"})
+	_ = conn.WriteJSON(InMsg{Type: "run", SessionID: "nope", Command: "ls"})
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var msg outMsg
+	var msg OutMsg
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestWS_SessionClosed_BroadcastsToConnectedClients(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	for i := 0; i < 5; i++ {
-		var m2 outMsg
+		var m2 OutMsg
 		if err := conn.ReadJSON(&m2); err != nil {
 			break
 		}
@@ -100,7 +100,7 @@ func TestWS_SessionClosed_BroadcastsToConnectedClients(t *testing.T) {
 	_ = m.Close(sess.ID)
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	for {
-		var m2 outMsg
+		var m2 OutMsg
 		if err := conn.ReadJSON(&m2); err != nil {
 			t.Fatalf("never received session_closed: %v", err)
 		}
@@ -117,7 +117,7 @@ func TestWS_SessionRenamed_BroadcastsToConnectedClients(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	for i := 0; i < 5; i++ {
-		var m2 outMsg
+		var m2 OutMsg
 		if err := conn.ReadJSON(&m2); err != nil {
 			break
 		}
@@ -128,7 +128,7 @@ func TestWS_SessionRenamed_BroadcastsToConnectedClients(t *testing.T) {
 	_ = m.Rename(sess.ID, "training")
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	for {
-		var m2 outMsg
+		var m2 OutMsg
 		if err := conn.ReadJSON(&m2); err != nil {
 			t.Fatalf("never received session_renamed: %v", err)
 		}

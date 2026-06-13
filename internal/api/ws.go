@@ -42,27 +42,6 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-type inMsg struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionID,omitempty"`
-	Command   string `json:"command,omitempty"`
-}
-
-type outMsg struct {
-	Type        string `json:"type"`
-	SessionID   string `json:"sessionID,omitempty"`
-	CmdID       string `json:"cmdId,omitempty"`
-	Command     string `json:"command,omitempty"`
-	StartedAt   string `json:"startedAt,omitempty"`
-	OutputSoFar string `json:"outputSoFar,omitempty"`
-	Data        string `json:"data,omitempty"`
-	ExitCode    int    `json:"exitCode,omitempty"`
-	FinishedAt  string `json:"finishedAt,omitempty"`
-	Name        string `json:"name,omitempty"`
-	Code        string `json:"code,omitempty"`
-	Message     string `json:"message,omitempty"`
-}
-
 func WSHandler(m *session.Manager, a auth.Auth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := r.URL.Query().Get("token")
@@ -89,7 +68,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 	})
 
 	writeMu := &sync.Mutex{}
-	write := func(msg outMsg) error {
+	write := func(msg OutMsg) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return conn.WriteJSON(msg)
@@ -120,9 +99,9 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 		}
 		cur := sh.CurrentCommand()
 		if cur == nil {
-			_ = write(outMsg{Type: "idle", SessionID: meta.ID})
+			_ = write(OutMsg{Type: "idle", SessionID: meta.ID})
 		} else {
-			_ = write(outMsg{
+			_ = write(OutMsg{
 				Type:        "reattach",
 				SessionID:   meta.ID,
 				CmdID:       cur.ID,
@@ -166,10 +145,10 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 
-	inbound := make(chan inMsg, 4)
+	inbound := make(chan InMsg, 4)
 	go func() {
 		for {
-			var msg inMsg
+			var msg InMsg
 			if err := conn.ReadJSON(&msg); err != nil {
 				close(inbound)
 				return
@@ -197,9 +176,9 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 			}
 			writeEventToClient(ev, write)
 		case sid := <-closedCh:
-			_ = write(outMsg{Type: "session_closed", SessionID: sid})
+			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
-			_ = write(outMsg{Type: "session_renamed", SessionID: rn.ID, Name: rn.Name})
+			_ = write(OutMsg{Type: "session_renamed", SessionID: rn.ID, Name: rn.Name})
 		case sid := <-createdCh:
 			// New session was just created via REST. Subscribe to its
 			// events and forward them onto the existing FanIn channel
@@ -213,7 +192,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 			sub, cancel := sh.SubscribeEvents(16)
 			cancels = append(cancels, cancel)
 			go forwardSubscriber(sid, sub, events, stop)
-			_ = write(outMsg{Type: "idle", SessionID: sid})
+			_ = write(OutMsg{Type: "idle", SessionID: sid})
 		}
 	}
 }
@@ -245,30 +224,30 @@ type namedRename struct {
 	Name string
 }
 
-func handleInbound(msg inMsg, m *session.Manager, write func(outMsg) error) {
+func handleInbound(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 	switch msg.Type {
 	case "ping":
-		_ = write(outMsg{Type: "pong"})
+		_ = write(OutMsg{Type: "pong"})
 	case "run":
 		if msg.SessionID == "" {
-			_ = write(outMsg{Type: "error", Code: "bad_request", Message: "run requires sessionID"})
+			_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "run requires sessionID"})
 			return
 		}
 		if len(msg.Command) == 0 {
-			_ = write(outMsg{Type: "error", SessionID: msg.SessionID, Code: "bad_request", Message: "command is required"})
+			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "bad_request", Message: "command is required"})
 			return
 		}
 		if len(msg.Command) > maxCommandBytes {
-			_ = write(outMsg{Type: "error", SessionID: msg.SessionID, Code: "command_too_large", Message: "command exceeds 4096 bytes"})
+			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "command_too_large", Message: "command exceeds 4096 bytes"})
 			return
 		}
 		sh, err := m.Get(msg.SessionID)
 		if errors.Is(err, session.ErrSessionNotFound) {
-			_ = write(outMsg{Type: "error", SessionID: msg.SessionID, Code: "unknown_session", Message: "no such session"})
+			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "unknown_session", Message: "no such session"})
 			return
 		}
 		if err != nil {
-			_ = write(outMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
+			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
 			return
 		}
 		cmdID := ulid.Make().String()
@@ -291,23 +270,23 @@ func handleInbound(msg inMsg, m *session.Manager, write func(outMsg) error) {
 			}
 			switch {
 			case errors.Is(err, shell.ErrBusy):
-				_ = write(outMsg{Type: "error", SessionID: msg.SessionID, Code: "busy", Message: "shell is busy"})
+				_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "busy", Message: "shell is busy"})
 			case errors.Is(err, shell.ErrUnavailable):
-				_ = write(outMsg{Type: "error", SessionID: msg.SessionID, Code: "unavailable", Message: "shell is unavailable"})
+				_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "unavailable", Message: "shell is unavailable"})
 			default:
-				_ = write(outMsg{Type: "error", SessionID: msg.SessionID, Code: "write_failed", Message: err.Error()})
+				_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "write_failed", Message: err.Error()})
 			}
 		}
 	default:
-		_ = write(outMsg{Type: "error", Code: "bad_type", Message: "unknown message type"})
+		_ = write(OutMsg{Type: "error", Code: "bad_type", Message: "unknown message type"})
 	}
 }
 
-func writeEventToClient(ev FanInEvent, write func(outMsg) error) {
+func writeEventToClient(ev FanInEvent, write func(OutMsg) error) {
 	switch {
 	case ev.Event.Started != nil:
 		s := ev.Event.Started
-		_ = write(outMsg{
+		_ = write(OutMsg{
 			Type:      "started",
 			SessionID: ev.SessionID,
 			CmdID:     s.CmdID,
@@ -316,7 +295,7 @@ func writeEventToClient(ev FanInEvent, write func(outMsg) error) {
 		})
 	case ev.Event.Chunk != nil:
 		c := ev.Event.Chunk
-		_ = write(outMsg{
+		_ = write(OutMsg{
 			Type:      "chunk",
 			SessionID: ev.SessionID,
 			CmdID:     c.CmdID,
@@ -327,7 +306,7 @@ func writeEventToClient(ev FanInEvent, write func(outMsg) error) {
 		// in Manager.startPersister; that runs even with no WS client. Here we
 		// only forward the "done" message to the connected client.
 		e := ev.Event.Ended
-		_ = write(outMsg{
+		_ = write(OutMsg{
 			Type:       "done",
 			SessionID:  ev.SessionID,
 			CmdID:      e.CmdID,

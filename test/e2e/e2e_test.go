@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/jesseliu/headless-alfred/internal/api"
 )
 
 // TestMain wipes any leftover sessions from a previous run before the
@@ -176,7 +178,7 @@ func TestE2E_DisconnectReconnect_PicksUpRunningCommand(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		_ = c2.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := c2.ReadJSON(&m); err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -191,7 +193,7 @@ func TestE2E_DisconnectReconnect_PicksUpRunningCommand(t *testing.T) {
 	deadline = time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		_ = c2.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := c2.ReadJSON(&m); err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -249,7 +251,7 @@ func TestE2E_StopRunningCommand(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		_ = c.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := c.ReadJSON(&m); err != nil {
 			t.Fatalf("read: %v", err)
 		}

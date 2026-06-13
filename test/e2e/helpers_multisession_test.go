@@ -17,23 +17,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-)
 
-// wsMsgMulti is the multi-session WS message shape.
-type wsMsgMulti struct {
-	Type        string `json:"type"`
-	SessionID   string `json:"sessionID,omitempty"`
-	CmdID       string `json:"cmdId,omitempty"`
-	Command     string `json:"command,omitempty"`
-	StartedAt   string `json:"startedAt,omitempty"`
-	OutputSoFar string `json:"outputSoFar,omitempty"`
-	Data        string `json:"data,omitempty"`
-	ExitCode    int    `json:"exitCode,omitempty"`
-	FinishedAt  string `json:"finishedAt,omitempty"`
-	Name        string `json:"name,omitempty"`
-	Code        string `json:"code,omitempty"`
-	Message     string `json:"message,omitempty"`
-}
+	"github.com/jesseliu/headless-alfred/internal/api"
+)
 
 // createSession POSTs /api/sessions and returns the new session id.
 // Each created session registers a t.Cleanup that DELETEs it after the
@@ -92,7 +78,7 @@ func runInSession(t *testing.T, conn *websocket.Conn, sessionID, command string,
 	var buf bytes.Buffer
 	for time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(deadline)
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := conn.ReadJSON(&m); err != nil {
 			t.Fatalf("ws read: %v", err)
 		}
@@ -236,7 +222,7 @@ func drainStartupMessages(t *testing.T, conn *websocket.Conn, perMsgTimeout time
 	t.Helper()
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(perMsgTimeout))
-		var m wsMsgMulti
+		var m api.OutMsg
 		if err := conn.ReadJSON(&m); err != nil {
 			return
 		}
