@@ -55,14 +55,10 @@ type Manager struct {
 	shells map[string]*shell.TmuxShell
 	metas  map[string]store.SessionMeta // mirror of sessions.json
 
-	// Multi-subscriber listener lists. Each WS connection registers its
-	// own listener via AddCloseListener / AddRenameListener and removes
-	// it on disconnect — N tabs == N entries. Single-Set semantics
-	// would clobber earlier tabs (regression-tested against by Plan 6
-	// TestWS_SessionClosed_BroadcastsToConnectedClients).
-	closeListeners  []func(sessionID string)
-	renameListeners []func(sessionID, newName string)
-	createListeners []func(sessionID string)
+	// Multi-subscriber listener registries — see listenerSet in listeners.go.
+	onClose  listenerSet[string]
+	onRename listenerSet[renameEvent]
+	onCreate listenerSet[string]
 }
 
 // NewManager validates the config but does NOT contact tmux or load
@@ -100,39 +96,13 @@ func NewManager(cfg Config) (*Manager, error) {
 // been fully closed (tmux killed, store deleted, sessions.json saved).
 // Returns a remove function — call it on WS disconnect so a new tab's
 // listener doesn't get a callback into an orphaned closure.
-//
-// Multi-subscriber: each WS connection adds its own listener; N tabs
-// produce N callbacks per close. Plan 6 (WS) uses this.
 func (m *Manager) AddCloseListener(fn func(sessionID string)) (remove func()) {
-	m.mu.Lock()
-	m.closeListeners = append(m.closeListeners, fn)
-	idx := len(m.closeListeners) - 1
-	m.mu.Unlock()
-	return func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		// Identity match via pointer; the slice may have been compacted
-		// by an earlier remove so we just nil it out instead of slicing.
-		// Stale nil entries are filtered when firing.
-		if idx < len(m.closeListeners) {
-			m.closeListeners[idx] = nil
-		}
-	}
+	return m.onClose.Add(fn)
 }
 
 // AddRenameListener — same pattern as AddCloseListener.
 func (m *Manager) AddRenameListener(fn func(sessionID, newName string)) (remove func()) {
-	m.mu.Lock()
-	m.renameListeners = append(m.renameListeners, fn)
-	idx := len(m.renameListeners) - 1
-	m.mu.Unlock()
-	return func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if idx < len(m.renameListeners) {
-			m.renameListeners[idx] = nil
-		}
-	}
+	return m.onRename.Add(func(e renameEvent) { fn(e.SessionID, e.NewName) })
 }
 
 // AddCreateListener — same pattern as AddCloseListener. Fired AFTER a
@@ -140,17 +110,7 @@ func (m *Manager) AddRenameListener(fn func(sessionID, newName string)) (remove 
 // persisted). WS clients use this to subscribe to the new session's
 // event stream without having to reconnect.
 func (m *Manager) AddCreateListener(fn func(sessionID string)) (remove func()) {
-	m.mu.Lock()
-	m.createListeners = append(m.createListeners, fn)
-	idx := len(m.createListeners) - 1
-	m.mu.Unlock()
-	return func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if idx < len(m.createListeners) {
-			m.createListeners[idx] = nil
-		}
-	}
+	return m.onCreate.Add(fn)
 }
 
 // List returns a snapshot of all current session metadata in
@@ -258,19 +218,7 @@ func (m *Manager) Create(name string) (store.SessionMeta, error) {
 		return store.SessionMeta{}, fmt.Errorf("persist sessions.json: %w", err)
 	}
 
-	// Snapshot listeners under the lock; fire them outside it (same shape
-	// as Close / Rename use).
-	m.mu.Lock()
-	listeners := make([]func(string), 0, len(m.createListeners))
-	for _, fn := range m.createListeners {
-		if fn != nil {
-			listeners = append(listeners, fn)
-		}
-	}
-	m.mu.Unlock()
-	for _, fn := range listeners {
-		fn(id)
-	}
+	m.onCreate.Fire(id)
 	return meta, nil
 }
 
@@ -378,30 +326,21 @@ func (m *Manager) Rename(sessionID, newName string) error {
 	}
 	meta.Name = cleaned
 	m.metas[sessionID] = meta
-	// Snapshot the metas slice and the listener slice TOGETHER under the
-	// lock, so a concurrent Close that deletes the just-renamed entry
-	// can't race us into persisting a stale list (previously, persistMetas
-	// re-acquired the lock and could see post-Close state, silently
-	// dropping the rename from sessions.json).
+	// Snapshot the metas slice UNDER the lock so a concurrent Close that
+	// deletes the just-renamed entry can't race us into persisting a stale
+	// list (previously, persistMetas re-acquired the lock and could see
+	// post-Close state, silently dropping the rename from sessions.json).
 	list := make([]store.SessionMeta, 0, len(m.metas))
 	for _, mt := range m.metas {
 		list = append(list, mt)
 	}
 	sortByCreatedAtAsc(list)
-	listeners := make([]func(string, string), 0, len(m.renameListeners))
-	for _, fn := range m.renameListeners {
-		if fn != nil {
-			listeners = append(listeners, fn)
-		}
-	}
 	m.mu.Unlock()
 
 	if err := m.cfg.SessionsFile.Save(list); err != nil {
 		return fmt.Errorf("persist: %w", err)
 	}
-	for _, fn := range listeners {
-		fn(sessionID, cleaned)
-	}
+	m.onRename.Fire(renameEvent{SessionID: sessionID, NewName: cleaned})
 	return nil
 }
 
@@ -556,12 +495,6 @@ func (m *Manager) Close(sessionID string) error {
 	}
 	delete(m.shells, sessionID)
 	delete(m.metas, sessionID)
-	listeners := make([]func(string), 0, len(m.closeListeners))
-	for _, fn := range m.closeListeners {
-		if fn != nil {
-			listeners = append(listeners, fn)
-		}
-	}
 	m.mu.Unlock()
 
 	if hasShell {
@@ -576,8 +509,6 @@ func (m *Manager) Close(sessionID string) error {
 	if err := m.persistMetas(); err != nil {
 		return fmt.Errorf("persist: %w", err)
 	}
-	for _, fn := range listeners {
-		fn(sessionID)
-	}
+	m.onClose.Fire(sessionID)
 	return nil
 }
