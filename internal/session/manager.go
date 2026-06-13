@@ -186,6 +186,7 @@ func (m *Manager) Create(name string) (store.SessionMeta, error) {
 		ID:        id,
 		Name:      cleaned,
 		CreatedAt: time.Now().UTC(),
+		Mode:      store.ModeShell,
 	}
 	// Reserve the slot in m.metas BEFORE starting the tmux shell so a
 	// concurrent Create can't blow the limit. We'll rollback on error.
@@ -344,6 +345,44 @@ func (m *Manager) Rename(sessionID, newName string) error {
 	return nil
 }
 
+// GetMode returns the current mode of the session. If the session is not
+// found, it defaults to ModeShell (callers should have verified existence
+// via List/Get first). Consistent with the spec: unknown == shell.
+func (m *Manager) GetMode(sessionID string) store.SessionMode {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if meta, ok := m.metas[sessionID]; ok {
+		return meta.Mode
+	}
+	return store.ModeShell
+}
+
+// SetMode atomically updates the in-memory mode and persists sessions.json.
+// Returns ErrSessionNotFound if sessionID is unknown.
+// Lock discipline mirrors Rename: mutate under m.mu, then persist outside.
+func (m *Manager) SetMode(sessionID string, mode store.SessionMode) error {
+	m.mu.Lock()
+	meta, ok := m.metas[sessionID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	meta.Mode = mode
+	m.metas[sessionID] = meta
+	// Snapshot the list under the lock (same pattern as Rename).
+	list := make([]store.SessionMeta, 0, len(m.metas))
+	for _, mt := range m.metas {
+		list = append(list, mt)
+	}
+	sortByCreatedAtAsc(list)
+	m.mu.Unlock()
+
+	if err := m.cfg.SessionsFile.Save(list); err != nil {
+		return fmt.Errorf("persist: %w", err)
+	}
+	return nil
+}
+
 // Reconcile is called once at boot, before the HTTP listener opens.
 // It walks sessions.json × `tmux ls` and:
 //
@@ -393,6 +432,12 @@ func (m *Manager) Reconcile() error {
 		// running them is gone.
 		if err := m.cfg.Store.SweepRunningToInterrupted([]string{meta.ID}); err != nil {
 			m.cfg.Logger.Error("sweep running→interrupted", "session", meta.ID, "err", err)
+		}
+		// Force mode back to shell: any Claude process that was running is
+		// dead (tmux died with the pod). A persisted mode=claude is now
+		// stale — reset it so reconnecting clients render the chat view.
+		if err := m.SetMode(meta.ID, store.ModeShell); err != nil && !errors.Is(err, ErrSessionNotFound) {
+			m.cfg.Logger.Error("reset mode to shell after recreate", "session", meta.ID, "err", err)
 		}
 	}
 

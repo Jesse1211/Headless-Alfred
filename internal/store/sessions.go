@@ -8,13 +8,24 @@ import (
 	"time"
 )
 
+// SessionMode is the operating mode of a session.
+type SessionMode string
+
+const (
+	// ModeShell is the default mode: chat-stream rendering, wrapped commands.
+	ModeShell SessionMode = "shell"
+	// ModeClaude is the TUI passthrough mode: raw PTY bytes forwarded to xterm.js.
+	ModeClaude SessionMode = "claude"
+)
+
 // SessionMeta is the persistent metadata for one session. Fields are kept
 // minimal on purpose; runtime state (is bash alive, current command) is
 // not stored here — that lives in the in-memory session.Manager.
 type SessionMeta struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	CreatedAt time.Time   `json:"created_at"`
+	Mode      SessionMode `json:"mode,omitempty"` // empty in old files == shell
 }
 
 // SessionsFile is the persisted list of sessions. The file lives at
@@ -46,6 +57,15 @@ func (sf *SessionsFile) Load() ([]SessionMeta, error) {
 	var list []SessionMeta
 	if err := json.Unmarshal(data, &list); err != nil {
 		return nil, err
+	}
+	// Normalise: older sessions.json files without a "mode" field (or
+	// written with omitempty when mode was shell) will have Mode == "".
+	// Treat that as ModeShell so callers can always compare without
+	// checking for the empty string.
+	for i := range list {
+		if list[i].Mode == "" {
+			list[i].Mode = ModeShell
+		}
 	}
 	return list, nil
 }
