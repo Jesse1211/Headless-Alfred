@@ -32,7 +32,7 @@ func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write c1: %v", err)
 	}
-	cmd1ID := waitForStartedReturnID(t, conn, sid, 5*time.Second)
+	cmd1ID := waitForStarted(t, conn, sid, 5*time.Second)
 	waitForDone(t, conn, sid, cmd1ID, 60*time.Second)
 
 	// Command 2: tiny — this is where the stream truncation can fire.
@@ -41,7 +41,7 @@ func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write c2: %v", err)
 	}
-	cmd2ID := waitForStartedReturnID(t, conn, sid, 5*time.Second)
+	cmd2ID := waitForStarted(t, conn, sid, 5*time.Second)
 	waitForDone(t, conn, sid, cmd2ID, 10*time.Second)
 
 	// Command 3: another 6 MiB.
@@ -51,7 +51,7 @@ func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write c3: %v", err)
 	}
-	cmd3ID := waitForStartedReturnID(t, conn, sid, 5*time.Second)
+	cmd3ID := waitForStarted(t, conn, sid, 5*time.Second)
 	waitForDone(t, conn, sid, cmd3ID, 60*time.Second)
 
 	// Give the persister goroutine a moment to flush each record (Status,
@@ -81,23 +81,6 @@ func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 			}
 		}
 	}
-}
-
-func waitForStartedReturnID(t *testing.T, conn *websocket.Conn, sessionID string, timeout time.Duration) string {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(deadline)
-		var m api.OutMsg
-		if err := conn.ReadJSON(&m); err != nil {
-			t.Fatalf("ws: %v", err)
-		}
-		if m.SessionID == sessionID && m.Type == "started" {
-			return m.CmdID
-		}
-	}
-	t.Fatal("no started")
-	return ""
 }
 
 func waitForDone(t *testing.T, conn *websocket.Conn, sessionID, cmdID string, timeout time.Duration) {

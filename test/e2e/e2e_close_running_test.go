@@ -17,7 +17,7 @@ func TestE2E_CloseSession_RunningCommandTerminated(t *testing.T) {
 	_ = conn.WriteJSON(map[string]any{
 		"type": "run", "sessionID": sid, "command": "sleep 30",
 	})
-	_ = waitForStartedReturnID(t, conn, sid, 5*time.Second)
+	_ = waitForStarted(t, conn, sid, 5*time.Second)
 
 	// Capture the bash PID inside the tmux session for later verification.
 	pidsBefore := execInPod(t, "ps -eo pid,comm | awk '$2==\"sleep\" {print $1}' || true")

@@ -18,7 +18,7 @@ func TestE2E_Stop_RestartsBashSameSession(t *testing.T) {
 	_ = conn.WriteJSON(map[string]any{
 		"type": "run", "sessionID": sid, "command": "sleep 60",
 	})
-	cmdID := waitForStartedReturnID(t, conn, sid, 5*time.Second)
+	cmdID := waitForStarted(t, conn, sid, 5*time.Second)
 
 	// POST stop.
 	req, _ := http.NewRequest("POST",
@@ -47,6 +47,6 @@ func TestE2E_Stop_RestartsBashSameSession(t *testing.T) {
 	_ = conn.WriteJSON(map[string]any{
 		"type": "run", "sessionID": sid, "command": "echo POST_RESPAWN",
 	})
-	cmd2 := waitForStartedReturnID(t, conn, sid, 5*time.Second)
+	cmd2 := waitForStarted(t, conn, sid, 5*time.Second)
 	waitForDone(t, conn, sid, cmd2, 5*time.Second)
 }

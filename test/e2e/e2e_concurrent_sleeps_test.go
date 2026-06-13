@@ -21,7 +21,7 @@ func TestE2E_EightConcurrentSleeps_NoSerialization(t *testing.T) {
 	}
 
 	// Pre-load the started/done filters with the right sessionID. Each
-	// waitForStartedReturnID / waitForDone already filters by sessionID, so
+	// waitForStarted / waitForDone already filters by sessionID, so
 	// any idle/reattach frames for other sessions on the same WS get
 	// silently skipped.
 	start := time.Now()
@@ -34,7 +34,7 @@ func TestE2E_EightConcurrentSleeps_NoSerialization(t *testing.T) {
 			_ = conns[i].WriteJSON(map[string]any{
 				"type": "run", "sessionID": sids[i], "command": "sleep 5",
 			})
-			id := waitForStartedReturnID(t, conns[i], sids[i], 5*time.Second)
+			id := waitForStarted(t, conns[i], sids[i], 5*time.Second)
 			waitForDone(t, conns[i], sids[i], id, 15*time.Second)
 		}()
 	}

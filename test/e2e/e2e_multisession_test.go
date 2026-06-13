@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/jesseliu/headless-alfred/internal/api"
 )
 
@@ -74,22 +72,6 @@ func TestE2E_GoRestart_SessionsSurvive(t *testing.T) {
 		}
 	}
 	t.Fatal("never saw done for the surviving command")
-}
-
-func waitForStarted(t *testing.T, conn *websocket.Conn, sessionID string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(deadline)
-		var m api.OutMsg
-		if err := conn.ReadJSON(&m); err != nil {
-			t.Fatalf("ws read: %v", err)
-		}
-		if m.SessionID == sessionID && m.Type == "started" {
-			return
-		}
-	}
-	t.Fatal("no started")
 }
 
 func TestE2E_GoRestart_DuringStreamingChunks(t *testing.T) {

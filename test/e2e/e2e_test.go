@@ -230,7 +230,7 @@ func TestE2E_StopRunningCommand(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	cmdID := waitForStartedReturnID(t, c, sid, 5*time.Second)
+	cmdID := waitForStarted(t, c, sid, 5*time.Second)
 	// Give bash a moment to actually start sleeping.
 	time.Sleep(500 * time.Millisecond)
 

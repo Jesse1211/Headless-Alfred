@@ -19,7 +19,7 @@ func TestE2E_CrossSession_NoOutputBleed(t *testing.T) {
 	connB := dialWS(t, tok)
 
 	// Launch both commands as close to simultaneously as we can.
-	// waitForStartedReturnID / waitForDone already filter by sessionID, so
+	// waitForStarted / waitForDone already filter by sessionID, so
 	// the on-connect idle/reattach frames for unrelated sessions get
 	// skipped automatically.
 	var wg sync.WaitGroup
@@ -31,7 +31,7 @@ func TestE2E_CrossSession_NoOutputBleed(t *testing.T) {
 			"type": "run", "sessionID": sidA,
 			"command": "for i in $(seq 1 1000); do echo SECRET_A; done",
 		})
-		idA = waitForStartedReturnID(t, connA, sidA, 5*time.Second)
+		idA = waitForStarted(t, connA, sidA, 5*time.Second)
 		waitForDone(t, connA, sidA, idA, 30*time.Second)
 	}()
 	go func() {
@@ -40,7 +40,7 @@ func TestE2E_CrossSession_NoOutputBleed(t *testing.T) {
 			"type": "run", "sessionID": sidB,
 			"command": "for i in $(seq 1 1000); do echo SECRET_B; done",
 		})
-		idB = waitForStartedReturnID(t, connB, sidB, 5*time.Second)
+		idB = waitForStarted(t, connB, sidB, 5*time.Second)
 		waitForDone(t, connB, sidB, idB, 30*time.Second)
 	}()
 	wg.Wait()

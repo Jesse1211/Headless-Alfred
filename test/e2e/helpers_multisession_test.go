@@ -215,18 +215,40 @@ func execInPod(t *testing.T, script string) string {
 	return string(out)
 }
 
-// drainStartupMessages reads any idle/reattach frames the server emits on
-// connect (one per known session) and discards them. Returns when the read
-// deadline elapses with no new message.
-func drainStartupMessages(t *testing.T, conn *websocket.Conn, perMsgTimeout time.Duration) {
+// waitForStarted blocks until a 'started' frame for sessionID arrives,
+// returning its cmdId. Existing callers that don't need the id can
+// ignore the return.
+func waitForStarted(t *testing.T, conn *websocket.Conn, sessionID string, timeout time.Duration) string {
 	t.Helper()
-	for {
-		_ = conn.SetReadDeadline(time.Now().Add(perMsgTimeout))
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(deadline)
 		var m api.OutMsg
 		if err := conn.ReadJSON(&m); err != nil {
-			return
+			t.Fatalf("ws read: %v", err)
+		}
+		if m.SessionID == sessionID && m.Type == "started" {
+			return m.CmdID
 		}
 	}
+	t.Fatal("no started")
+	return ""
+}
+
+// e2eSession bootstraps a fully-set-up test session: log in, create a
+// fresh session, open a WS. The cleanup that dialWS already registers
+// closes the conn; createSession's t.Cleanup deletes the session. So a
+// test that uses e2eSession only needs to drive the conn — no manual
+// teardown.
+func e2eSession(t *testing.T, name string) (token, sessionID string, conn *websocket.Conn) {
+	t.Helper()
+	token, _ = login(t, testUser, testPassword)
+	if token == "" {
+		t.Fatal("login failed")
+	}
+	sessionID = createSession(t, token, name)
+	conn = dialWS(t, token)
+	return token, sessionID, conn
 }
 
 var _ = strings.TrimSpace
