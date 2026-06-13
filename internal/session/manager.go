@@ -1,6 +1,7 @@
 package session
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -383,6 +384,107 @@ func (m *Manager) SetMode(sessionID string, mode store.SessionMode) error {
 	return nil
 }
 
+// GetRenderer returns the per-session claude renderer ("tui", "ui",
+// or "" if not in claude mode). Defaults to empty if the session
+// is unknown.
+func (m *Manager) GetRenderer(sessionID string) store.ClaudeRenderer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if meta, ok := m.metas[sessionID]; ok {
+		return meta.Renderer
+	}
+	return ""
+}
+
+// SetRenderer atomically updates the in-memory renderer and persists.
+// Empty string clears the renderer (used on exit from claude mode).
+// Returns ErrSessionNotFound if sessionID is unknown.
+func (m *Manager) SetRenderer(sessionID string, r store.ClaudeRenderer) error {
+	return m.mutateAndPersist(sessionID, func(meta *store.SessionMeta) {
+		meta.Renderer = r
+	})
+}
+
+// EnsureClaudeConvoID returns the session's Claude conversation
+// UUID, generating + persisting one if absent. Idempotent.
+func (m *Manager) EnsureClaudeConvoID(sessionID string) (string, error) {
+	m.mu.Lock()
+	meta, ok := m.metas[sessionID]
+	if !ok {
+		m.mu.Unlock()
+		return "", ErrSessionNotFound
+	}
+	if meta.ClaudeSessionID != "" {
+		uuid := meta.ClaudeSessionID
+		m.mu.Unlock()
+		return uuid, nil
+	}
+	m.mu.Unlock()
+
+	// Generate outside the lock — uuid is cheap but stays consistent
+	// with the rest of the code's discipline of doing IO/work without
+	// holding m.mu.
+	newUUID := newConvoUUID()
+	if err := m.mutateAndPersist(sessionID, func(meta *store.SessionMeta) {
+		if meta.ClaudeSessionID == "" {
+			meta.ClaudeSessionID = newUUID
+		}
+	}); err != nil {
+		return "", err
+	}
+	return m.getClaudeConvoIDLocked(sessionID), nil
+}
+
+func (m *Manager) getClaudeConvoIDLocked(sessionID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if meta, ok := m.metas[sessionID]; ok {
+		return meta.ClaudeSessionID
+	}
+	return ""
+}
+
+// mutateAndPersist is a small refactoring helper: do an in-memory
+// mutation on a session's metadata under the lock, snapshot, then
+// persist outside the lock. Used by SetRenderer and
+// EnsureClaudeConvoID; could replace the body of SetMode too, but
+// we leave SetMode alone to minimize this diff.
+func (m *Manager) mutateAndPersist(sessionID string, mut func(*store.SessionMeta)) error {
+	m.mu.Lock()
+	meta, ok := m.metas[sessionID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	mut(&meta)
+	m.metas[sessionID] = meta
+	list := make([]store.SessionMeta, 0, len(m.metas))
+	for _, mt := range m.metas {
+		list = append(list, mt)
+	}
+	sortByCreatedAtAsc(list)
+	m.mu.Unlock()
+	if err := m.cfg.SessionsFile.Save(list); err != nil {
+		return fmt.Errorf("persist: %w", err)
+	}
+	return nil
+}
+
+// newConvoUUID returns a random v4-like UUID string. Local helper
+// because importing google/uuid for one call site is overkill.
+func newConvoUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// extremely unlikely; fall back to time-based
+		return ulid.Make().String()
+	}
+	// RFC 4122 v4
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 // Reconcile is called once at boot, before the HTTP listener opens.
 // It walks sessions.json × `tmux ls` and:
 //
@@ -438,6 +540,14 @@ func (m *Manager) Reconcile() error {
 		// stale — reset it so reconnecting clients render the chat view.
 		if err := m.SetMode(meta.ID, store.ModeShell); err != nil && !errors.Is(err, ErrSessionNotFound) {
 			m.cfg.Logger.Error("reset mode to shell after recreate", "session", meta.ID, "err", err)
+		}
+		// Clear the renderer too — it has meaning only when mode is
+		// claude, and we just forced mode to shell. (ClaudeSessionID
+		// is intentionally NOT cleared: the on-disk transcript
+		// survives the pod restart, so re-entering claude resumes
+		// the same conversation.)
+		if err := m.SetRenderer(meta.ID, ""); err != nil && !errors.Is(err, ErrSessionNotFound) {
+			m.cfg.Logger.Error("reset renderer after recreate", "session", meta.ID, "err", err)
 		}
 	}
 
