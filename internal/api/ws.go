@@ -111,9 +111,10 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 		if mode == "" {
 			mode = "shell"
 		}
+		renderer := string(m.GetRenderer(meta.ID))
 		cur := sh.CurrentCommand()
 		if cur == nil {
-			_ = write(OutMsg{Type: "idle", SessionID: meta.ID, Mode: mode})
+			_ = write(OutMsg{Type: "idle", SessionID: meta.ID, Mode: mode, Renderer: renderer})
 		} else {
 			_ = write(OutMsg{
 				Type:        "reattach",
@@ -123,6 +124,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager) {
 				StartedAt:   cur.StartedAt.UTC().Format(time.RFC3339Nano),
 				OutputSoFar: base64.StdEncoding.EncodeToString(cur.Buffer),
 				Mode:        mode,
+				Renderer:    renderer,
 			})
 		}
 	}
@@ -368,6 +370,18 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 		_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "enter_claude requires sessionID"})
 		return
 	}
+	// Renderer selects between V0 TUI (xterm.js + raw PTY passthrough)
+	// and V1 UI (React chat + claude -p stream-json). Empty defaults to
+	// "tui" for backward compat with V0 clients that don't send the
+	// field. New clients always send it.
+	renderer := store.ClaudeRenderer(msg.Renderer)
+	if renderer == "" {
+		renderer = store.RendererTUI
+	}
+	if renderer != store.RendererTUI && renderer != store.RendererUI {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "bad_request", Message: "renderer must be 'tui' or 'ui'"})
+		return
+	}
 	if m.GetMode(msg.SessionID) == store.ModeClaude {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "already_in_claude", Message: "session is already in claude mode"})
 		return
@@ -385,16 +399,37 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "session_busy", Message: "let the current command finish first"})
 		return
 	}
-	if err := sh.EnterClaude(); err != nil {
-		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "enter_failed", Message: err.Error()})
+
+	// Ensure the per-session Claude conversation UUID exists. Both
+	// renderers use --resume <uuid> so the dialogue persists across
+	// renderer choices, Exit/re-enter, and Pod restart.
+	if _, err := m.EnsureClaudeConvoID(msg.SessionID); err != nil {
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
 		return
 	}
-	// Flip mode. Any error here is non-fatal for the user-visible state
-	// (bash already received `claude\n`); we log and proceed.
+
+	switch renderer {
+	case store.RendererTUI:
+		// V0 path: send-keys `claude` into the tmux pane and let the
+		// TUI take over the bytes that flow through pty_data.
+		if err := sh.EnterClaude(); err != nil {
+			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "enter_failed", Message: err.Error()})
+			return
+		}
+	case store.RendererUI:
+		// V1 path: do NOT touch the tmux pane. The pane stays at bash
+		// prompt; we'll fork `claude -p ...` on demand from
+		// handleClaudePrompt. The frontend will mount ClaudeChatView
+		// and start sending claude_prompt frames.
+	}
+
 	if err := m.SetMode(msg.SessionID, store.ModeClaude); err != nil {
 		slog.Warn("SetMode(claude) failed", "session", msg.SessionID, "err", err)
 	}
-	_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID})
+	if err := m.SetRenderer(msg.SessionID, renderer); err != nil {
+		slog.Warn("SetRenderer failed", "session", msg.SessionID, "err", err)
+	}
+	_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID, Renderer: string(renderer)})
 }
 
 func handleExitClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) {
@@ -411,19 +446,28 @@ func handleExitClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "unknown_session", Message: "no such session"})
 		return
 	}
-	// Try to nudge claude to exit by sending Ctrl+C twice. We do NOT
-	// SIGKILL — claude may have an in-flight tool call. The UI warned
-	// the user.
-	if err := sh.ExitClaude(); err != nil {
-		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "exit_failed", Message: err.Error()})
-		return
+	// Dispatch the actual teardown by renderer.
+	switch m.GetRenderer(msg.SessionID) {
+	case store.RendererTUI, "":
+		// V0 path: nudge claude in the pane to exit (it owns the
+		// PTY). Empty renderer means a legacy V0 session — same
+		// behavior.
+		if err := sh.ExitClaude(); err != nil {
+			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "exit_failed", Message: err.Error()})
+			return
+		}
+	case store.RendererUI:
+		// V1 path: there is no long-lived claude in the pane. If a
+		// claude -p prompt is in flight, the WS handler's claude
+		// runner is the one holding the process; ExitClaude here is
+		// a no-op as far as the pane is concerned. Phase 3.4 will
+		// also SIGINT the in-flight runner via its Stop().
 	}
-	// Flip mode immediately — the frontend wants to switch view now.
-	// If claude is stubborn and stays alive, the user will see ChatStream
-	// with junk in the next idle frame; they can re-enter claude or
-	// click Stop on the bash level.
 	if err := m.SetMode(msg.SessionID, store.ModeShell); err != nil {
 		slog.Warn("SetMode(shell) failed", "session", msg.SessionID, "err", err)
+	}
+	if err := m.SetRenderer(msg.SessionID, ""); err != nil {
+		slog.Warn("clear renderer failed", "session", msg.SessionID, "err", err)
 	}
 	_ = write(OutMsg{Type: "claude_exited", SessionID: msg.SessionID})
 }
