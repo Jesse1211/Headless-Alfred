@@ -1,8 +1,9 @@
 # Headless Alfred
 
-A web-based control panel for a persistent bash session living on your cloud server.
+A web-based control panel for up to 8 concurrent persistent bash sessions living on your cloud server.
 Type a command in the browser → it runs on the server → output streams back live.
-Close the laptop, the session keeps running. Come back, pick up where you left off.
+Close the laptop, the session keeps running. `kubectl rollout` the server, sessions keep running.
+Come back, pick up where you left off.
 
 Domain: **agent.jesseliu.me** (production). Single user. Personal tool.
 
@@ -173,16 +174,22 @@ A few notes that come up:
      • Static React build (embedded via go:embed)
      • HTTP API: /api/login, /api/sessions, /api/sessions/{sid}/commands/*, /healthz, /readyz
      • WebSocket: /ws (token in query string)
-     • One persistent bash via PTY (sentinel-wrapped commands)
-     • Per-command JSON metadata + .log output files
+     • Up to 8 tmux sessions, each owning one bash via PTY (sentinel-wrapped commands)
+     • tmux server outlives alfred-server (daemonized, reparented to tini)
+     • Per-session directory; per-command JSON + .log
    │
    ▼
 [PVC /data — RWO 1 GB]
-   ├ commands/<ulid>.json
-   └ outputs/<ulid>.log
+   ├ sessions.json                    (atomic tmp+rename)
+   ├ alfred-tmux.sock                 (tmux server socket)
+   └ sessions/<sid>/
+       ├ commands/<cmdID>.json
+       ├ outputs/<cmdID>.log
+       ├ pty.stream                   (tmux pipe-pane writes here)
+       └ pty.offset                   (parser consumed-byte offset, for resume)
 ```
 
-Key invariant: **bash lifecycle ≠ WebSocket lifecycle**. The bash process lives as long as the Go process. Browsers disconnect and reconnect freely; commands keep running. See [`docs/superpowers/specs/2026-06-11-headless-alfred-design.md`](docs/superpowers/specs/2026-06-11-headless-alfred-design.md) for the full design.
+Key invariant: **bash lifecycle ≠ WebSocket lifecycle ≠ Go-process lifecycle**. Each session's bash lives in a tmux session that outlives both the WebSocket *and* the alfred-server process. Browsers disconnect, alfred-server restarts (`kubectl rollout`) — commands keep running. Only a Pod restart kills them. See [`docs/superpowers/specs/2026-06-11-multi-session-tmux-design.md`](docs/superpowers/specs/2026-06-11-multi-session-tmux-design.md) for the full design.
 
 ---
 
@@ -191,15 +198,18 @@ Key invariant: **bash lifecycle ≠ WebSocket lifecycle**. The bash process live
 ```
 cmd/alfred-server/      Go main entry point
 internal/
-  shell/                bash + PTY + sentinel-framed output
-  store/                JSON file persistence
+  shell/                TmuxShell wrapping a tmux runner; sentinel parser; event broadcaster
+    tmuxio/             tmux command runner (real + fake) + stream reader
+  session/              Manager: lifecycle, listeners (listenerSet[T]); reconcile on boot
+  store/                per-session disk layout, sessions.json (atomic tmp+rename)
   auth/                 static credentials + per-IP login rate limit
-  api/                  HTTP/WS handlers, middleware, router
+  api/                  HTTP/WS handlers, middleware, router; wsproto.go owns OutMsg/InMsg
   static/               go:embed of web/dist for production
 web/                    React + Vite + TypeScript SPA
-  src/lib/              fetch + WebSocket clients
+  src/lib/              fetch + WebSocket clients (ShellSocket reconnects with backoff)
   src/features/auth     login page + useAuth hook
-  src/features/terminal ChatStream UI (command + output turns) + useShell hook
+  src/features/sessions useSessions hook + sessionsReducer (pure) + SessionsSidebar + ConfirmDialog + WorkspacePage
+  src/features/terminal ChatStream + CommandInput (presentation only)
 deploy/
   manifests/            k8s YAMLs for namespace, pvc, secret template, deployment, service, ingress
   Makefile              operator targets (push, apply, set-image, logs, status)

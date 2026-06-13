@@ -67,7 +67,7 @@ If you change any of these, you will probably hit the same bug we already fixed.
 | `printf` with a `\x1e` followed by raw text confuses the parser if the next byte isn't a known terminator | We append a literal `X` after the closing RS to give the parser a definitive end-of-sentinel marker | `TestSentinelParser_HandlesSentinelSplitAcrossFeeds` |
 | Login rate limiter is per-IP (`X-Forwarded-For` from Traefik) | Tests that all log in from `127.0.0.1` burn the same bucket | E2E tests set `X-Forwarded-For` per `t.Name()`; production deals with this naturally |
 | Bash PTY echo is on by default — every byte written into the master is echoed back through the slave | The echoed wrapper (`printf 'START…'`, the user command, `__alfred_ec=$?`, `printf 'END…'`) arrives **after** the START sentinel has flipped the parser to `stateInside`, so it leaks into the visible output as garbage like `__alfred_ec=$?` and `printf '\\x1eALFRED_END_…'` | `startLocked` writes `stty -echo\n` to the PTY immediately after `pty.Start`; that command's own echo lands in `stateOutside` and is discarded |
-| React `<StrictMode>` calls every state updater **twice** in dev to detect non-idempotent side effects | A naive `setMessages((m) => [...m, newOne])` on `done` events appends each completed command twice in the chat stream (server store is correct, only the UI doubles) | `useShell` mirrors `running` into a ref, reads the snapshot synchronously, and writes via an idempotent updater that no-ops if `msgs.some(m => m.id === snapshot.id)` |
+| React `<StrictMode>` calls every state updater **twice** in dev to detect non-idempotent side effects | A naive `setMessages((m) => [...m, newOne])` on `done` events appends each completed command twice in the chat stream (server store is correct, only the UI doubles) | `sessionsReducer.ts`'s `done` case checks `cur.messages.some(mm => mm.id === m.cmdId)` and returns the prev Map unchanged on a re-fire — proves idempotency in `sessionsReducer.test.ts` "done is idempotent (StrictMode safe)" |
 | `tmux send-keys -l` sends `\n` as a literal character, not Enter | bash never executes the wrapper-script line; sentinel never fires; UI hangs forever waiting for `Started` | `TmuxRunner` splits into `SendText` + `SendEnter`; covered by `TestExecRunner_SendTextThenEnter_ExecutesCommand` |
 | `tmux pipe-pane` writer holds `pty.stream` open across a naive rename, so output ends up in the unlinked inode | Subsequent commands' bytes silently lost; persisted output appears truncated | `StreamReader.TruncateConsumed` does stop-pipe → truncate → restart-pipe; covered by `TestStreamReader_TruncateAtIdleBoundary` |
 | A FIFO consumer disappearing during Go restart SIGPIPEs bash → tmux session dies → violates invariant #1 | Lost session + lost in-flight command on every Go restart | spec §3 chose regular-file + byte-offset over FIFO; covered by `TestStreamReader_ResumesFromPersistedOffset` and the E2E `TestE2E_GoRestart_DuringStreamingChunks` |
@@ -117,14 +117,15 @@ static/      (embed.FS of web/dist with SPA fallback)
 | How commands are framed in/out of bash | `internal/shell/sentinel.go` (and the `Wrap` function) |
 | The HTTP API surface | `internal/api/{router,login,commands}.go` |
 | WS protocol | `internal/api/ws.go` (and `web/src/lib/ws.ts` for the client) |
-| Frontend UI (ChatGPT-style stream) | `web/src/features/terminal/` — `ChatStream.tsx` renders pairs (UserBubble + AssistantBlock); `useShell.ts` owns the WS protocol and merges live `running` state with the historical `messages` list |
+| Frontend UI (chat stream) | `web/src/features/terminal/ChatStream.tsx` (UserBubble + AssistantBlock pairs); `web/src/features/sessions/useSessions.ts` owns the hook; per-session state mutations live in `sessionsReducer.ts` |
 | What's stored to disk | `internal/store/store.go` + `internal/store/record.go` |
 | Container build | `Dockerfile` + `scripts/build-image.sh` |
 | K8s manifests | `deploy/manifests/` |
 | Cluster prerequisites + ops runbook | `deploy/README.md` |
 | Add a new tmux operation | `internal/shell/tmuxio/runner.go` (also add to `FakeRunner`) |
-| Modify session lifecycle (create, close, reconcile) | `internal/session/manager.go` |
-| Change WS protocol | `internal/api/ws.go` + `web/src/lib/ws.ts` (keep in sync — type unions on both sides) |
+| Modify session lifecycle (create, close, reconcile) | `internal/session/manager.go`; lifecycle listeners (`onCreate` / `onClose` / `onRename`) use the generic `listenerSet[T]` in `internal/session/listeners.go` |
+| Add a new server-pushed WS frame type | `internal/api/wsproto.go` (add field to `OutMsg`) + `internal/api/ws.go` (emit it) + `web/src/lib/ws.ts` (add to `ServerMsg` union) + `web/src/features/sessions/sessionsReducer.ts` (handle it) |
+| Change bash init env (echo, prompt, readline opts) | `internal/shell/tmux_shell.go` — `configurePane()` is the single source of truth, called from both `Start` and `Stop`'s respawn path |
 | Change the sidebar UI | `web/src/features/sessions/SessionsSidebar.tsx` |
 
 When in doubt: read the regression test for the area before reading the production code. Tests document the bugs the code is shaped against.
