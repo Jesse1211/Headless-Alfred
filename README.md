@@ -83,21 +83,40 @@ finish cleanly. The button immediately flips the UI back to the
 chat view; if claude is stubborn, you can re-enter the session to
 finish it off.
 
-**Authentication.** `claude` reads `ANTHROPIC_API_KEY` from the
-process environment. If unset (the default), it shows "Not logged
-in · Please run /login" — that's expected. A future UI will let
-you save the key from the browser; for now, set it via a session
-command:
+**Authentication.** `claude` inside the pod can authenticate two ways.
+Pick whichever matches what you're paying for.
+
+*Option A — OAuth credentials from another machine (uses your Claude
+Pro / Max / Team subscription).* On a machine where you've already
+run `claude /login` successfully (your laptop, etc.):
 
 ```bash
-echo 'export ANTHROPIC_API_KEY=sk-ant-…' >> ~/.bashrc
-source ~/.bashrc
+# macOS — the token lives in Keychain, extract it as JSON:
+security find-generic-password -s "Claude Code-credentials" -w
+# Linux — the token is already on disk:
+cat ~/.claude/.credentials.json
 ```
 
-Note that `~/.bashrc` is NOT sourced by alfred's bash today (we
-launch with `--noprofile --norc` to keep the sentinel parser happy),
-so this only works inside a Claude session that bash explicitly
-sources later — see CONTEXT.md for the trade-off.
+Copy the entire JSON object. In the browser, click the **⚙ gear** →
+**Claude credentials**, paste the JSON, Save. The server installs it
+at `~/.claude/.credentials.json` (mode 0600) on the PVC, so it
+survives Pod restarts. claude reads from this file on every launch;
+refresh-token rotation is handled by claude itself.
+
+*Option B — API key (uses pre-paid API credits, billed separately
+from a Claude.ai subscription).* Get a key from
+https://console.anthropic.com/settings/keys, then in a session:
+
+```bash
+mkdir -p ~/.claude
+echo "ANTHROPIC_API_KEY=sk-ant-..." > ~/.alfred-env
+chmod 600 ~/.alfred-env
+```
+
+Then inside any session before running `claude`, do `source ~/.alfred-env`.
+(We don't source `.bashrc` automatically — see CONTEXT.md.) A
+nicer UI for this is a future task; option A is the recommended
+path today.
 
 **Caveats:**
 - Mode is **persisted** to `sessions.json`. Restart `alfred-server`
