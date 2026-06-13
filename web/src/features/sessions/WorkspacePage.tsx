@@ -122,10 +122,20 @@ export function WorkspacePage({ token, onLogout }: Props) {
                   disabled={composerDisabled}
                   busy={composerBusy}
                   onSubmit={(cmd) => {
-                    // Slash-command interception: `/claude` flips this
-                    // session into claude mode instead of running as bash.
+                    // Anything that starts with `claude` (the actual CLI)
+                    // or `/claude` (the chat-style slash command) flips
+                    // this session into Claude mode instead of running
+                    // the literal command in bash. Without this guard
+                    // typing `claude` would print Claude's full-screen
+                    // TUI into the chat-stream view, which can't render
+                    // cursor-positioning escapes — looks like garbage.
                     const trimmed = cmd.trim()
-                    if (trimmed === '/claude') {
+                    const isClaude =
+                      trimmed === 'claude' ||
+                      trimmed === '/claude' ||
+                      trimmed.startsWith('claude ') ||
+                      trimmed.startsWith('/claude ')
+                    if (isClaude) {
                       s.enterClaude(selected.id)
                       return
                     }
