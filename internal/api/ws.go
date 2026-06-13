@@ -14,6 +14,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/jesseliu/headless-alfred/internal/auth"
+	"github.com/jesseliu/headless-alfred/internal/claude"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -42,13 +43,16 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func WSHandler(m *session.Manager, a auth.Auth) http.Handler {
+// bridge accepts a nil for the legacy V0 path / tests that don't use
+// claude UI; callers that want claude UI must pass a started bridge.
+func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := r.URL.Query().Get("token")
 		if !a.VerifyToken(tok) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		_ = bridge // wired in Phase 3.4
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			slog.Error("ws upgrade", "err", err)

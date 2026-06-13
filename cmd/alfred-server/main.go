@@ -17,6 +17,7 @@ import (
 
 	"github.com/jesseliu/headless-alfred/internal/api"
 	"github.com/jesseliu/headless-alfred/internal/auth"
+	"github.com/jesseliu/headless-alfred/internal/claude"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -99,12 +100,41 @@ func main() {
 	var ready atomic.Bool
 	ready.Store(true)
 
+	// PreToolUse hook bridge. Bound to 127.0.0.1 only; the in-pod
+	// hook script connects to it whenever Claude wants to call a
+	// tool. The bridge blocks until ws.go calls Resolve(), wiring
+	// the user's Allow/Deny back into Claude. The onAsk callback
+	// will be set by ws.go via a follow-up Phase 3.4 commit; for
+	// now we plug in a placeholder that auto-denies (no UI yet) so
+	// the bridge can start cleanly during the rollout.
+	const bridgePort = 8090
+	var bridge *claude.Bridge
+	bridge = claude.NewBridge(func(req claude.PendingRequest) {
+		// Phase 3.4 will replace this with the real WS push. For
+		// now, auto-deny so any accidental hook invocation does
+		// not hang.
+		go func() {
+			bridge.Resolve(req.ToolUseID, claude.Decision{
+				Permission: "deny",
+				Reason:     "claude UI not wired yet (Phase 3.4 pending)",
+			})
+		}()
+	})
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	defer bridgeCancel()
+	if err := bridge.Start(bridgeCtx, bridgePort); err != nil {
+		logger.Error("claude bridge listen", "port", bridgePort, "err", err)
+		os.Exit(2)
+	}
+	logger.Info("claude bridge listening", "addr", bridge.Addr())
+
 	rl := auth.NewRateLimiter(5, time.Minute)
 	router := api.NewRouter(api.Deps{
 		Manager:     mgr,
 		Auth:        a,
 		RateLimiter: rl,
 		Ready:       ready.Load,
+		Bridge:      bridge,
 	})
 
 	srv := &http.Server{
