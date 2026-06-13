@@ -81,10 +81,10 @@ func TestParseStream_SimpleText(t *testing.T) {
 // TestParseStream_ToolUse replays a capture where Claude was asked
 // to "Run ls /tmp using your Bash tool" with --permission-mode
 // bypassPermissions. The model:
-//   1. emits a thinking block
-//   2. emits a tool_use call to Bash with input {"command":"ls /tmp"}
-//   3. receives a tool_result (the listing)
-//   4. emits the final text response
+//  1. emits a thinking block
+//  2. emits a tool_use call to Bash with input {"command":"ls /tmp"}
+//  3. receives a tool_result (the listing)
+//  4. emits the final text response
 func TestParseStream_ToolUse(t *testing.T) {
 	data, err := os.ReadFile("testdata/tool_use_response.jsonl")
 	if err != nil {

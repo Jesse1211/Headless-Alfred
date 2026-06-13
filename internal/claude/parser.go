@@ -289,12 +289,12 @@ type streamEventLine struct {
 }
 
 type streamEventInner struct {
-	Type    string              `json:"type"`
-	Index   int                 `json:"index"`
-	Message streamEventMessage  `json:"message"`
-	ContentBlock *contentBlock  `json:"content_block,omitempty"`
-	Delta    *streamEventDelta  `json:"delta,omitempty"`
-	Usage    streamEventUsage   `json:"usage"`
+	Type         string             `json:"type"`
+	Index        int                `json:"index"`
+	Message      streamEventMessage `json:"message"`
+	ContentBlock *contentBlock      `json:"content_block,omitempty"`
+	Delta        *streamEventDelta  `json:"delta,omitempty"`
+	Usage        streamEventUsage   `json:"usage"`
 }
 
 type streamEventMessage struct {
@@ -327,8 +327,8 @@ type userLine struct {
 }
 
 type userMessage struct {
-	Role    string          `json:"role"`
-	Content []userContent   `json:"content"`
+	Role    string        `json:"role"`
+	Content []userContent `json:"content"`
 }
 
 type userContent struct {

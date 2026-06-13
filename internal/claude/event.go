@@ -26,18 +26,18 @@ type Event struct {
 	Kind EventKind
 
 	// Variant payloads. Exactly one is non-nil per Event.
-	System         *SystemEvent
-	RateLimit      *RateLimitEvent
-	TextDelta      *TextDeltaEvent
-	TextBlockEnd   *TextBlockEndEvent
-	ToolUseStart   *ToolUseStartEvent
-	ToolUseEnd     *ToolUseEndEvent
-	ToolResult     *ToolResultEvent
-	MessageStart   *MessageStartEvent
-	MessageDelta   *MessageDeltaEvent
-	MessageStop    *MessageStopEvent
-	Result         *ResultEvent
-	Unknown        *UnknownEvent
+	System       *SystemEvent
+	RateLimit    *RateLimitEvent
+	TextDelta    *TextDeltaEvent
+	TextBlockEnd *TextBlockEndEvent
+	ToolUseStart *ToolUseStartEvent
+	ToolUseEnd   *ToolUseEndEvent
+	ToolResult   *ToolResultEvent
+	MessageStart *MessageStartEvent
+	MessageDelta *MessageDeltaEvent
+	MessageStop  *MessageStopEvent
+	Result       *ResultEvent
+	Unknown      *UnknownEvent
 }
 
 // EventKind tags the Event union. Stable enough to use in WS frames.
@@ -131,8 +131,8 @@ type MessageStartEvent struct {
 // the final usage and stop reason. Concatenating MessageDelta.Usage
 // across turns gives the conversation cost.
 type MessageDeltaEvent struct {
-	StopReason string         `json:"stop_reason"`
-	Usage      MessageUsage   `json:"usage"`
+	StopReason string       `json:"stop_reason"`
+	Usage      MessageUsage `json:"usage"`
 }
 
 // MessageUsage — token accounting. Field names match the CLI output.
