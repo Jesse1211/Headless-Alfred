@@ -17,12 +17,15 @@ export interface CompletedMsg {
   truncated: boolean
 }
 
+export type SessionMode = 'shell' | 'claude'
+
 export interface PerSessionState {
   running: RunningCmd | null
   messages: CompletedMsg[]
   messagesLoaded: boolean
+  mode: SessionMode
 }
 
 export function emptyPerSessionState(): PerSessionState {
-  return { running: null, messages: [], messagesLoaded: false }
+  return { running: null, messages: [], messagesLoaded: false, mode: 'shell' }
 }

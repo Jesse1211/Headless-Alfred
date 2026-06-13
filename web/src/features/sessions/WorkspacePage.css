@@ -55,6 +55,34 @@
   color: var(--text);
 }
 
+.workspace__claude-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.workspace__claude-btn:hover:not(:disabled) {
+  background: var(--bubble);
+}
+
+.workspace__claude-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.workspace__claude-btn--exit {
+  border-color: #e06c75;
+  color: #e06c75;
+}
+
+.workspace__claude-btn--exit:hover {
+  background: rgba(224, 108, 117, 0.1);
+}
+
 .workspace__banner {
   padding: 8px 20px;
   font-size: 13px;

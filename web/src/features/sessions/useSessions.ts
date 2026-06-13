@@ -42,6 +42,22 @@ export function useSessions(token: string) {
   const sessionsRef = useRef(sessions)
   sessionsRef.current = sessions
 
+  // pty_data dispatch — claude-mode raw PTY bytes go straight to xterm
+  // without round-tripping through React state. ClaudeTerminal calls
+  // registerPtyHandler(sid, cb) on mount, returns the unregister fn.
+  const ptyHandlers = useRef<Map<string, (bytes: Uint8Array) => void>>(new Map())
+  const registerPtyHandler = useCallback(
+    (sid: string, cb: (bytes: Uint8Array) => void) => {
+      ptyHandlers.current.set(sid, cb)
+      return () => {
+        if (ptyHandlers.current.get(sid) === cb) {
+          ptyHandlers.current.delete(sid)
+        }
+      }
+    },
+    [],
+  )
+
   // Initial REST fetch.
   useEffect(() => {
     let alive = true
@@ -101,6 +117,18 @@ export function useSessions(token: string) {
             return
           }
           if (m.type === 'pong') return
+          // Raw PTY bytes (claude mode) bypass React state — they go
+          // straight to xterm.write via the registered handler.
+          if (m.type === 'pty_data') {
+            const cb = ptyHandlers.current.get(m.sessionID)
+            if (cb) {
+              const bin = atob(m.data)
+              const bytes = new Uint8Array(bin.length)
+              for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+              cb(bytes)
+            }
+            return
+          }
 
           // Per-session state mutations go through the reducer.
           setPerSession((prev) => {
@@ -183,11 +211,36 @@ export function useSessions(token: string) {
     }
   }, [])
 
+  const enterClaude = useCallback(
+    (sid: string) => {
+      socket.send({ type: 'enter_claude', sessionID: sid })
+    },
+    [socket],
+  )
+
+  const exitClaude = useCallback(
+    (sid: string) => {
+      socket.send({ type: 'exit_claude', sessionID: sid })
+    },
+    [socket],
+  )
+
+  const sendStdin = useCallback(
+    (sid: string, bytes: Uint8Array) => {
+      // base64 encode the raw bytes.
+      let bin = ''
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+      socket.send({ type: 'stdin', sessionID: sid, data: btoa(bin) })
+    },
+    [socket],
+  )
+
   const clearError = useCallback(() => setLastError(null), [])
 
   return {
     connState, sessions, selectedSessionID, selectSession, perSession, setPerSession,
     submit, stop, createSession, renameSession, closeSession,
+    enterClaude, exitClaude, sendStdin, registerPtyHandler,
     lastError, clearError,
   }
 }

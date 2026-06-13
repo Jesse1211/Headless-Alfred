@@ -16,13 +16,19 @@ export function reducePerSession(
   switch (m.type) {
     case 'idle': {
       const next = new Map(prev)
-      next.set(m.sessionID, { ...(next.get(m.sessionID) ?? emptyPerSessionState()), running: null })
+      const cur = next.get(m.sessionID) ?? emptyPerSessionState()
+      next.set(m.sessionID, {
+        ...cur,
+        running: null,
+        mode: m.mode ?? cur.mode,
+      })
       return { perSession: next }
     }
     case 'reattach': {
       const next = new Map(prev)
+      const cur = next.get(m.sessionID) ?? emptyPerSessionState()
       next.set(m.sessionID, {
-        ...(next.get(m.sessionID) ?? emptyPerSessionState()),
+        ...cur,
         running: {
           id: m.cmdId,
           command: m.command,
@@ -30,7 +36,20 @@ export function reducePerSession(
           output: b64decode(m.outputSoFar),
           truncatedLossWarned: false,
         },
+        mode: m.mode ?? cur.mode,
       })
+      return { perSession: next }
+    }
+    case 'claude_entered': {
+      const next = new Map(prev)
+      const cur = next.get(m.sessionID) ?? emptyPerSessionState()
+      next.set(m.sessionID, { ...cur, mode: 'claude' })
+      return { perSession: next }
+    }
+    case 'claude_exited': {
+      const next = new Map(prev)
+      const cur = next.get(m.sessionID) ?? emptyPerSessionState()
+      next.set(m.sessionID, { ...cur, mode: 'shell' })
       return { perSession: next }
     }
     case 'started': {

@@ -4,6 +4,7 @@ import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { SessionsSidebar } from './SessionsSidebar'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
+import { ClaudeTerminal } from '../claude/ClaudeTerminal'
 import ChatStream from '../terminal/ChatStream'
 import CommandInput from '../terminal/CommandInput'
 import { emptyPerSessionState } from './types'
@@ -55,6 +56,27 @@ export function WorkspacePage({ token, onLogout }: Props) {
           <div className="workspace__status" title={s.connState}>
             <span className={`status-dot status-dot--${s.connState}`} />
           </div>
+          {selected && ps && ps.mode === 'claude' && (
+            <button
+              type="button"
+              className="workspace__claude-btn workspace__claude-btn--exit"
+              onClick={() => s.exitClaude(selected.id)}
+              title="Send Ctrl+C to Claude and return to shell view"
+            >
+              Exit Claude
+            </button>
+          )}
+          {selected && ps && ps.mode !== 'claude' && (
+            <button
+              type="button"
+              className="workspace__claude-btn"
+              onClick={() => s.enterClaude(selected.id)}
+              disabled={composerBusy}
+              title="Start Claude in this session"
+            >
+              Claude
+            </button>
+          )}
           <button
             type="button"
             className="workspace__icon-btn"
@@ -83,7 +105,15 @@ export function WorkspacePage({ token, onLogout }: Props) {
           </div>
         )}
 
-        {selected && ps && (
+        {selected && ps && ps.mode === 'claude' && (
+          <ClaudeTerminal
+            sessionID={selected.id}
+            registerPtyHandler={s.registerPtyHandler}
+            sendStdin={s.sendStdin}
+          />
+        )}
+
+        {selected && ps && ps.mode !== 'claude' && (
           <>
             <ChatStream messages={ps.messages} running={ps.running} />
             <div className="workspace__composer">
@@ -91,7 +121,16 @@ export function WorkspacePage({ token, onLogout }: Props) {
                 <CommandInput
                   disabled={composerDisabled}
                   busy={composerBusy}
-                  onSubmit={(cmd) => s.submit(cmd)}
+                  onSubmit={(cmd) => {
+                    // Slash-command interception: `/claude` flips this
+                    // session into claude mode instead of running as bash.
+                    const trimmed = cmd.trim()
+                    if (trimmed === '/claude') {
+                      s.enterClaude(selected.id)
+                      return
+                    }
+                    s.submit(cmd)
+                  }}
                   onStop={() => ps.running && s.stop(ps.running.id)}
                 />
               </div>
