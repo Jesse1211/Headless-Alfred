@@ -31,6 +31,42 @@ page. Close the tab any time — commands keep running on the server.
 
 ---
 
+## Using git
+
+The container ships with `git` + `openssh-client`. The four commands the
+chat stream officially supports are `git clone`, `git pull`, `git commit -m "msg"`,
+and `git push` — others (`status`, `log`, `diff`, `checkout`, …) work fine
+too, but are not "officially supported" only in the sense that we don't
+go out of our way to test them.
+
+**Authentication.** Click the **⚙ gear** in the header → "Git
+credentials" → paste your host (`github.com`), username, and a personal
+access token (PAT). The server stores them in `~/.git-credentials` (mode
+0600, persists on the PVC) and configures git's `credential.helper=store`,
+so subsequent clones/pulls/pushes authenticate silently. The token never
+appears in the chat stream or in command history. Re-submit the dialog
+to rotate.
+
+**Caveats inherited from running git inside a chat UI:**
+
+- `git commit` **must** include `-m "msg"`. Without it, git tries to
+  launch `$EDITOR` which we don't ship; the server catches this and
+  shows an inline error before bash hangs.
+- `git pull` may leave a merge-message editor dialog open if the merge
+  isn't fast-forward. Use `git pull --no-edit` or `git pull --rebase`.
+- Progress bars from `git clone` / `git push` don't redraw in-place
+  the way a real terminal does — they show every intermediate line.
+- `Ctrl+C` doesn't reach git. The Stop button SIGKILLs bash and respawns
+  it; cwd resets to `/home/alfred`.
+- ANSI colors (`git status`, `git log --color=always`) **do** render —
+  if a command's output looks dimmer than your terminal, set
+  `git config --global color.ui always`.
+
+For repos larger than the PVC (default 1 GB), expand `pvc.yaml` before
+cloning, or `git clone --depth 1` to save space.
+
+---
+
 ## Usage flow
 
 ### 0. One-time setup of the cloud server
