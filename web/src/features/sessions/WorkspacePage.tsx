@@ -3,6 +3,7 @@ import { useSessions } from './useSessions'
 import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { SessionsSidebar } from './SessionsSidebar'
 import { ConfirmDialog } from './ConfirmDialog'
+import { GitCredentialsDialog } from './GitCredentialsDialog'
 import ChatStream from '../terminal/ChatStream'
 import CommandInput from '../terminal/CommandInput'
 import { emptyPerSessionState } from './types'
@@ -25,6 +26,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
   })
 
   const [pendingClose, setPendingClose] = useState<string | null>(null)
+  const [gitCredsOpen, setGitCredsOpen] = useState(false)
 
   const selected = s.selectedSessionID
     ? s.sessions.find((x) => x.id === s.selectedSessionID)
@@ -53,6 +55,16 @@ export function WorkspacePage({ token, onLogout }: Props) {
           <div className="workspace__status" title={s.connState}>
             <span className={`status-dot status-dot--${s.connState}`} />
           </div>
+          <button
+            type="button"
+            className="workspace__icon-btn"
+            aria-label="Git credentials"
+            title="Git credentials"
+            onClick={() => setGitCredsOpen(true)}
+          >
+            {/* Lightweight gear glyph; no svg dep */}
+            ⚙
+          </button>
           <button className="workspace__logout" onClick={onLogout}>Sign out</button>
         </header>
 
@@ -87,6 +99,10 @@ export function WorkspacePage({ token, onLogout }: Props) {
           </>
         )}
       </div>
+
+      {gitCredsOpen && (
+        <GitCredentialsDialog onClose={() => setGitCredsOpen(false)} />
+      )}
 
       {pendingClose && (
         <ConfirmDialog

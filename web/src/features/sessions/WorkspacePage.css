@@ -39,6 +39,22 @@
   font-size: 12px;
 }
 
+.workspace__icon-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 9px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.workspace__icon-btn:hover {
+  background: var(--bubble);
+  color: var(--text);
+}
+
 .workspace__banner {
   padding: 8px 20px;
   font-size: 13px;

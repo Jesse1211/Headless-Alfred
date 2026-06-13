@@ -133,3 +133,16 @@ export async function stopCommand(sessionID: string, id: string): Promise<void> 
     { method: 'POST' },
   )
 }
+
+export interface GitCredentials {
+  host: string
+  username: string
+  token: string
+}
+
+export async function saveGitCredentials(c: GitCredentials): Promise<void> {
+  await request('/api/git-credentials', {
+    method: 'POST',
+    body: JSON.stringify(c),
+  })
+}
