@@ -70,11 +70,12 @@ cloning, or `git clone --depth 1` to save space.
 ## Using Claude (alpha)
 
 The container also ships `node` + `@anthropic-ai/claude-code`. Inside
-any shell session, type **`/claude`** in the command input to flip
-that session into Claude mode. The chat-stream view is replaced with
-a real terminal (xterm.js), and `claude` is spawned **in the same
-tmux pane** so it inherits the current cwd, env, and any files you
-just `git clone`d.
+any shell session, type either **`claude`** (the actual CLI, like
+in a real terminal) or **`/claude`** (a shortcut) in the command
+input to flip that session into Claude mode. The chat-stream view
+is replaced with a real terminal (xterm.js), and `claude` is spawned
+**in the same tmux pane** so it inherits the current cwd, env, and
+any files you just `git clone`d.
 
 To exit, click the red **"Exit Claude"** button in the header. We
 send Ctrl+C twice — claude may need another keypress or `/exit` to
@@ -103,6 +104,10 @@ sources later — see CONTEXT.md for the trade-off.
   (e.g. `kubectl rollout`) and your Claude session resumes; restart
   the Pod and tmux dies, so does Claude — mode is reset to shell on
   Reconcile.
+- **Exit Claude resets the session's bash** (cwd, env vars, aliases
+  go back to defaults — same trade-off as the Stop button in shell
+  mode). The PVC is unchanged, so any files Claude created stay; you
+  just need to `cd` back to where you were.
 - A session can run **either** a normal shell command **or** Claude
   at a time, never both. The `Claude` button is disabled while a
   shell command is busy.
