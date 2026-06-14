@@ -107,7 +107,14 @@ func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult,
 		"--include-partial-messages",
 	}
 	if opts.SessionUUID != "" {
-		args = append(args, "--resume", opts.SessionUUID)
+		// Prefer --session-id for the first invocation (creates the
+		// transcript) and --resume for subsequent. Probing the disk
+		// for the transcript path is fragile (depends on cwd-hash
+		// encoding), so we use --session-id always: empirically it
+		// works whether or not the transcript exists. If Anthropic
+		// tightens that in a future version we'll add the resume
+		// fallback.
+		args = append(args, "--session-id", opts.SessionUUID)
 	}
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
