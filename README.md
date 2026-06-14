@@ -72,15 +72,34 @@ cloning, or `git clone --depth 1` to save space.
 The container also ships `node` + `@anthropic-ai/claude-code`. Inside
 any shell session, type either **`claude`** (the actual CLI, like
 in a real terminal) or **`/claude`** (a shortcut) in the command
-input to flip that session into Claude mode. The chat-stream view
-is replaced with a real terminal (xterm.js), and `claude` is spawned
-**in the same tmux pane** so it inherits the current cwd, env, and
-any files you just `git clone`d.
+input — or just click the **Claude** button in the header. Either
+way Alfred pops a **Start Claude** dialog that asks how you want
+Claude rendered:
 
-To exit, click the red **"Exit Claude"** button in the header. We
-send Ctrl+C twice — claude may need another keypress or `/exit` to
-finish cleanly. The button immediately flips the UI back to the
-chat view; if claude is stubborn, you can re-enter the session to
+- **Chat UI** — a ChatGPT-style rendered view. Assistant messages
+  go through markdown (GFM tables / lists / code blocks); every
+  tool use Claude wants to run surfaces as an **Allow / Deny** card
+  before it executes; turns show their token usage and dollar cost
+  in a small footer. The Go server forks `claude -p
+  --output-format stream-json --session-id <uuid>` per prompt — the
+  same UUID is reused across prompts in the same Alfred session, so
+  the conversation continues even after a Pod restart (the
+  transcript lives on the PVC at `~/.claude/projects/...`).
+- **Terminal** — the full Claude TUI rendered into an embedded
+  terminal (xterm.js), running **in the same tmux pane** as your
+  shell. Inherits cwd, env, and any files you just `git clone`d.
+
+Renderer is locked at entry; to switch, hit **Exit Claude** and
+start again. Sidebar nav between sessions doesn't interrupt — each
+Alfred session keeps its own Claude state and (in UI mode) its own
+conversation history.
+
+To exit, click the red **"Exit Claude"** button in the header. In
+UI mode the in-flight prompt (if any) is interrupted and the chat
+history is preserved on screen. In Terminal mode we send Ctrl+C
+twice — claude may need another keypress or `/exit` to finish
+cleanly. The button immediately flips the UI back to the chat
+view; if claude is stubborn, you can re-enter the session to
 finish it off.
 
 **Authentication.** `claude` inside the pod can authenticate two ways.

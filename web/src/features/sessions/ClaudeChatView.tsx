@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
 import { ToolApprovalCard } from './ToolApprovalCard'
 import './ClaudeChatView.css'
@@ -108,7 +110,11 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
       </div>
       <div className={`claude-turn__assistant ${turn.isError ? 'is-error' : ''}`}>
         <div className="claude-turn__label">Claude</div>
-        {turn.text && <pre className="claude-turn__text">{turn.text}</pre>}
+        {turn.text && (
+          <div className="claude-turn__text">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown>
+          </div>
+        )}
         {turn.tools.map((tool) => (
           <ToolCallView key={tool.toolUseId} tool={tool} />
         ))}
