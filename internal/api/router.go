@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/jesseliu/headless-alfred/internal/auth"
+	"github.com/jesseliu/headless-alfred/internal/claude"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/static"
 )
@@ -16,6 +17,18 @@ type Deps struct {
 	Auth        auth.Auth
 	RateLimiter *auth.RateLimiter
 	Ready       func() bool
+
+	// Bridge is the localhost HTTP listener that backs the PreToolUse
+	// hook (see internal/claude/bridge.go). The WS handler uses it to
+	// unblock pending tool-approval HTTP requests when a tool_decision
+	// frame arrives from the client. Can be nil when Claude UI is
+	// disabled; the WS handler degrades gracefully.
+	Bridge *claude.Bridge
+
+	// Dispatcher fans tool-approval requests from the bridge out to
+	// the appropriate WS client per Alfred session. Always paired
+	// with Bridge.
+	Dispatcher *claude.Dispatcher
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -26,7 +39,7 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/healthz", HealthzHandler().ServeHTTP)
 	r.Get("/readyz", ReadyzHandler(d.Ready).ServeHTTP)
 	r.Post("/api/login", LoginHandler(d.Auth, d.RateLimiter).ServeHTTP)
-	r.Get("/ws", WSHandler(d.Manager, d.Auth).ServeHTTP)
+	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher).ServeHTTP)
 
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(d.Auth))

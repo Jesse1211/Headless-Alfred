@@ -14,8 +14,28 @@ type SessionMode string
 const (
 	// ModeShell is the default mode: chat-stream rendering, wrapped commands.
 	ModeShell SessionMode = "shell"
-	// ModeClaude is the TUI passthrough mode: raw PTY bytes forwarded to xterm.js.
+	// ModeClaude means the session is talking to the `claude` CLI.
+	// The Renderer field of SessionMeta selects how the conversation
+	// is presented to the user.
 	ModeClaude SessionMode = "claude"
+)
+
+// ClaudeRenderer selects how Claude is presented when Mode == ModeClaude.
+//
+//   - RendererTUI: the legacy xterm.js view, raw PTY bytes from an
+//     interactive `claude` invocation. This is what V0 shipped.
+//   - RendererUI: a Markdown chat rendered by React. Each user prompt
+//     forks a separate `claude -p --resume <uuid> --output-format
+//     stream-json` invocation; Alfred intercepts tool use via a hook.
+//
+// Empty means "session is not in claude mode" (or, for backward
+// compatibility with sessions persisted before this field existed,
+// the renderer defaulted to TUI).
+type ClaudeRenderer string
+
+const (
+	RendererTUI ClaudeRenderer = "tui"
+	RendererUI  ClaudeRenderer = "ui"
 )
 
 // SessionMeta is the persistent metadata for one session. Fields are kept
@@ -26,6 +46,19 @@ type SessionMeta struct {
 	Name      string      `json:"name"`
 	CreatedAt time.Time   `json:"created_at"`
 	Mode      SessionMode `json:"mode,omitempty"` // empty in old files == shell
+
+	// Renderer is only meaningful when Mode == ModeClaude.
+	// Empty otherwise. On Pod restart, this is reset to "" by
+	// Manager.Reconcile because the tmux pane + claude process are
+	// gone; the user re-picks the renderer on re-entry.
+	Renderer ClaudeRenderer `json:"renderer,omitempty"`
+
+	// ClaudeSessionID is the Claude CLI conversation UUID. Persists
+	// across Mode transitions so re-entering Claude (in either
+	// renderer) resumes the same conversation via --resume. Set the
+	// first time the session enters Claude mode and never cleared
+	// until the Alfred session itself is deleted.
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 }
 
 // SessionsFile is the persisted list of sessions. The file lives at

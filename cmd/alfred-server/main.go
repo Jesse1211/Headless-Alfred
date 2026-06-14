@@ -17,6 +17,7 @@ import (
 
 	"github.com/jesseliu/headless-alfred/internal/api"
 	"github.com/jesseliu/headless-alfred/internal/auth"
+	"github.com/jesseliu/headless-alfred/internal/claude"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -99,12 +100,44 @@ func main() {
 	var ready atomic.Bool
 	ready.Store(true)
 
+	// PreToolUse hook bridge. Bound to 127.0.0.1 only; the in-pod
+	// hook script connects to it whenever Claude wants to call a
+	// tool. The bridge blocks until ws.go calls Resolve(), wiring
+	// the user's Allow/Deny back into Claude.
+	//
+	// Routing: bridge.onAsk receives requests keyed by Claude's
+	// session_id. Dispatcher.OnAsk translates that into the matching
+	// Alfred sessionID and forwards to whichever WS client is
+	// subscribed (one per session at a time). Auto-deny is the
+	// fallback if no subscriber is connected (closed browser tab).
+	const bridgePort = 8090
+	dispatcher := claude.NewDispatcher()
+	var bridge *claude.Bridge
+	bridge = claude.NewBridge(dispatcher.OnAsk(
+		mgr.FindByClaudeConvoID,
+		func(toolUseID, reason string) {
+			bridge.Resolve(toolUseID, claude.Decision{
+				Permission: "deny",
+				Reason:     reason,
+			})
+		},
+	))
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	defer bridgeCancel()
+	if err := bridge.Start(bridgeCtx, bridgePort); err != nil {
+		logger.Error("claude bridge listen", "port", bridgePort, "err", err)
+		os.Exit(2)
+	}
+	logger.Info("claude bridge listening", "addr", bridge.Addr())
+
 	rl := auth.NewRateLimiter(5, time.Minute)
 	router := api.NewRouter(api.Deps{
 		Manager:     mgr,
 		Auth:        a,
 		RateLimiter: rl,
 		Ready:       ready.Load,
+		Bridge:      bridge,
+		Dispatcher:  dispatcher,
 	})
 
 	srv := &http.Server{

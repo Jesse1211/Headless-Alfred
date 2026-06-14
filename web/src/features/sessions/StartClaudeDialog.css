@@ -1,0 +1,107 @@
+.start-claude__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 11, 18, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.start-claude {
+  background: var(--bg-elevated, #1a1d24);
+  color: var(--fg, #eaeaea);
+  border-radius: 10px;
+  padding: 24px;
+  width: 460px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.start-claude__title {
+  margin: 0 0 6px 0;
+  font-size: 18px;
+}
+
+.start-claude__hint {
+  margin: 0 0 16px 0;
+  color: var(--fg-muted, #9aa3b2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.start-claude__options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.start-claude__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.start-claude__option:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.start-claude__option.is-selected {
+  border-color: var(--accent, #7aa2f7);
+  background: rgba(122, 162, 247, 0.08);
+}
+
+.start-claude__option input[type='radio'] {
+  margin-top: 3px;
+  accent-color: var(--accent, #7aa2f7);
+}
+
+.start-claude__option-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.start-claude__option-desc {
+  color: var(--fg-muted, #9aa3b2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.start-claude__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.start-claude__actions button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: var(--fg, #eaeaea);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.start-claude__actions button:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.start-claude__primary {
+  background: var(--accent, #7aa2f7) !important;
+  color: #0c0f15 !important;
+  border-color: transparent !important;
+  font-weight: 600;
+}
+
+.start-claude__primary:hover {
+  filter: brightness(1.08);
+}

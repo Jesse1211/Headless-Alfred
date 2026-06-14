@@ -3,25 +3,50 @@
 // onMessage callback, and a connection state machine. Reconnects with
 // exponential backoff capped at 30 s.
 
+export type ClaudeRenderer = 'tui' | 'ui'
+
+// One parsed stream-json event from the in-pod `claude -p` invocation.
+// `payload` is the variant-specific shape; consumers narrow by
+// `eventKind`. See internal/claude/event.go for the source of truth.
+export type ClaudeEventKind =
+  | 'system'
+  | 'rate_limit'
+  | 'text_delta'
+  | 'text_block_end'
+  | 'tool_use_start'
+  | 'tool_use_end'
+  | 'tool_result'
+  | 'message_start'
+  | 'message_delta'
+  | 'message_stop'
+  | 'result'
+  | 'unknown'
+
 export type ServerMsg =
-  | { type: 'reattach'; sessionID: string; cmdId: string; command: string; startedAt: string; outputSoFar: string; mode?: 'shell' | 'claude' }
-  | { type: 'idle'; sessionID: string; mode?: 'shell' | 'claude' }
+  | { type: 'reattach'; sessionID: string; cmdId: string; command: string; startedAt: string; outputSoFar: string; mode?: 'shell' | 'claude'; renderer?: ClaudeRenderer | '' }
+  | { type: 'idle'; sessionID: string; mode?: 'shell' | 'claude'; renderer?: ClaudeRenderer | '' }
   | { type: 'started'; sessionID: string; cmdId: string; command: string; startedAt: string }
   | { type: 'chunk'; sessionID: string; cmdId: string; data: string }
   | { type: 'done'; sessionID: string; cmdId: string; exitCode: number; finishedAt: string }
   | { type: 'session_closed'; sessionID: string }
   | { type: 'session_renamed'; sessionID: string; name: string }
-  | { type: 'claude_entered'; sessionID: string }
+  | { type: 'claude_entered'; sessionID: string; renderer?: ClaudeRenderer }
   | { type: 'claude_exited'; sessionID: string }
   | { type: 'pty_data'; sessionID: string; data: string }
+  | { type: 'claude_event'; sessionID: string; eventKind: ClaudeEventKind; payload: unknown }
+  | { type: 'tool_approval_request'; sessionID: string; toolUseId: string; tool: string; toolInput: unknown }
+  | { type: 'claude_error'; sessionID: string; code: string; message: string }
   | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
 
 export type ClientMsg =
   | { type: 'run'; sessionID: string; command: string }
-  | { type: 'enter_claude'; sessionID: string }
+  | { type: 'enter_claude'; sessionID: string; renderer?: ClaudeRenderer }
   | { type: 'exit_claude'; sessionID: string }
   | { type: 'stdin'; sessionID: string; data: string }
+  | { type: 'claude_prompt'; sessionID: string; text: string }
+  | { type: 'tool_decision'; sessionID: string; toolUseId: string; decision: 'allow' | 'deny'; reason?: string }
+  | { type: 'interrupt'; sessionID: string }
   | { type: 'ping' }
 
 export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed'
