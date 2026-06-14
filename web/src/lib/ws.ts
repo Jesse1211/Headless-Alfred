@@ -36,6 +36,13 @@ export type ServerMsg =
   | { type: 'claude_event'; sessionID: string; eventKind: ClaudeEventKind; payload: unknown }
   | { type: 'tool_approval_request'; sessionID: string; toolUseId: string; tool: string; toolInput: unknown }
   | { type: 'claude_error'; sessionID: string; code: string; message: string }
+  // claude_run_ended fires when the per-prompt `claude -p` process
+  // exits, REGARDLESS of whether a `result` event was emitted first.
+  // It's a backstop so the frontend always clears inFlight even if
+  // the runner died abnormally (OOM kill, parser bug, etc.). When
+  // the run ended cleanly with a `result`, the frame is redundant
+  // and the reducer treats it as a no-op for the turn state.
+  | { type: 'claude_run_ended'; sessionID: string; message?: string }
   | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
 

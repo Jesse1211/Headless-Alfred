@@ -18,9 +18,9 @@ import (
 // process is *spawned* — events flow asynchronously on the returned
 // channel, which closes when stdout EOFs and the process exits.
 //
-// Multi-prompt continuity is achieved by passing the same `--resume
-// <uuid>` to each invocation; claude reads/writes its own
-// transcript file at ~/.claude/projects/<cwd-encoded>/<uuid>.jsonl.
+// Multi-prompt continuity is achieved by passing the same
+// `--session-id <uuid>` to each invocation; claude reads/writes its
+// own transcript file at ~/.claude/projects/<cwd-encoded>/<uuid>.jsonl.
 // Runner does not persist anything itself.
 type Runner struct {
 	// claudeBin is the path to the claude binary. Tests can swap it
@@ -41,13 +41,17 @@ func NewRunner() *Runner {
 // PromptOptions controls one `claude -p` invocation. Fields that
 // matter for v1; we'll grow this struct as features land.
 type PromptOptions struct {
-	// SessionUUID, when non-empty, becomes --resume <uuid>. Empty
-	// means a fresh conversation; claude assigns a UUID we capture
-	// from the first system/init event.
+	// SessionUUID, when non-empty, becomes --session-id <uuid>.
+	// Empty means a fresh conversation; claude assigns a UUID we
+	// capture from the first system/init event. See the long
+	// comment in Prompt() for why --session-id and not --resume.
 	SessionUUID string
 
 	// CWD is the working directory claude inherits. Required for
-	// --resume to find the right transcript file on disk.
+	// --session-id to find the right transcript file on disk on
+	// subsequent invocations (the cwd is part of the transcript
+	// path hash, so a different cwd starts a new conversation
+	// even for the same UUID).
 	CWD string
 
 	// Prompt is the user's text. Sent on the CLI's stdin as a
@@ -107,13 +111,14 @@ func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult,
 		"--include-partial-messages",
 	}
 	if opts.SessionUUID != "" {
-		// Prefer --session-id for the first invocation (creates the
-		// transcript) and --resume for subsequent. Probing the disk
-		// for the transcript path is fragile (depends on cwd-hash
-		// encoding), so we use --session-id always: empirically it
-		// works whether or not the transcript exists. If Anthropic
-		// tightens that in a future version we'll add the resume
-		// fallback.
+		// --session-id always (NOT --resume). Empirically the CLI
+		// accepts --session-id whether or not the transcript file
+		// already exists on disk: first invocation creates it,
+		// subsequent ones resume from it. --resume requires the
+		// transcript to exist and fails the first time with
+		// "No conversation found with session ID". Probing the
+		// transcript path is fragile (depends on cwd-hash
+		// encoding), so we just use --session-id unconditionally.
 		args = append(args, "--session-id", opts.SessionUUID)
 	}
 	if opts.PermissionMode != "" {

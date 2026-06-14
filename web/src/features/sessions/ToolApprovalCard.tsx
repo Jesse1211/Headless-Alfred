@@ -55,7 +55,6 @@ export function ToolApprovalCard({ request, onDecide }: Props) {
           type="button"
           className="tool-approval__btn tool-approval__btn--allow"
           onClick={() => onDecide('allow')}
-          autoFocus
         >
           Allow once
         </button>

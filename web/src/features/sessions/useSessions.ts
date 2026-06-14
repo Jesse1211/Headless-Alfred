@@ -15,7 +15,7 @@ import {
 } from './types'
 import {
   reducePerSession, applyAuthoritativeRecord,
-  beginClaudeTurn, resolveClaudeTool,
+  beginClaudeTurn, resolveClaudeTool, finalizeInFlightTurn,
 } from './sessionsReducer'
 
 const STORAGE_KEY = 'alfred_selected_session'
@@ -120,6 +120,24 @@ export function useSessions(token: string) {
           }
           if (m.type === 'error') {
             setLastError({ code: m.code, message: m.message })
+            // If the error is tied to a specific session that has an
+            // in-flight claude turn (e.g., `busy` / `renderer_mismatch`
+            // / `claude_spawn_failed`), finalize that turn so the
+            // optimistic beginClaudeTurn doesn't leave the composer
+            // locked. Errors with no sessionID are global and don't
+            // touch per-session state.
+            if (m.sessionID) {
+              setPerSession((prev) => {
+                const cur = prev.get(m.sessionID!)
+                if (!cur || !cur.claude || !cur.claude.inFlight) return prev
+                const next = new Map(prev)
+                next.set(m.sessionID!, {
+                  ...cur,
+                  claude: finalizeInFlightTurn(cur.claude, m.message || m.code),
+                })
+                return next
+              })
+            }
             return
           }
           if (m.type === 'pong') return

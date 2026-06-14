@@ -72,6 +72,60 @@ type claudeRunState struct {
 	stop   func()
 }
 
+// claudeRunStateMap is a tiny mutex-guarded map of in-flight runs.
+// The reaper goroutine for each prompt deletes from this map after
+// pr.Wait() returns, while the main goroutine reads/writes it from
+// handleInbound. Without the mutex this is a data race that Go's
+// race detector flags and that can crash with "concurrent map
+// writes" in production.
+type claudeRunStateMap struct {
+	mu sync.Mutex
+	m  map[string]*claudeRunState
+}
+
+func newClaudeRunStateMap() *claudeRunStateMap {
+	return &claudeRunStateMap{m: map[string]*claudeRunState{}}
+}
+
+func (s *claudeRunStateMap) get(sid string) (*claudeRunState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.m[sid]
+	return st, ok
+}
+
+func (s *claudeRunStateMap) set(sid string, st *claudeRunState) {
+	s.mu.Lock()
+	s.m[sid] = st
+	s.mu.Unlock()
+}
+
+// take atomically removes and returns the state for sid, so callers
+// can decide whether to stop / cancel it without racing another
+// remover. Returns (nil, false) if sid wasn't present.
+func (s *claudeRunStateMap) take(sid string) (*claudeRunState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.m[sid]
+	if ok {
+		delete(s.m, sid)
+	}
+	return st, ok
+}
+
+// drainAll removes and returns every state. Used on WS disconnect
+// to stop in-flight runners.
+func (s *claudeRunStateMap) drainAll() []*claudeRunState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*claudeRunState, 0, len(s.m))
+	for _, st := range s.m {
+		out = append(out, st)
+	}
+	s.m = map[string]*claudeRunState{}
+	return out
+}
+
 func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner) {
 	defer conn.Close()
 	conn.SetReadLimit(maxInboundMessage)
@@ -175,11 +229,11 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 	// Claude UI per-connection state.
 	asks := make(chan claude.PendingRequest, 16)
 	claudeEvents := make(chan claudeEvtForward, 64)
-	claudeRunStates := map[string]*claudeRunState{}
+	claudeRunStates := newClaudeRunStateMap()
 	defer func() {
 		// On disconnect, stop any still-running claude prompts so we
 		// don't leak processes.
-		for _, st := range claudeRunStates {
+		for _, st := range claudeRunStates.drainAll() {
 			if st.stop != nil {
 				st.stop()
 			}
@@ -459,7 +513,7 @@ type namedRename struct {
 	Name string
 }
 
-func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner *claude.Runner, claudeEvents chan<- claudeEvtForward, runStates map[string]*claudeRunState, write func(OutMsg) error) {
+func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner *claude.Runner, claudeEvents chan<- claudeEvtForward, runStates *claudeRunStateMap, write func(OutMsg) error) {
 	switch msg.Type {
 	case "ping":
 		_ = write(OutMsg{Type: "pong"})
@@ -521,9 +575,13 @@ func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner 
 	case "exit_claude":
 		handleExitClaude(msg, m, write)
 		// Interrupt any in-flight claude -p for this session.
-		if st, ok := runStates[msg.SessionID]; ok && st.stop != nil {
-			st.stop()
-			delete(runStates, msg.SessionID)
+		if st, ok := runStates.take(msg.SessionID); ok {
+			if st.stop != nil {
+				st.stop()
+			}
+			if st.cancel != nil {
+				st.cancel()
+			}
 		}
 	case "stdin":
 		handleStdin(msg, m, write)
@@ -532,7 +590,9 @@ func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner 
 	case "tool_decision":
 		handleToolDecision(msg, bridge, write)
 	case "interrupt":
-		if st, ok := runStates[msg.SessionID]; ok && st.stop != nil {
+		// Don't take() — keep the state in the map so the reaper
+		// goroutine can clean up after the SIGINT'd process exits.
+		if st, ok := runStates.get(msg.SessionID); ok && st.stop != nil {
 			st.stop()
 		}
 	default:
@@ -690,7 +750,7 @@ func handleStdin(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 // streams the parsed events back via claude_event frames. Only valid
 // when the session is in claude mode with renderer=ui. Refuses if a
 // prompt is already in flight (one at a time per session).
-func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, out chan<- claudeEvtForward, runStates map[string]*claudeRunState, write func(OutMsg) error) {
+func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, out chan<- claudeEvtForward, runStates *claudeRunStateMap, write func(OutMsg) error) {
 	if msg.SessionID == "" {
 		_ = write(OutMsg{Type: "error", Code: "bad_request", Message: "claude_prompt requires sessionID"})
 		return
@@ -707,7 +767,7 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "renderer_mismatch", Message: "claude_prompt requires renderer=ui"})
 		return
 	}
-	if _, busy := runStates[msg.SessionID]; busy {
+	if _, busy := runStates.get(msg.SessionID); busy {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "busy", Message: "another prompt is still in flight"})
 		return
 	}
@@ -736,7 +796,7 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 		return
 	}
 	state := &claudeRunState{cancel: cancel, stop: pr.Stop}
-	runStates[msg.SessionID] = state
+	runStates.set(msg.SessionID, state)
 
 	stopCh := make(chan struct{})
 	// Forward parsed events as long as the runner emits.
@@ -754,11 +814,27 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	// Reap the process exit + clean up.
 	go func() {
 		<-stopCh
-		_ = pr.Wait()
-		// Remove this run from in-flight map. Best-effort — the
-		// state may have been cleared by exit_claude or interrupt.
-		delete(runStates, msg.SessionID)
+		waitErr := pr.Wait()
+		// take() returns false if exit_claude already cleared the
+		// state — in that case the frontend already got a
+		// claude_exited frame and cleared its in-flight UI, so we
+		// don't need a backstop. Otherwise (natural exit, runner
+		// crashed, interrupt, etc.) emit claude_run_ended so the
+		// frontend never gets stuck on inFlight=true if no `result`
+		// event arrived.
+		_, owned := runStates.take(msg.SessionID)
 		cancel()
+		if owned {
+			endMsg := ""
+			if waitErr != nil {
+				endMsg = waitErr.Error()
+			}
+			_ = write(OutMsg{
+				Type:      "claude_run_ended",
+				SessionID: msg.SessionID,
+				Message:   endMsg,
+			})
+		}
 	}()
 }
 

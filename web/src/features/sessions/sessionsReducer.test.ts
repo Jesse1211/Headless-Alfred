@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   reducePerSession, applyAuthoritativeRecord,
-  applyClaudeEvent, beginClaudeTurn, resolveClaudeTool,
+  applyClaudeEvent, beginClaudeTurn, resolveClaudeTool, finalizeInFlightTurn,
 } from './sessionsReducer'
 import { PerSessionState, emptyPerSessionState, emptyClaudeState } from './types'
 
@@ -245,5 +245,78 @@ describe('claude UI reducer', () => {
     expect(ps.claude!.inFlight).toBe(false)
     expect(ps.claude!.pending).toEqual([])
     expect(ps.claude!.turns.length).toBe(1)
+  })
+
+  it('claude_run_ended finalizes an open turn (runner died without result)', () => {
+    const seed = new Map<string, PerSessionState>([
+      ['A', { ...emptyPerSessionState(), renderer: 'ui', claude: beginClaudeTurn(emptyClaudeState(), 'hi') }],
+    ])
+    const { perSession } = reducePerSession(
+      seed,
+      { type: 'claude_run_ended', sessionID: 'A', message: 'signal: interrupt' },
+      b64decode,
+    )
+    const c = perSession.get('A')!.claude!
+    expect(c.inFlight).toBe(false)
+    expect(c.turns[0].done).toBe(true)
+    expect(c.turns[0].isError).toBe(true)
+    expect(c.turns[0].text).toBe('signal: interrupt')
+  })
+
+  it('claude_run_ended after a normal result is a no-op on turn state', () => {
+    // Simulate: beginTurn → result event marks done → run_ended arrives last
+    let c = beginClaudeTurn(emptyClaudeState(), 'hi')
+    c = applyClaudeEvent(c, 'text_delta', { text: 'hello' })
+    c = applyClaudeEvent(c, 'result', { is_error: false, total_cost_usd: 0.001, result: 'hello' })
+    const seed = new Map<string, PerSessionState>([
+      ['A', { ...emptyPerSessionState(), renderer: 'ui', claude: c }],
+    ])
+    const { perSession } = reducePerSession(
+      seed,
+      { type: 'claude_run_ended', sessionID: 'A' },
+      b64decode,
+    )
+    const out = perSession.get('A')!.claude!
+    expect(out.inFlight).toBe(false)
+    expect(out.turns[0].done).toBe(true)
+    expect(out.turns[0].isError).toBe(false) // unchanged
+    expect(out.turns[0].text).toBe('hello')  // unchanged
+  })
+
+  it('claude_run_ended with no claude state is a no-op', () => {
+    const seed = new Map<string, PerSessionState>([
+      ['A', emptyPerSessionState()],
+    ])
+    const r = reducePerSession(
+      seed,
+      { type: 'claude_run_ended', sessionID: 'A' },
+      b64decode,
+    )
+    expect(r.perSession).toBe(seed)
+  })
+
+  it('finalizeInFlightTurn surfaces the error reason in the empty turn text', () => {
+    const c = beginClaudeTurn(emptyClaudeState(), 'hi')
+    const out = finalizeInFlightTurn(c, 'boom')
+    expect(out.inFlight).toBe(false)
+    expect(out.turns[0].text).toBe('boom')
+    expect(out.turns[0].isError).toBe(true)
+  })
+
+  it('finalizeInFlightTurn does not overwrite existing text', () => {
+    let c = beginClaudeTurn(emptyClaudeState(), 'hi')
+    c = applyClaudeEvent(c, 'text_delta', { text: 'partial answer' })
+    const out = finalizeInFlightTurn(c, 'crash')
+    expect(out.turns[0].text).toBe('partial answer')
+    expect(out.turns[0].isError).toBe(true)
+  })
+
+  it('finalizeInFlightTurn drops pending approvals', () => {
+    const c = {
+      ...beginClaudeTurn(emptyClaudeState(), 'hi'),
+      pending: [{ toolUseId: 't1', tool: 'Bash', input: {} }],
+    }
+    const out = finalizeInFlightTurn(c)
+    expect(out.pending).toEqual([])
   })
 })

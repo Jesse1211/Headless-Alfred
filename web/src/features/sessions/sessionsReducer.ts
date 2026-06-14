@@ -113,7 +113,25 @@ export function reducePerSession(
       const c = cur.claude ?? emptyClaudeState()
       next.set(m.sessionID, {
         ...cur,
-        claude: { ...c, inFlight: false, lastError: { code: m.code, message: m.message } },
+        claude: finalizeInFlightTurn(
+          { ...c, lastError: { code: m.code, message: m.message } },
+          m.message || m.code,
+        ),
+      })
+      return { perSession: next }
+    }
+    case 'claude_run_ended': {
+      // Backstop: the runner has exited. If the turn already saw a
+      // `result` event, the turn is already done and finalize is a
+      // no-op. If it didn't (runner crashed, was SIGINT'd before
+      // result, etc.), we mark the last turn done+isError so the
+      // composer unlocks and the user sees something happened.
+      const cur = prev.get(m.sessionID)
+      if (!cur || !cur.claude) return { perSession: prev }
+      const next = new Map(prev)
+      next.set(m.sessionID, {
+        ...cur,
+        claude: finalizeInFlightTurn(cur.claude, m.message),
       })
       return { perSession: next }
     }
@@ -332,6 +350,26 @@ export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState 
     done: false,
   }
   return { ...prev, turns: [...prev.turns, turn], inFlight: true, lastError: undefined }
+}
+
+// finalizeInFlightTurn clears inFlight and pending, and if the
+// latest turn is still open (no `result` event arrived), marks it
+// done + isError so the chat view stops spinning on "…" and the
+// composer unlocks. Used by claude_run_ended, claude_error, and
+// per-session error frames as a backstop against the runner dying
+// or the backend rejecting a prompt after beginClaudeTurn already
+// fired optimistically.
+export function finalizeInFlightTurn(prev: ClaudeState, reason?: string): ClaudeState {
+  const turns = [...prev.turns]
+  const lastIdx = turns.length - 1
+  if (lastIdx >= 0 && !turns[lastIdx].done) {
+    const last = { ...turns[lastIdx], done: true, isError: true }
+    if (!last.text && reason) {
+      last.text = reason
+    }
+    turns[lastIdx] = last
+  }
+  return { ...prev, turns, inFlight: false, pending: [] }
 }
 
 // resolveClaudeTool removes a pending approval from the queue and
