@@ -1,0 +1,96 @@
+.tool-approval {
+  border: 1px solid rgba(245, 175, 80, 0.35);
+  background: rgba(245, 175, 80, 0.06);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.tool-approval__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.tool-approval__icon {
+  font-size: 14px;
+  color: #f5af50;
+}
+
+.tool-approval__title code {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.tool-approval__input {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0 0 10px 0;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-approval__reason {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--fg, #eaeaea);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.tool-approval__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tool-approval__btn {
+  padding: 6px 12px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: var(--fg, #eaeaea);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tool-approval__btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tool-approval__btn--deny {
+  border-color: rgba(220, 100, 100, 0.5);
+  color: #e88c8c;
+}
+
+.tool-approval__btn--deny:hover {
+  background: rgba(220, 100, 100, 0.1);
+}
+
+.tool-approval__btn--allow {
+  background: #6cb56c !important;
+  color: #0c0f15 !important;
+  border-color: transparent !important;
+  font-weight: 600;
+}
+
+.tool-approval__btn--allow:hover {
+  filter: brightness(1.08);
+}

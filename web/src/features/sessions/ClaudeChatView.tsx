@@ -1,0 +1,157 @@
+import { useEffect, useRef, useState } from 'react'
+import type { ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
+import { ToolApprovalCard } from './ToolApprovalCard'
+import './ClaudeChatView.css'
+
+interface Props {
+  state: ClaudeState
+  disabled: boolean
+  onPrompt: (text: string) => void
+  onToolDecision: (toolUseId: string, decision: 'allow' | 'deny', reason?: string) => void
+  onInterrupt: () => void
+}
+
+// ClaudeChatView is the V1 ChatGPT-style renderer for a Claude conversation.
+// Phase 5 will swap the plain <pre> text for react-markdown + syntax highlighting.
+export function ClaudeChatView({
+  state, disabled, onPrompt, onToolDecision, onInterrupt,
+}: Props) {
+  const [draft, setDraft] = useState('')
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  // Auto-scroll to bottom whenever a new event lands.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [state.turns, state.pending.length, state.inFlight])
+
+  function submit() {
+    const text = draft.trim()
+    if (!text || state.inFlight) return
+    onPrompt(text)
+    setDraft('')
+  }
+
+  return (
+    <div className="claude-chat">
+      <div className="claude-chat__scroll" ref={scrollRef}>
+        {state.turns.length === 0 && !state.inFlight && (
+          <div className="claude-chat__empty">
+            Start a conversation with Claude. All tool use will ask before running.
+          </div>
+        )}
+        {state.turns.map((t) => (
+          <TurnView key={t.id} turn={t} />
+        ))}
+        {state.pending.map((req) => (
+          <ToolApprovalCard
+            key={req.toolUseId}
+            request={req}
+            onDecide={(d, reason) => onToolDecision(req.toolUseId, d, reason)}
+          />
+        ))}
+        {state.lastError && (
+          <div className="claude-chat__error">
+            {state.lastError.message || state.lastError.code}
+          </div>
+        )}
+      </div>
+
+      <div className="claude-chat__composer">
+        <textarea
+          className="claude-chat__input"
+          placeholder={state.inFlight ? 'Claude is thinking…' : 'Message Claude…'}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              submit()
+            }
+          }}
+          rows={3}
+          disabled={disabled}
+        />
+        <div className="claude-chat__actions">
+          {state.inFlight ? (
+            <button
+              type="button"
+              className="claude-chat__btn claude-chat__btn--stop"
+              onClick={onInterrupt}
+              title="Send SIGINT to the running Claude turn"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="claude-chat__btn claude-chat__btn--send"
+              onClick={submit}
+              disabled={disabled || !draft.trim()}
+            >
+              Send
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TurnView({ turn }: { turn: ClaudeTurn }) {
+  return (
+    <div className="claude-turn">
+      <div className="claude-turn__user">
+        <div className="claude-turn__label">You</div>
+        <div className="claude-turn__user-text">{turn.prompt}</div>
+      </div>
+      <div className={`claude-turn__assistant ${turn.isError ? 'is-error' : ''}`}>
+        <div className="claude-turn__label">Claude</div>
+        {turn.text && <pre className="claude-turn__text">{turn.text}</pre>}
+        {turn.tools.map((tool) => (
+          <ToolCallView key={tool.toolUseId} tool={tool} />
+        ))}
+        {!turn.done && !turn.text && turn.tools.length === 0 && (
+          <div className="claude-turn__thinking">…</div>
+        )}
+        {turn.done && turn.usage && (
+          <div className="claude-turn__footer">
+            {turn.totalCostUsd != null && (
+              <span title="Total cost for this turn">${turn.totalCostUsd.toFixed(4)}</span>
+            )}
+            <span title="Input → output tokens">
+              {turn.usage.inputTokens.toLocaleString()} in → {turn.usage.outputTokens.toLocaleString()} out
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
+  const status =
+    tool.decision === 'deny' ? 'denied' :
+    tool.result != null ? 'done' :
+    tool.decision === 'allow' ? 'running' :
+    'pending'
+  return (
+    <div className={`claude-tool claude-tool--${status} ${tool.isError ? 'is-error' : ''}`}>
+      <div className="claude-tool__header">
+        <code className="claude-tool__name">{tool.name}</code>
+        <span className="claude-tool__status">{status}</span>
+      </div>
+      {tool.input != null && (
+        <pre className="claude-tool__input">{formatJSON(tool.input)}</pre>
+      )}
+      {tool.result != null && tool.result !== '' && (
+        <pre className="claude-tool__result">{tool.result}</pre>
+      )}
+    </div>
+  )
+}
+
+function formatJSON(v: unknown): string {
+  try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}

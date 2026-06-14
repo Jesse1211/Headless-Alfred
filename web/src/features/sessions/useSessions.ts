@@ -9,8 +9,14 @@ import {
   deleteSession as apiDeleteSession,
   stopCommand as apiStopCommand,
 } from '../../lib/api'
-import { PerSessionState, CompletedMsg, RunningCmd } from './types'
-import { reducePerSession, applyAuthoritativeRecord } from './sessionsReducer'
+import {
+  PerSessionState, CompletedMsg, RunningCmd,
+  emptyPerSessionState, emptyClaudeState,
+} from './types'
+import {
+  reducePerSession, applyAuthoritativeRecord,
+  beginClaudeTurn, resolveClaudeTool,
+} from './sessionsReducer'
 
 const STORAGE_KEY = 'alfred_selected_session'
 
@@ -212,8 +218,8 @@ export function useSessions(token: string) {
   }, [])
 
   const enterClaude = useCallback(
-    (sid: string) => {
-      socket.send({ type: 'enter_claude', sessionID: sid })
+    (sid: string, renderer?: 'tui' | 'ui') => {
+      socket.send({ type: 'enter_claude', sessionID: sid, renderer })
     },
     [socket],
   )
@@ -235,12 +241,51 @@ export function useSessions(token: string) {
     [socket],
   )
 
+  const claudePrompt = useCallback(
+    (sid: string, text: string) => {
+      // Optimistic: register the user's prompt as the start of a new
+      // turn locally so the chat view renders it immediately.
+      setPerSession((prev) => {
+        const next = new Map(prev)
+        const cur = next.get(sid) ?? emptyPerSessionState()
+        const c = cur.claude ?? emptyClaudeState()
+        next.set(sid, { ...cur, claude: beginClaudeTurn(c, text) })
+        return next
+      })
+      socket.send({ type: 'claude_prompt', sessionID: sid, text })
+    },
+    [socket],
+  )
+
+  const toolDecision = useCallback(
+    (sid: string, toolUseId: string, decision: 'allow' | 'deny', reason?: string) => {
+      setPerSession((prev) => {
+        const next = new Map(prev)
+        const cur = next.get(sid) ?? emptyPerSessionState()
+        if (cur.claude) {
+          next.set(sid, { ...cur, claude: resolveClaudeTool(cur.claude, toolUseId, decision) })
+        }
+        return next
+      })
+      socket.send({ type: 'tool_decision', sessionID: sid, toolUseId, decision, reason })
+    },
+    [socket],
+  )
+
+  const interruptClaude = useCallback(
+    (sid: string) => {
+      socket.send({ type: 'interrupt', sessionID: sid })
+    },
+    [socket],
+  )
+
   const clearError = useCallback(() => setLastError(null), [])
 
   return {
     connState, sessions, selectedSessionID, selectSession, perSession, setPerSession,
     submit, stop, createSession, renameSession, closeSession,
     enterClaude, exitClaude, sendStdin, registerPtyHandler,
+    claudePrompt, toolDecision, interruptClaude,
     lastError, clearError,
   }
 }

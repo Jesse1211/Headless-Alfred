@@ -6,9 +6,12 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
 import { ClaudeTerminal } from '../claude/ClaudeTerminal'
+import { ClaudeChatView } from './ClaudeChatView'
+import { StartClaudeDialog } from './StartClaudeDialog'
 import ChatStream from '../terminal/ChatStream'
 import CommandInput from '../terminal/CommandInput'
-import { emptyPerSessionState } from './types'
+import { emptyClaudeState, emptyPerSessionState } from './types'
+import type { ClaudeRenderer } from '../../lib/ws'
 import '../terminal/TerminalPage.css'
 import './WorkspacePage.css'
 
@@ -31,6 +34,8 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const [gitCredsOpen, setGitCredsOpen] = useState(false)
   const [claudeCredsOpen, setClaudeCredsOpen] = useState(false)
   const [credsMenuOpen, setCredsMenuOpen] = useState(false)
+  // Session ID for which the "Start Claude" renderer-pick dialog is open.
+  const [startClaudeFor, setStartClaudeFor] = useState<string | null>(null)
 
   const selected = s.selectedSessionID
     ? s.sessions.find((x) => x.id === s.selectedSessionID)
@@ -73,7 +78,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
             <button
               type="button"
               className="workspace__claude-btn"
-              onClick={() => s.enterClaude(selected.id)}
+              onClick={() => setStartClaudeFor(selected.id)}
               disabled={composerBusy}
               title="Start Claude in this session"
             >
@@ -140,7 +145,19 @@ export function WorkspacePage({ token, onLogout }: Props) {
           </div>
         )}
 
-        {selected && ps && ps.mode === 'claude' && (
+        {selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && (
+          <ClaudeChatView
+            state={ps.claude ?? emptyClaudeState()}
+            disabled={s.connState !== 'open'}
+            onPrompt={(text) => s.claudePrompt(selected.id, text)}
+            onToolDecision={(toolUseId, decision, reason) =>
+              s.toolDecision(selected.id, toolUseId, decision, reason)
+            }
+            onInterrupt={() => s.interruptClaude(selected.id)}
+          />
+        )}
+
+        {selected && ps && ps.mode === 'claude' && ps.renderer !== 'ui' && (
           <ClaudeTerminal
             sessionID={selected.id}
             registerPtyHandler={s.registerPtyHandler}
@@ -171,7 +188,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
                       trimmed.startsWith('claude ') ||
                       trimmed.startsWith('/claude ')
                     if (isClaude) {
-                      s.enterClaude(selected.id)
+                      setStartClaudeFor(selected.id)
                       return
                     }
                     s.submit(cmd)
@@ -190,6 +207,17 @@ export function WorkspacePage({ token, onLogout }: Props) {
 
       {claudeCredsOpen && (
         <ClaudeCredentialsDialog onClose={() => setClaudeCredsOpen(false)} />
+      )}
+
+      {startClaudeFor && (
+        <StartClaudeDialog
+          onCancel={() => setStartClaudeFor(null)}
+          onStart={(renderer: ClaudeRenderer) => {
+            const id = startClaudeFor
+            setStartClaudeFor(null)
+            s.enterClaude(id, renderer)
+          }}
+        />
       )}
 
       {pendingClose && (
