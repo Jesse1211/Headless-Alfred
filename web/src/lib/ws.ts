@@ -44,6 +44,7 @@ export type ServerMsg =
   // and the reducer treats it as a no-op for the turn state.
   | { type: 'claude_run_ended'; sessionID: string; message?: string }
   | { type: 'summary_updated'; sessionID: string }
+  | { type: 'recap_updated'; date: string }
   | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
 
