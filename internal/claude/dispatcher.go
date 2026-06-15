@@ -75,14 +75,31 @@ func (d *Dispatcher) SubscribeAsks(sessionID string) (<-chan PendingRequest, fun
 //   - Subscriber channel full → autoDeny. The user has more pending
 //     approvals than the buffer holds; new ones can't queue. Denying
 //     keeps the bridge unblocked.
-func (d *Dispatcher) OnAsk(lookup func(claudeConvoID string) string,
+//
+// dataDir is the server's data root (Manager.DataDir()). It feeds
+// the summary fast-path: tool calls that match isSummaryIO for the
+// matched Alfred session skip the WS subscriber entirely and are
+// auto-allowed. This avoids popping an approval card every turn for
+// the summary-todo template's Read+Write churn. Pass "" to disable
+// the fast-path (used by tests that exercise the normal flow).
+func (d *Dispatcher) OnAsk(
+	lookup func(claudeConvoID string) string,
 	autoAllow func(toolUseID string),
-	autoDeny func(toolUseID string, reason string)) func(PendingRequest) {
+	autoDeny func(toolUseID string, reason string),
+	dataDir string,
+) func(PendingRequest) {
 	return func(req PendingRequest) {
 		alfredSID := lookup(req.SessionID)
 		if alfredSID == "" {
 			// Foreign claude session. Let it through.
 			slog.Debug("dispatcher: not an Alfred session, auto-allow", "claudeConvoID", req.SessionID, "tool", req.ToolName)
+			autoAllow(req.ToolUseID)
+			return
+		}
+		// Summary template's per-turn Read+Write of the canonical
+		// summary file. Strict path + tool + size check inside;
+		// anything off-pattern still goes through the WS card.
+		if dataDir != "" && isSummaryIO(req, alfredSID, dataDir) {
 			autoAllow(req.ToolUseID)
 			return
 		}

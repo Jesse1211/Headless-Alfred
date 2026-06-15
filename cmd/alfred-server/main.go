@@ -130,6 +130,7 @@ func main() {
 				Reason:     reason,
 			})
 		},
+		mgr.DataDir(),
 	))
 	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
 	defer bridgeCancel()
