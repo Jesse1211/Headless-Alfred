@@ -1,5 +1,6 @@
 import { useState, KeyboardEvent } from 'react'
 import { Session } from '../../lib/api'
+import { isSubmitKey } from '../../lib/keyboard'
 import './SessionsSidebar.css'
 
 interface Props {
@@ -74,7 +75,7 @@ function SessionRow({ session, selected, onSelect, onRename, onClose }: RowProps
   }
 
   function onKey(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter') {
+    if (isSubmitKey(e)) {
       e.preventDefault()
       commit()
     } else if (e.key === 'Escape') {

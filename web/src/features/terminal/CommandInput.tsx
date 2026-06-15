@@ -1,4 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
+import { isSubmitKey } from '../../lib/keyboard'
 
 interface Props {
   disabled: boolean
@@ -28,7 +29,7 @@ export default function CommandInput({ disabled, busy, onSubmit, onStop }: Props
   }
 
   function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (isSubmitKey(e)) {
       e.preventDefault()
       submit(e as unknown as FormEvent)
     }

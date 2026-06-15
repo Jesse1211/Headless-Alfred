@@ -6,6 +6,7 @@ import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
 import { ToolApprovalCard } from './ToolApprovalCard'
 import { AskUserQuestionCard } from './AskUserQuestionCard'
+import { isSubmitKey } from '../../lib/keyboard'
 import './ClaudeChatView.css'
 
 interface Props {
@@ -88,7 +89,7 @@ export function ClaudeChatView({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (isSubmitKey(e)) {
               e.preventDefault()
               submit()
             }
