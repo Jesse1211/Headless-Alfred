@@ -61,9 +61,13 @@ type PromptOptions struct {
 	// issues and to support multi-line prompts.
 	Prompt string
 
-	// PermissionMode is passed as --permission-mode. Empty defaults
-	// to claude's own default (ask via PreToolUse hook). We never
-	// auto-allow at the CLI level — Alfred's bridge handles asks.
+	// PermissionMode, if non-empty, is passed as --permission-mode.
+	// Largely vestigial now that we always pass
+	// --dangerously-skip-permissions: bypassPermissions disables the
+	// CLI's built-in prompt, and our PreToolUse hook is the actual
+	// gate (verified: hooks fire even under bypass mode). Left in
+	// the struct so a future feature can override per-call without
+	// reshaping the API.
 	PermissionMode string
 }
 
@@ -111,6 +115,12 @@ func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult,
 		"--output-format", "stream-json",
 		"--verbose",
 		"--include-partial-messages",
+		// Skip the CLI's built-in "Run this Bash command? Y/N" prompts —
+		// in -p (headless) mode they would deadlock because there's no
+		// TTY. Our PreToolUse hook is still invoked and is the single
+		// source of truth for permissions (bypassPermissions does NOT
+		// disable hooks, verified empirically).
+		"--dangerously-skip-permissions",
 	}
 	if opts.SessionUUID != "" {
 		// The CLI is asymmetric here:

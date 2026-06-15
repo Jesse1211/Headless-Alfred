@@ -153,6 +153,9 @@ export function WorkspacePage({ token, onLogout }: Props) {
             onToolDecision={(toolUseId, decision, reason) =>
               s.toolDecision(selected.id, toolUseId, decision, reason)
             }
+            onQuestionAnswer={(toolUseId, answer) =>
+              s.submitQuestionAnswer(selected.id, toolUseId, answer)
+            }
             onInterrupt={() => s.interruptClaude(selected.id)}
           />
         )}

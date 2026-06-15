@@ -219,14 +219,24 @@ func (b *Bridge) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // writeHookResponse encodes the decision in the JSON shape claude
-// expects from a PreToolUse hook command.
+// expects from a PreToolUse hook command. The current CLI requires
+// the nested hookSpecificOutput envelope; the older flat shape
+// {"permissionDecision":"..."} silently fails — claude treats the
+// hook as having returned nothing and falls back to its default
+// (allow under --dangerously-skip-permissions, ask otherwise).
+// Verified empirically with claude 2.1.142.
 func writeHookResponse(w http.ResponseWriter, d Decision) {
 	w.Header().Set("Content-Type", "application/json")
-	resp := map[string]string{"permissionDecision": d.Permission}
-	if d.Permission == "deny" && d.Reason != "" {
-		resp["permissionDecisionReason"] = d.Reason
+	inner := map[string]string{
+		"hookEventName":      "PreToolUse",
+		"permissionDecision": d.Permission,
 	}
-	_ = json.NewEncoder(w).Encode(resp)
+	if d.Permission == "deny" && d.Reason != "" {
+		inner["permissionDecisionReason"] = d.Reason
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"hookSpecificOutput": inner,
+	})
 }
 
 // Stop closes the listener and aborts any pending requests

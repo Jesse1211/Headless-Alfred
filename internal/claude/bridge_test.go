@@ -103,13 +103,26 @@ func TestBridge_AllowFlow(t *testing.T) {
 	if respErr != nil {
 		t.Fatalf("response error: %v", respErr)
 	}
-	var dec map[string]string
-	if err := json.Unmarshal(respBody, &dec); err != nil {
-		t.Fatalf("decision unmarshal: %v (body=%s)", err, respBody)
-	}
+	dec := parseHookResponse(t, respBody)
 	if dec["permissionDecision"] != "allow" {
 		t.Errorf("permissionDecision = %q, want allow", dec["permissionDecision"])
 	}
+}
+
+// parseHookResponse unwraps the {"hookSpecificOutput":{...}} envelope
+// that the bridge emits so tests can assert on the inner fields.
+func parseHookResponse(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+	var outer struct {
+		HookSpecificOutput map[string]string `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(body, &outer); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, body)
+	}
+	if outer.HookSpecificOutput == nil {
+		t.Fatalf("missing hookSpecificOutput in response: %s", body)
+	}
+	return outer.HookSpecificOutput
 }
 
 // TestBridge_DenyIncludesReason ensures deny decisions carry the
@@ -141,10 +154,7 @@ func TestBridge_DenyIncludesReason(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d: %s", resp.StatusCode, out)
 	}
-	var dec map[string]string
-	if err := json.Unmarshal(out, &dec); err != nil {
-		t.Fatal(err)
-	}
+	dec := parseHookResponse(t, out)
 	if dec["permissionDecision"] != "deny" {
 		t.Errorf("permissionDecision = %q, want deny", dec["permissionDecision"])
 	}
@@ -171,10 +181,7 @@ func TestBridge_Timeout(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(resp.Body)
-	var dec map[string]string
-	if err := json.Unmarshal(out, &dec); err != nil {
-		t.Fatal(err)
-	}
+	dec := parseHookResponse(t, out)
 	if dec["permissionDecision"] != "deny" {
 		t.Errorf("timeout decision = %q, want deny", dec["permissionDecision"])
 	}

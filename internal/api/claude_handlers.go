@@ -345,7 +345,8 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 		SessionUUID:    convoID,
 		CWD:            cwd,
 		Prompt:         msg.Text,
-		PermissionMode: "default", // PreToolUse hook handles per-call asks
+		// PermissionMode left empty — runner.go always passes
+		// --dangerously-skip-permissions; PreToolUse hook still fires.
 	})
 	if err != nil {
 		cancel()

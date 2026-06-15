@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
 import { ToolApprovalCard } from './ToolApprovalCard'
+import { AskUserQuestionCard } from './AskUserQuestionCard'
 import './ClaudeChatView.css'
 
 interface Props {
@@ -10,6 +13,7 @@ interface Props {
   disabled: boolean
   onPrompt: (text: string) => void
   onToolDecision: (toolUseId: string, decision: 'allow' | 'deny', reason?: string) => void
+  onQuestionAnswer: (toolUseId: string, formattedAnswer: string) => void
   onInterrupt: () => void
 }
 
@@ -17,7 +21,7 @@ interface Props {
 // Renders assistant text as markdown (via react-markdown + remark-gfm),
 // surfaces tool calls inline, and floats pending approval cards at the bottom.
 export function ClaudeChatView({
-  state, disabled, onPrompt, onToolDecision, onInterrupt,
+  state, disabled, onPrompt, onToolDecision, onQuestionAnswer, onInterrupt,
 }: Props) {
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -27,7 +31,7 @@ export function ClaudeChatView({
     const el = scrollRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-  }, [state.turns, state.pending.length, state.inFlight])
+  }, [state.turns, state.pending.length, state.pendingQuestions.length, state.inFlight])
 
   function submit() {
     const text = draft.trim()
@@ -52,6 +56,14 @@ export function ClaudeChatView({
             key={req.toolUseId}
             request={req}
             onDecide={(d, reason) => onToolDecision(req.toolUseId, d, reason)}
+          />
+        ))}
+        {state.pendingQuestions.map((req) => (
+          <AskUserQuestionCard
+            key={req.toolUseId}
+            request={req}
+            onSubmit={onQuestionAnswer}
+            onCancel={(id) => onToolDecision(id, 'deny', 'User cancelled the question.')}
           />
         ))}
         {state.lastError && (
@@ -113,7 +125,37 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
         <div className="claude-turn__label">Claude</div>
         {turn.text && (
           <div className="claude-turn__text">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                // Custom code renderer: fenced blocks get Prism syntax
+                // highlighting (oneDark theme matches our background);
+                // inline code keeps the simple span styling from CSS.
+                code(props) {
+                  const { className, children, ...rest } = props as any
+                  const match = /language-(\w+)/.exec(className || '')
+                  const isFenced = !!match
+                  if (!isFenced) {
+                    return <code className={className} {...rest}>{children}</code>
+                  }
+                  return (
+                    <SyntaxHighlighter
+                      language={match![1]}
+                      style={oneDark}
+                      PreTag="div"
+                      customStyle={{
+                        margin: 0,
+                        borderRadius: 6,
+                        background: 'rgba(0, 0, 0, 0.35)',
+                      }}
+                      codeTagProps={{ style: { fontSize: 12.5, fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace' } }}
+                    >
+                      {String(children).replace(/\n$/, '')}
+                    </SyntaxHighlighter>
+                  )
+                },
+              }}
+            >{turn.text}</ReactMarkdown>
           </div>
         )}
         {turn.tools.map((tool) => (

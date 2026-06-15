@@ -16,6 +16,7 @@ import {
   ClaudeState,
   ClaudeTurn,
   ClaudeToolCall,
+  ClaudeQuestion,
   emptyClaudeState,
 } from './types'
 
@@ -66,7 +67,7 @@ export function reduceClaudeMsg(
         // Keep the prior conversation history for re-display next time —
         // we just clear the "in-flight" state. (If we wanted to drop
         // the conversation on Exit we'd null `claude` here.)
-        claude: cur.claude ? { ...cur.claude, inFlight: false, pending: [] } : undefined,
+        claude: cur.claude ? { ...cur.claude, inFlight: false, pending: [], pendingQuestions: [] } : undefined,
       })
       return next
     }
@@ -75,7 +76,30 @@ export function reduceClaudeMsg(
     case 'tool_approval_request': {
       const cur = prev.get(m.sessionID) ?? emptyPerSessionState()
       const c = cur.claude ?? emptyClaudeState()
-      // Skip duplicates (in case the same request arrives twice).
+      // AskUserQuestion is special: it IS a question for the user, not
+      // a "may I run this?" Render it as a dedicated question card.
+      // The answer rides back through tool_decision('deny', reason)
+      // so the CLI surfaces it as the tool's tool_result.
+      if (m.tool === 'AskUserQuestion') {
+        if (c.pendingQuestions.some((q) => q.toolUseId === m.toolUseId)) {
+          return prev
+        }
+        const questions = parseAskUserQuestionInput(m.toolInput)
+        if (questions.length === 0) {
+          // Malformed — auto-deny so the runner doesn't hang and
+          // surface as a regular approval so the user at least sees
+          // something happened.
+          return mutateClaude(prev, m.sessionID, (cc) => ({
+            ...cc,
+            pending: [...cc.pending, { toolUseId: m.toolUseId, tool: m.tool, input: m.toolInput }],
+          }))
+        }
+        return mutateClaude(prev, m.sessionID, (cc) => ({
+          ...cc,
+          pendingQuestions: [...cc.pendingQuestions, { toolUseId: m.toolUseId, questions }],
+        }))
+      }
+      // Normal tool approval flow.
       if (c.pending.some((p) => p.toolUseId === m.toolUseId)) {
         return prev
       }
@@ -230,7 +254,7 @@ export function finalizeInFlightTurn(prev: ClaudeState, reason?: string): Claude
     }
     turns[lastIdx] = last
   }
-  return { ...prev, turns, inFlight: false, pending: [] }
+  return { ...prev, turns, inFlight: false, pending: [], pendingQuestions: [] }
 }
 
 // resolveClaudeTool removes a pending approval from the queue and
@@ -248,6 +272,48 @@ export function resolveClaudeTool(
     ),
   }))
   return { ...prev, pending, turns }
+}
+
+// resolveClaudeQuestion drops the answered question from the queue.
+// The actual answer text rides back through tool_decision('deny',
+// reason); the CLI converts the deny reason into the tool's
+// tool_result so Claude sees the user's choice on the next turn.
+export function resolveClaudeQuestion(
+  prev: ClaudeState,
+  toolUseId: string,
+): ClaudeState {
+  const pendingQuestions = prev.pendingQuestions.filter((q) => q.toolUseId !== toolUseId)
+  return { ...prev, pendingQuestions }
+}
+
+// parseAskUserQuestionInput narrows the AskUserQuestion tool input
+// JSON into a typed list. Returns [] if the shape doesn't match (so
+// the reducer can fall back to the generic approval card).
+export function parseAskUserQuestionInput(input: unknown): ClaudeQuestion[] {
+  const i = input as { questions?: unknown } | null
+  if (!i || !Array.isArray(i.questions)) return []
+  const out: ClaudeQuestion[] = []
+  for (const q of i.questions) {
+    const qq = q as {
+      question?: unknown
+      header?: unknown
+      multiSelect?: unknown
+      options?: unknown
+    } | null
+    if (!qq || typeof qq.question !== 'string') continue
+    const opts = Array.isArray(qq.options) ? qq.options : []
+    const options = opts
+      .map((o) => o as { label?: unknown; description?: unknown } | null)
+      .filter((o): o is { label: string; description?: string } => !!o && typeof o.label === 'string')
+      .map((o) => ({ label: o.label, description: typeof o.description === 'string' ? o.description : undefined }))
+    out.push({
+      question: qq.question,
+      header: typeof qq.header === 'string' ? qq.header : '',
+      multiSelect: !!qq.multiSelect,
+      options,
+    })
+  }
+  return out
 }
 
 // ---- payload narrowing ---------------------------------------------------

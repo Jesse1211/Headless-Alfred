@@ -7,6 +7,7 @@ import { defineConfig } from '@playwright/test'
 // disposable one.
 export default defineConfig({
   testDir: './e2e',
+  testMatch: 'regression.spec.ts',
   timeout: 30_000,
   expect: { timeout: 5_000 },
   fullyParallel: false,

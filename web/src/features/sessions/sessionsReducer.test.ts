@@ -389,4 +389,74 @@ describe('claude UI reducer', () => {
     const out = finalizeInFlightTurn(c)
     expect(out.pending).toEqual([])
   })
+
+  describe('AskUserQuestion routing', () => {
+    const askInput = {
+      questions: [
+        {
+          question: 'What would you like to work on?',
+          header: 'Task',
+          multiSelect: false,
+          options: [
+            { label: 'Review changes', description: 'Look at recent commits' },
+            { label: 'Start feature', description: 'Plan a new feature' },
+          ],
+        },
+      ],
+    }
+
+    it('AskUserQuestion tool_approval_request goes to pendingQuestions, not pending', () => {
+      const seed = new Map<string, PerSessionState>([
+        ['A', { ...emptyPerSessionState(), renderer: 'ui', claude: emptyClaudeState() }],
+      ])
+      const { perSession } = reducePerSession(
+        seed,
+        { type: 'tool_approval_request', sessionID: 'A', toolUseId: 'aq1', tool: 'AskUserQuestion', toolInput: askInput },
+        b64decode,
+      )
+      const c = perSession.get('A')!.claude!
+      expect(c.pending).toEqual([])
+      expect(c.pendingQuestions).toHaveLength(1)
+      expect(c.pendingQuestions[0].toolUseId).toBe('aq1')
+      expect(c.pendingQuestions[0].questions[0].question).toBe('What would you like to work on?')
+      expect(c.pendingQuestions[0].questions[0].options).toHaveLength(2)
+    })
+
+    it('AskUserQuestion with malformed input falls back to generic approval', () => {
+      const seed = new Map<string, PerSessionState>([
+        ['A', { ...emptyPerSessionState(), renderer: 'ui', claude: emptyClaudeState() }],
+      ])
+      const { perSession } = reducePerSession(
+        seed,
+        { type: 'tool_approval_request', sessionID: 'A', toolUseId: 'aq2', tool: 'AskUserQuestion', toolInput: { not_questions: 1 } },
+        b64decode,
+      )
+      const c = perSession.get('A')!.claude!
+      expect(c.pendingQuestions).toEqual([])
+      expect(c.pending).toHaveLength(1)
+    })
+
+    it('AskUserQuestion is de-duped on repeat (StrictMode safe)', () => {
+      const seed = new Map<string, PerSessionState>([
+        ['A', { ...emptyPerSessionState(), renderer: 'ui', claude: { ...emptyClaudeState(), pendingQuestions: [{ toolUseId: 'aq1', questions: [] }] } }],
+      ])
+      const r = reducePerSession(
+        seed,
+        { type: 'tool_approval_request', sessionID: 'A', toolUseId: 'aq1', tool: 'AskUserQuestion', toolInput: askInput },
+        b64decode,
+      )
+      expect(r.perSession).toBe(seed)
+    })
+
+    it('claude_exited clears pendingQuestions', () => {
+      const seed = new Map<string, PerSessionState>([
+        ['A', { ...emptyPerSessionState(), mode: 'claude', renderer: 'ui', claude: {
+          ...emptyClaudeState(),
+          pendingQuestions: [{ toolUseId: 'aq1', questions: [] }],
+        } }],
+      ])
+      const { perSession } = reducePerSession(seed, { type: 'claude_exited', sessionID: 'A' }, b64decode)
+      expect(perSession.get('A')!.claude!.pendingQuestions).toEqual([])
+    })
+  })
 })

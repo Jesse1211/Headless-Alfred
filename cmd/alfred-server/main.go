@@ -108,13 +108,22 @@ func main() {
 	// Routing: bridge.onAsk receives requests keyed by Claude's
 	// session_id. Dispatcher.OnAsk translates that into the matching
 	// Alfred sessionID and forwards to whichever WS client is
-	// subscribed (one per session at a time). Auto-deny is the
-	// fallback if no subscriber is connected (closed browser tab).
+	// subscribed (one per session at a time).
+	//
+	// Two auto paths:
+	//   - autoAllow: the convo is a foreign claude (someone running
+	//     `claude` in another terminal while Alfred is up). Allow so
+	//     we don't globally break their tools.
+	//   - autoDeny:  the convo is one of ours but no UI tab is
+	//     connected. Deny — the user opted into ask-before-each.
 	const bridgePort = 8090
 	dispatcher := claude.NewDispatcher()
 	var bridge *claude.Bridge
 	bridge = claude.NewBridge(dispatcher.OnAsk(
 		mgr.FindByClaudeConvoID,
+		func(toolUseID string) {
+			bridge.Resolve(toolUseID, claude.Decision{Permission: "allow"})
+		},
 		func(toolUseID, reason string) {
 			bridge.Resolve(toolUseID, claude.Decision{
 				Permission: "deny",

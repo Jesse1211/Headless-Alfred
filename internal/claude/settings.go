@@ -7,9 +7,47 @@ import (
 	"path/filepath"
 )
 
-// BridgeHookPath is the in-image path of the PreToolUse hook script
-// shipped by the runtime Dockerfile.
-const BridgeHookPath = "/usr/local/bin/alfred-claude-bridge"
+// ProdBridgeHookPath is where the production image (Dockerfile) puts
+// the hook script. Always available in the pod. Local dev binaries
+// don't have it — see resolveBridgePath / ensureBridgeInstalled for
+// the fallback that auto-installs to $HOME/.local on dev machines.
+const ProdBridgeHookPath = "/usr/local/bin/alfred-claude-bridge"
+
+// bridgeScriptBody is the curl-wrapper that the hook command invokes.
+// Kept in sync with deploy/alfred-claude-bridge.sh — that's the
+// canonical source for prod, this string is the dev fallback.
+const bridgeScriptBody = `#!/bin/sh
+set -e
+exec curl --silent --show-error \
+     --max-time 600 \
+     --header 'Content-Type: application/json' \
+     --data-binary @- \
+     http://127.0.0.1:8090/tool-approval
+`
+
+// resolveBridgePath returns the path to the bridge script that the
+// PreToolUse hook should invoke. If the prod path exists and is
+// executable, use it. Otherwise install a copy under $HOME/.local
+// and use that. Returns an error only if neither path is usable.
+func resolveBridgePath(home string) (string, error) {
+	if st, err := os.Stat(ProdBridgeHookPath); err == nil && !st.IsDir() {
+		return ProdBridgeHookPath, nil
+	}
+	if home == "" {
+		return "", fmt.Errorf("home dir required to install bridge fallback")
+	}
+	dir := filepath.Join(home, ".local", "share", "alfred")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, "alfred-claude-bridge")
+	// Always rewrite — body is tiny, ensures we stay in sync with
+	// any change to bridgeScriptBody after upgrades.
+	if err := os.WriteFile(path, []byte(bridgeScriptBody), 0755); err != nil {
+		return "", fmt.Errorf("install bridge script: %w", err)
+	}
+	return path, nil
+}
 
 // EnsureSettingsHook patches ~/.claude/settings.json so claude's
 // PreToolUse hook fires our bridge script. Idempotent: if the
@@ -54,13 +92,18 @@ func EnsureSettingsHook(home string) error {
 		hooks = map[string]json.RawMessage{}
 	}
 
+	bridgePath, err := resolveBridgePath(home)
+	if err != nil {
+		return fmt.Errorf("resolve bridge path: %w", err)
+	}
+
 	// Desired PreToolUse value: one entry matching ".*", running our
 	// bridge script as a command hook.
 	desired := []hookMatcher{{
 		Matcher: ".*",
 		Hooks: []hookCommand{{
 			Type:    "command",
-			Command: BridgeHookPath,
+			Command: bridgePath,
 		}},
 	}}
 	desiredJSON, err := json.Marshal(desired)
@@ -68,10 +111,9 @@ func EnsureSettingsHook(home string) error {
 		return fmt.Errorf("marshal desired hooks: %w", err)
 	}
 
-	// If the existing PreToolUse already includes our bridge, leave
-	// the user's wider config alone. Otherwise we overwrite the
-	// PreToolUse key — that's the only key this function owns.
-	if cur, ok := hooks["PreToolUse"]; ok && containsBridge(cur) {
+	// If the existing PreToolUse already points at this bridge path,
+	// leave the user's wider config alone.
+	if cur, ok := hooks["PreToolUse"]; ok && containsBridge(cur, bridgePath) {
 		return nil
 	}
 	hooks["PreToolUse"] = desiredJSON
@@ -120,14 +162,14 @@ type hookCommand struct {
 	Command string `json:"command"`
 }
 
-func containsBridge(raw json.RawMessage) bool {
+func containsBridge(raw json.RawMessage, wantPath string) bool {
 	var matchers []hookMatcher
 	if err := json.Unmarshal(raw, &matchers); err != nil {
 		return false
 	}
 	for _, m := range matchers {
 		for _, h := range m.Hooks {
-			if h.Command == BridgeHookPath {
+			if h.Command == wantPath {
 				return true
 			}
 		}

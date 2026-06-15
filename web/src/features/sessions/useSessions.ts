@@ -15,7 +15,7 @@ import {
 } from './types'
 import {
   reducePerSession, applyAuthoritativeRecord,
-  beginClaudeTurn, resolveClaudeTool, finalizeInFlightTurn,
+  beginClaudeTurn, resolveClaudeTool, resolveClaudeQuestion, finalizeInFlightTurn,
 } from './sessionsReducer'
 
 const STORAGE_KEY = 'alfred_selected_session'
@@ -297,13 +297,35 @@ export function useSessions(token: string) {
     [socket],
   )
 
+  // submitQuestionAnswer wires the AskUserQuestion path. The user's
+  // selection is shipped back as the `reason` of a tool_decision
+  // deny — the PreToolUse hook then surfaces it as the tool's
+  // tool_result so Claude sees the answer on the next turn.
+  // Optimistically removes the question from pendingQuestions; if
+  // the backend rejects, the user sees nothing happen (acceptable
+  // since the WS write is local and almost always succeeds).
+  const submitQuestionAnswer = useCallback(
+    (sid: string, toolUseId: string, answer: string) => {
+      setPerSession((prev) => {
+        const next = new Map(prev)
+        const cur = next.get(sid) ?? emptyPerSessionState()
+        if (cur.claude) {
+          next.set(sid, { ...cur, claude: resolveClaudeQuestion(cur.claude, toolUseId) })
+        }
+        return next
+      })
+      socket.send({ type: 'tool_decision', sessionID: sid, toolUseId, decision: 'deny', reason: answer })
+    },
+    [socket],
+  )
+
   const clearError = useCallback(() => setLastError(null), [])
 
   return {
     connState, sessions, selectedSessionID, selectSession, perSession, setPerSession,
     submit, stop, createSession, renameSession, closeSession,
     enterClaude, exitClaude, sendStdin, registerPtyHandler,
-    claudePrompt, toolDecision, interruptClaude,
+    claudePrompt, toolDecision, interruptClaude, submitQuestionAnswer,
     lastError, clearError,
   }
 }

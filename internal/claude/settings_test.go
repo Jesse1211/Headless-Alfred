@@ -34,8 +34,12 @@ func TestEnsureSettingsHook_FreshInstall(t *testing.T) {
 		t.Fatalf("nested hooks len = %d, want 1", len(cmds))
 	}
 	cmd0, _ := cmds[0].(map[string]any)
-	if cmd0["command"] != BridgeHookPath {
-		t.Errorf("command = %v, want %q", cmd0["command"], BridgeHookPath)
+	want, err := resolveBridgePath(home)
+	if err != nil {
+		t.Fatalf("resolveBridgePath: %v", err)
+	}
+	if cmd0["command"] != want {
+		t.Errorf("command = %v, want %q", cmd0["command"], want)
 	}
 }
 

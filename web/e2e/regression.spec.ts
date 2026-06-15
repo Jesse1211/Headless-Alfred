@@ -253,3 +253,91 @@ test.describe('regression: Claude TUI mode renderer lifecycle', () => {
   })
 
 })
+
+test.describe('Claude UI: AskUserQuestion tool adaptation', () => {
+  test('synthetic AskUserQuestion → card with options + submit + answer round-trip', async ({ page, request }) => {
+    // We bypass the LLM entirely and POST a synthetic tool_approval
+    // request directly to the bridge. Reasons:
+    //   - The LLM is non-deterministic; under superpowers it
+    //     intercepts AskUserQuestion and runs Skill first.
+    //   - This isolates the front-end rendering path: we control
+    //     the question shape, count clicks, and verify the answer
+    //     comes back through the bridge as the tool_result.
+    test.setTimeout(60_000)
+
+    const tok = await login(page)
+    const sid = await freshSessionTracked(page, tok, 'pw-ask-question')
+    await loginUI(page, tok)
+    await selectSession(page, sid)
+
+    // Enter Claude UI mode and send one trivial prompt to allocate a
+    // claude_session_id (needed for the bridge to route to us).
+    await page.locator('.workspace__claude-btn').click()
+    await expect(page.locator('text=Start Claude')).toBeVisible()
+    await page.locator('label:has-text("Chat UI")').click()
+    await page.locator('button:has-text("Start")').click()
+    await expect(page.locator('textarea.claude-chat__input')).toBeVisible({ timeout: 5_000 })
+    await page.locator('textarea.claude-chat__input').fill('reply with "k"')
+    await page.locator('textarea.claude-chat__input').press('Enter')
+    // Wait for the first turn to finish (composer goes back to idle).
+    await expect(page.locator('textarea.claude-chat__input')).toHaveAttribute('placeholder', 'Message Claude…', { timeout: 45_000 })
+
+    // Fetch the allocated claude_session_id from the API.
+    const sessions = await request.get(`${BACKEND}/api/sessions`, {
+      headers: { Authorization: `Bearer ${tok}` },
+    }).then(r => r.json()) as Array<{ id: string; claude_session_id?: string }>
+    const me = sessions.find(s => s.id === sid)
+    expect(me?.claude_session_id, 'session must have a claude_session_id allocated').toBeTruthy()
+    const convoID = me!.claude_session_id!
+
+    // POST a synthetic AskUserQuestion hook request to the bridge.
+    // The bridge will block on this until the frontend resolves it
+    // via tool_decision. We fire and don't await.
+    const toolUseId = `synth_${Date.now()}`
+    const bridgePromise = request.post('http://127.0.0.1:8090/tool-approval', {
+      data: {
+        session_id: convoID,
+        tool_use_id: toolUseId,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [{
+            question: 'What is your favorite color?',
+            header: 'Color',
+            multiSelect: false,
+            options: [
+              { label: 'Red', description: 'Warm and bold' },
+              { label: 'Blue', description: 'Cool and calm' },
+              { label: 'Green', description: 'Natural and balanced' },
+            ],
+          }],
+        },
+      },
+    })
+
+    // The card should appear in the chat view.
+    const card = page.locator('.ask-question')
+    await expect(card).toBeVisible({ timeout: 5_000 })
+    await expect(card).toContainText('Claude has a question')
+    await expect(card).toContainText('What is your favorite color?')
+    await expect(card.locator('label:has-text("Red")')).toBeVisible()
+    await expect(card.locator('label:has-text("Blue")')).toBeVisible()
+    await expect(card.locator('label:has-text("Green")')).toBeVisible()
+    await page.screenshot({ path: path.join(SHOTS, 'ask-user-question-card.png'), fullPage: true })
+
+    // Click "Blue" then Submit.
+    await card.locator('label:has-text("Blue")').first().click()
+    await page.locator('.ask-question__btn--submit').click()
+
+    // Card disappears.
+    await expect(card).toHaveCount(0, { timeout: 3_000 })
+
+    // The bridge's POST returns the decision JSON Claude expects.
+    // Nested under hookSpecificOutput per the PreToolUse contract.
+    const bridgeResp = await bridgePromise
+    expect(bridgeResp.status()).toBe(200)
+    const decision = (await bridgeResp.json()).hookSpecificOutput
+    expect(decision.permissionDecision).toBe('deny')
+    expect(decision.permissionDecisionReason).toContain('Blue')
+  })
+})

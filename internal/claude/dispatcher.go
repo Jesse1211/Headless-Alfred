@@ -1,6 +1,9 @@
 package claude
 
-import "sync"
+import (
+	"log/slog"
+	"sync"
+)
 
 // Dispatcher routes PendingRequests from the bridge (which only knows
 // Claude's session_id) to WS clients (which are keyed by Alfred's
@@ -55,34 +58,48 @@ func (d *Dispatcher) SubscribeAsks(sessionID string) (<-chan PendingRequest, fun
 // req.SessionID) into an Alfred sessionID, then pushes to the
 // matching subscriber channel.
 //
-// If no subscriber is registered (the user has closed all browser
-// tabs, or the Alfred session doesn't exist), the request is
-// auto-denied via deny — we have nobody to ask. The
-// alfred-session-not-found path SHOULD NOT happen in normal
-// operation (bridge only gets called from a claude that we spawned).
+// Three failure modes, each with a different resolution:
+//
+//   - Unknown claude convo (lookup returns "") → autoAllow. This is
+//     a foreign claude process running on the same machine (think:
+//     user typing `claude` in another terminal while Alfred is up).
+//     If we denied, we'd globally break every claude on the box.
+//     Hook fail-open is the correct default.
+//
+//   - Alfred session known but no WS subscriber → autoDeny. The user
+//     started Claude UI on this session, then closed all tabs. Without
+//     somebody to approve, we can't run the tool — and we DON'T want
+//     to silently allow, because the user opted into the
+//     ask-before-each contract.
+//
+//   - Subscriber channel full → autoDeny. The user has more pending
+//     approvals than the buffer holds; new ones can't queue. Denying
+//     keeps the bridge unblocked.
 func (d *Dispatcher) OnAsk(lookup func(claudeConvoID string) string,
+	autoAllow func(toolUseID string),
 	autoDeny func(toolUseID string, reason string)) func(PendingRequest) {
 	return func(req PendingRequest) {
 		alfredSID := lookup(req.SessionID)
 		if alfredSID == "" {
-			autoDeny(req.ToolUseID,
-				"no Alfred session for claude convo "+req.SessionID)
+			// Foreign claude session. Let it through.
+			slog.Debug("dispatcher: not an Alfred session, auto-allow", "claudeConvoID", req.SessionID, "tool", req.ToolName)
+			autoAllow(req.ToolUseID)
 			return
 		}
 		d.mu.Lock()
 		ch, ok := d.subs[alfredSID]
 		d.mu.Unlock()
 		if !ok {
+			slog.Warn("dispatcher: no UI client subscribed, auto-deny", "session", alfredSID, "tool", req.ToolName, "toolUseID", req.ToolUseID)
 			autoDeny(req.ToolUseID,
 				"no UI client subscribed for session "+alfredSID)
 			return
 		}
 		select {
 		case ch <- req:
+			slog.Info("dispatcher: routed approval to UI", "session", alfredSID, "tool", req.ToolName, "toolUseID", req.ToolUseID)
 		default:
-			// Subscriber channel full — typical only if the user
-			// has queued more than 4 tool calls without acting on
-			// any. Auto-deny to keep the bridge unblocked.
+			slog.Warn("dispatcher: queue full, auto-deny", "session", alfredSID, "tool", req.ToolName, "toolUseID", req.ToolUseID)
 			autoDeny(req.ToolUseID, "approval queue full for this session")
 		}
 	}

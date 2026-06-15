@@ -100,10 +100,13 @@ func parseLine(line []byte) []Event {
 		return parseStreamEvent(line)
 
 	case "assistant":
-		// Snapshot of the assistant's final message. Useful for
-		// replay-from-disk; for live streaming we already emitted the
-		// deltas. Skip for now.
-		return nil
+		// Snapshot of the assistant's message. For text content we
+		// already emitted deltas earlier and the frontend has them.
+		// What we DO need from here is the assembled tool_use input —
+		// the input_json_delta stream is fragmentary and we
+		// deliberately don't emit it incrementally, so this is where
+		// the full input first appears.
+		return parseAssistantToolInputs(line)
 
 	case "user":
 		// `user` lines carry tool_result content blocks that the
@@ -341,3 +344,43 @@ type userContent struct {
 // silence unused import linter; keep fmt available if we need
 // debug-printing during development.
 var _ = fmt.Sprintf
+
+// parseAssistantToolInputs extracts tool_use blocks (with the fully
+// assembled input JSON) from an `assistant` snapshot line and emits
+// one ToolUseEnd event per tool. The CLI sends this snapshot AFTER
+// the matching content_block_start (ToolUseStart) + input_json_deltas
+// have streamed past, so by the time the frontend sees ToolUseEnd
+// the tool card is already on screen and only needs its input
+// field populated.
+func parseAssistantToolInputs(line []byte) []Event {
+	var wrap struct {
+		Message struct {
+			Content []struct {
+				Type  string          `json:"type"`
+				ID    string          `json:"id"`
+				Name  string          `json:"name"`
+				Index int             `json:"index"`
+				Input json.RawMessage `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &wrap); err != nil {
+		return nil
+	}
+	out := make([]Event, 0, len(wrap.Message.Content))
+	for _, c := range wrap.Message.Content {
+		if c.Type != "tool_use" || c.ID == "" {
+			continue
+		}
+		out = append(out, Event{
+			Kind: KindToolUseEnd,
+			ToolUseEnd: &ToolUseEndEvent{
+				Index:     c.Index,
+				ToolUseID: c.ID,
+				Name:      c.Name,
+				Input:     c.Input,
+			},
+		})
+	}
+	return out
+}

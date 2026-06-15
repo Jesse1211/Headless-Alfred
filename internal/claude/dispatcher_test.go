@@ -6,19 +6,26 @@ import (
 	"time"
 )
 
+// noAllow / noDeny are placeholder callbacks for tests that don't
+// care about the path not being exercised.
+func noAllow(string)         {}
+func noDeny(string, string)  {}
+
 func TestDispatcher_RoutesToSubscriber(t *testing.T) {
 	d := NewDispatcher()
 	ch, unsub := d.SubscribeAsks("alfred-A")
 	defer unsub()
 
 	var denied []string
+	var allowed []string
 	autoDeny := func(id, reason string) { denied = append(denied, id+":"+reason) }
+	autoAllow := func(id string) { allowed = append(allowed, id) }
 	onAsk := d.OnAsk(func(claudeID string) string {
 		if claudeID == "claude-1" {
 			return "alfred-A"
 		}
 		return ""
-	}, autoDeny)
+	}, autoAllow, autoDeny)
 
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "claude-1", ToolName: "Bash"})
 
@@ -33,6 +40,9 @@ func TestDispatcher_RoutesToSubscriber(t *testing.T) {
 	if len(denied) != 0 {
 		t.Errorf("unexpected denies: %v", denied)
 	}
+	if len(allowed) != 0 {
+		t.Errorf("unexpected allows: %v", allowed)
+	}
 }
 
 func TestDispatcher_NoSubscriber_AutoDeny(t *testing.T) {
@@ -44,7 +54,7 @@ func TestDispatcher_NoSubscriber_AutoDeny(t *testing.T) {
 		denied = append(denied, id+":"+reason)
 		mu.Unlock()
 	}
-	onAsk := d.OnAsk(func(string) string { return "alfred-X" }, autoDeny)
+	onAsk := d.OnAsk(func(string) string { return "alfred-X" }, noAllow, autoDeny)
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "claude-1"})
 
 	mu.Lock()
@@ -57,14 +67,24 @@ func TestDispatcher_NoSubscriber_AutoDeny(t *testing.T) {
 	}
 }
 
-func TestDispatcher_UnknownClaudeConvo_AutoDeny(t *testing.T) {
+// Unknown convo means a claude session that wasn't spawned by Alfred
+// (think: user typing `claude` in another terminal). We must NOT deny
+// — that would break their unrelated tools. Allow is the fail-open
+// default. This test specifically guards against the regression that
+// caused this very feature to lock the developer out of every tool.
+func TestDispatcher_UnknownClaudeConvo_AutoAllow(t *testing.T) {
 	d := NewDispatcher()
+	var allowed int
 	var denied int
+	autoAllow := func(string) { allowed++ }
 	autoDeny := func(string, string) { denied++ }
-	onAsk := d.OnAsk(func(string) string { return "" }, autoDeny)
+	onAsk := d.OnAsk(func(string) string { return "" }, autoAllow, autoDeny)
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "unknown"})
-	if denied != 1 {
-		t.Errorf("denied=%d, want 1", denied)
+	if allowed != 1 {
+		t.Errorf("allowed=%d, want 1", allowed)
+	}
+	if denied != 0 {
+		t.Errorf("denied=%d, want 0 (foreign claude must NOT be denied)", denied)
 	}
 }
 
@@ -84,7 +104,7 @@ func TestDispatcher_ResubscribeClosesPrior(t *testing.T) {
 		t.Error("old channel never closed")
 	}
 
-	onAsk := d.OnAsk(func(string) string { return "A" }, func(string, string) {})
+	onAsk := d.OnAsk(func(string) string { return "A" }, noAllow, noDeny)
 	onAsk(PendingRequest{ToolUseID: "tu", SessionID: "C"})
 	select {
 	case got := <-chNew:
@@ -102,7 +122,7 @@ func TestDispatcher_FullBuffer_AutoDeny(t *testing.T) {
 	defer unsub()
 	var denied int
 	autoDeny := func(string, string) { denied++ }
-	onAsk := d.OnAsk(func(string) string { return "A" }, autoDeny)
+	onAsk := d.OnAsk(func(string) string { return "A" }, noAllow, autoDeny)
 
 	// Fill the 4-deep buffer; the 5th call should auto-deny.
 	for i := 0; i < 5; i++ {

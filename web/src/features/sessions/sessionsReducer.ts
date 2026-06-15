@@ -14,6 +14,8 @@ export {
   beginClaudeTurn,
   finalizeInFlightTurn,
   resolveClaudeTool,
+  resolveClaudeQuestion,
+  parseAskUserQuestionInput,
 } from './claudeReducer'
 
 export interface ReduceResult {

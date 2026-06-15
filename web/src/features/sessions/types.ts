@@ -66,6 +66,12 @@ export interface ClaudeState {
   inFlight: boolean
   // Pending tool approvals waiting for the user.
   pending: ClaudeToolApprovalRequest[]
+  // Pending AskUserQuestion invocations — each one renders a dedicated
+  // question card (radio / multi-select / "Other") instead of a
+  // generic Allow/Deny. User's answer rides back to Claude via the
+  // hook's deny+reason channel, which CLI surfaces as the tool's
+  // tool_result.
+  pendingQuestions: ClaudeQuestionRequest[]
   // Last error returned by the backend (e.g., claude not authenticated).
   lastError?: { code: string; message: string }
 }
@@ -74,6 +80,26 @@ export interface ClaudeToolApprovalRequest {
   toolUseId: string
   tool: string
   input: unknown
+}
+
+// Mirrors the AskUserQuestion tool input shape emitted by Claude
+// (see claude --help / CLI source). Each tool invocation can carry
+// multiple questions; users answer all of them in one card.
+export interface ClaudeQuestionRequest {
+  toolUseId: string
+  questions: ClaudeQuestion[]
+}
+
+export interface ClaudeQuestion {
+  question: string
+  header: string
+  multiSelect: boolean
+  options: ClaudeQuestionOption[]
+}
+
+export interface ClaudeQuestionOption {
+  label: string
+  description?: string
 }
 
 export interface PerSessionState {
@@ -90,5 +116,5 @@ export function emptyPerSessionState(): PerSessionState {
 }
 
 export function emptyClaudeState(): ClaudeState {
-  return { turns: [], inFlight: false, pending: [] }
+  return { turns: [], inFlight: false, pending: [], pendingQuestions: [] }
 }
