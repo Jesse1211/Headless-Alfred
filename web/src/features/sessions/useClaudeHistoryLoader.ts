@@ -40,9 +40,14 @@ export function useClaudeHistoryLoader({ selectedSessionID, perSession, setPerSe
           const next = new Map(prev)
           const cur = next.get(selectedSessionID) ?? emptyPerSessionState()
           const c = cur.claude ?? emptyClaudeState()
+          // Preserve local turns if any already exist — they were
+          // added by live claude_event frames between enter_claude
+          // and this fetch settling. The backend's jsonl may not yet
+          // reflect the in-flight turn, so overwriting would erase it.
+          const mergedTurns = c.turns.length > 0 ? c.turns : turns
           next.set(selectedSessionID, {
             ...cur,
-            claude: { ...c, turns, turnsLoaded: true, lastError: undefined },
+            claude: { ...c, turns: mergedTurns, turnsLoaded: true, lastError: undefined },
           })
           return next
         })

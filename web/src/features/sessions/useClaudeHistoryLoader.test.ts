@@ -74,6 +74,37 @@ describe('useClaudeHistoryLoader', () => {
     expect(spy).not.toHaveBeenCalled()
   })
 
+  it('preserves existing local turns rather than overwriting with fetched turns', async () => {
+    // Simulates the race: user enters claude, fires a prompt (adds a
+    // local turn via beginClaudeTurn), then the history fetch settles.
+    // Backend jsonl may not yet reflect the in-flight turn — overwriting
+    // would erase what the user just typed.
+    const localTurn = makeTurn('local-1', 'just-sent')
+    vi.spyOn(api, 'getClaudeHistory').mockResolvedValue([])  // backend has nothing yet
+    let state = new Map<string, PerSessionState>([
+      ['A', {
+        ...emptyPerSessionState(),
+        mode: 'claude',
+        renderer: 'ui',
+        claude: { ...emptyClaudeState(), turns: [localTurn] },
+      }],
+    ])
+    const setState = vi.fn((updater: (p: typeof state) => typeof state) => {
+      state = updater(state)
+    })
+    renderHook(() =>
+      useClaudeHistoryLoader({
+        selectedSessionID: 'A',
+        perSession: state,
+        setPerSession: setState as never,
+      }),
+    )
+    await waitFor(() => {
+      expect(state.get('A')?.claude?.turnsLoaded).toBe(true)
+    })
+    expect(state.get('A')?.claude?.turns).toEqual([localTurn])
+  })
+
   it('on fetch failure still sets turnsLoaded to true (no retry loop)', async () => {
     vi.spyOn(api, 'getClaudeHistory').mockRejectedValue(new Error('boom'))
     let state = new Map<string, PerSessionState>([
