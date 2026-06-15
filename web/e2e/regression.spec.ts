@@ -500,3 +500,43 @@ test.describe('SummarySidebar: end-to-end summary refresh + hide/restore', () =>
     try { fs.unlinkSync(summaryPath) } catch {}
   })
 })
+
+test.describe('ClaudeChatView: history restores after page reload', () => {
+  test('prompt + reply persist after reload via jsonl rehydrate', async ({ page }) => {
+    test.setTimeout(60_000)
+
+    const tok = await login(page)
+    const sid = await freshSessionTracked(page, tok, 'pw-history-restore')
+    await loginUI(page, tok)
+    await selectSession(page, sid)
+
+    // Enter Claude UI. Defaults are bypass=true and summary=true; both
+    // are fine — neither interferes with history restore.
+    await page.locator('.workspace__claude-btn').click()
+    await expect(page.locator('text=Start Claude')).toBeVisible()
+    await page.locator('label:has-text("Chat UI")').click()
+    await page.locator('button:has-text("Start")').click()
+    await expect(page.locator('textarea.claude-chat__input')).toBeVisible({ timeout: 10_000 })
+
+    // Send a tiny prompt, wait for the response to land.
+    const promptText = 'reply with the single word "history-marker"'
+    await page.locator('textarea.claude-chat__input').fill(promptText)
+    await page.locator('textarea.claude-chat__input').press('Enter')
+    // Wait for composer to return to idle (turn done).
+    await expect(page.locator('textarea.claude-chat__input'))
+      .toHaveAttribute('placeholder', 'Message Claude…', { timeout: 50_000 })
+
+    // Both prompt + a fragment of the reply visible BEFORE reload.
+    await expect(page.locator('.claude-turn__user-text')).toContainText(promptText)
+    await expect(page.locator('.claude-turn__text')).toContainText('history-marker')
+
+    // Reload.
+    await page.reload()
+    await page.waitForLoadState('networkidle')
+    await expect(page.locator('textarea.claude-chat__input')).toBeVisible({ timeout: 10_000 })
+
+    // The jsonl-restore path should rehydrate the same turn.
+    await expect(page.locator('.claude-turn__user-text')).toContainText(promptText, { timeout: 10_000 })
+    await expect(page.locator('.claude-turn__text')).toContainText('history-marker')
+  })
+})
