@@ -95,7 +95,10 @@ export function WorkspacePage({ token, onLogout }: Props) {
   return (
     <div className={`workspace ${sidebarShown ? 'has-sidebar' : ''}`}>
       <SessionsSidebar
-        sessions={s.sessions}
+        // Recap sessions are seeded into useSessions.sessions via
+        // setSessionMeta so the rest of the hook can find them, but
+        // they should NOT appear in the chat-only sidebar list.
+        sessions={s.sessions.filter((sess) => sess.kind !== 'recap')}
         selectedSessionID={s.selectedSessionID}
         maxSessions={MAX_SESSIONS}
         onCreate={() => s.createSession()}
