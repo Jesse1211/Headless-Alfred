@@ -39,6 +39,26 @@ async function freshSession(page: Page, token: string, name: string): Promise<st
   return id
 }
 
+// Track sessions created by each test so afterEach can clean them up.
+// Without this the 8-session cap fills up after a couple of runs and
+// new sessions (and the user's manual + New chat) start failing.
+const createdInThisTest: { token: string; sid: string }[] = []
+
+async function freshSessionTracked(page: Page, token: string, name: string): Promise<string> {
+  const sid = await freshSession(page, token, name)
+  createdInThisTest.push({ token, sid })
+  return sid
+}
+
+test.afterEach(async ({ request }) => {
+  while (createdInThisTest.length > 0) {
+    const { token, sid } = createdInThisTest.pop()!
+    await request.delete(`${BACKEND}/api/sessions/${sid}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => {})
+  }
+})
+
 async function loginUI(page: Page, token: string) {
   // Set the token directly in localStorage so we skip the login form.
   // We have to visit a same-origin page first before localStorage is
@@ -76,7 +96,7 @@ async function countTurns(page: Page): Promise<{ total: number; live: number }> 
 test.describe('regression: typing one command must produce exactly one turn', () => {
   test('bug 1+2: echo hi renders one turn that lands in completed (not live)', async ({ page }) => {
     const tok = await login(page)
-    const sid = await freshSession(page, tok, 'pw-bug-1-2')
+    const sid = await freshSessionTracked(page, tok, 'pw-bug-1-2')
     await loginUI(page, tok)
     await selectSession(page, sid)
 
@@ -95,7 +115,7 @@ test.describe('regression: typing one command must produce exactly one turn', ()
 
   test('bug 1+2: repeated quick commands each produce exactly one turn', async ({ page }) => {
     const tok = await login(page)
-    const sid = await freshSession(page, tok, 'pw-bug-1-2-rep')
+    const sid = await freshSessionTracked(page, tok, 'pw-bug-1-2-rep')
     await loginUI(page, tok)
     await selectSession(page, sid)
 
@@ -117,7 +137,7 @@ test.describe('regression: typing one command must produce exactly one turn', ()
 test.describe('regression: Stop button must terminate a running command', () => {
   test('bug 3: Stop on a sleep 30 cancels it within seconds', async ({ page }) => {
     const tok = await login(page)
-    const sid = await freshSession(page, tok, 'pw-bug-3')
+    const sid = await freshSessionTracked(page, tok, 'pw-bug-3')
     await loginUI(page, tok)
     await selectSession(page, sid)
 
