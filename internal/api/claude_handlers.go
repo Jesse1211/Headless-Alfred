@@ -331,22 +331,16 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
 		return
 	}
-	// claude --session-id keys its transcript on (cwd, uuid). We don't
-	// track per-session cwds today, so for v1 we always invoke from a
-	// single stable cwd — `/home/alfred` in the pod. On local dev
-	// machines (macOS) that path doesn't exist; fall back to the
-	// process's HOME, then "/" as a last resort. We must hand
-	// exec.Cmd a directory that ACTUALLY EXISTS, or Start() fails with
-	// a misleading "no such file or directory" pointing at the
-	// binary path.
+	// claude --session-id keys its transcript on (cwd, uuid); see
+	// claudeInvocationCWD for the resolution + fallback policy.
 	cwd := claudeInvocationCWD()
 	ctx, cancel := context.WithCancel(context.Background())
 	pr, err := runner.Prompt(ctx, claude.PromptOptions{
-		SessionUUID:    convoID,
-		CWD:            cwd,
-		Prompt:         msg.Text,
-		// PermissionMode left empty — runner.go always passes
-		// --dangerously-skip-permissions; PreToolUse hook still fires.
+		SessionUUID: convoID,
+		CWD:         cwd,
+		Prompt:      msg.Text,
+		// PermissionMode intentionally empty — runner always passes
+		// --dangerously-skip-permissions; PreToolUse hook is the gate.
 	})
 	if err != nil {
 		cancel()
@@ -356,13 +350,9 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	runStates.set(msg.SessionID, &claudeRunState{cancel: cancel, stop: pr.Stop})
 
 	stopCh := make(chan struct{})
-	// Forward parsed events as long as the runner emits. As soon as we
-	// see a `result` event (Claude's signal that this turn is logically
-	// finished), release the runStates slot — otherwise the next
-	// user prompt races against the reaper's pr.Wait() and gets a
-	// spurious "busy" rejection. The process itself may still be
-	// flushing stderr / cleaning up for tens of ms after `result`;
-	// the reaper below handles its actual exit.
+	// Forward parsed events; release the runStates slot as soon as
+	// we see a `result` event so the user can send the next prompt
+	// without racing the reaper's pr.Wait().
 	go func() {
 		defer close(stopCh)
 		for ev := range pr.Events {
@@ -373,20 +363,17 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 				return
 			}
 			if ev.Kind == claude.KindResult {
-				// Logical end-of-turn. Free the slot so the user can
-				// send another prompt immediately. The take() is
-				// idempotent with the reaper's take below.
+				// take() is idempotent with the reaper's take below.
 				_, _ = runStates.take(msg.SessionID)
 			}
 		}
 	}()
-	// Reap the process exit + clean up. take() returns false if
-	// either (a) exit_claude already cleared the state, or (b) the
-	// result-event branch above already cleared it. In all those
-	// cases the frontend has the information it needs; no need for
-	// the claude_run_ended backstop. We only emit claude_run_ended
-	// when the process died without ever emitting a `result` AND
-	// nobody explicitly exited — i.e., a crash.
+	// Reap the process exit + clean up. take() returns false if the
+	// slot was already cleared (by exit_claude, or by the result
+	// event above) — in those cases the frontend has what it needs
+	// and no backstop is emitted. claude_run_ended only fires when
+	// the process died without ever emitting `result` AND nobody
+	// explicitly exited — i.e., a crash.
 	go func() {
 		<-stopCh
 		waitErr := pr.Wait()

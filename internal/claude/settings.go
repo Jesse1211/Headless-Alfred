@@ -9,8 +9,8 @@ import (
 
 // ProdBridgeHookPath is where the production image (Dockerfile) puts
 // the hook script. Always available in the pod. Local dev binaries
-// don't have it — see resolveBridgePath / ensureBridgeInstalled for
-// the fallback that auto-installs to $HOME/.local on dev machines.
+// don't have it — resolveBridgePath falls back to installing a copy
+// under $HOME/.local on dev machines.
 const ProdBridgeHookPath = "/usr/local/bin/alfred-claude-bridge"
 
 // bridgeScriptBody is the curl-wrapper that the hook command invokes.

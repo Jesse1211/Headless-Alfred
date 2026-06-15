@@ -63,10 +63,9 @@ type PromptOptions struct {
 
 	// PermissionMode, if non-empty, is passed as --permission-mode.
 	// Largely vestigial now that we always pass
-	// --dangerously-skip-permissions: bypassPermissions disables the
-	// CLI's built-in prompt, and our PreToolUse hook is the actual
-	// gate (verified: hooks fire even under bypass mode). Left in
-	// the struct so a future feature can override per-call without
+	// --dangerously-skip-permissions: hooks still fire under bypass
+	// mode and our PreToolUse hook is the real gate. Kept on the
+	// struct so a future feature can override per-call without
 	// reshaping the API.
 	PermissionMode string
 }
