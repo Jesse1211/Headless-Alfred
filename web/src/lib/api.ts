@@ -160,3 +160,25 @@ export async function saveAnthropicCredentials(credentialsJson: string): Promise
     headers: { 'Content-Type': 'application/json' },
   })
 }
+
+// getSummary fetches the current text of <DATA_DIR>/summaries/<sid>.md.
+// Returns '' for both 404 (file never created) and 200-with-empty-body
+// (file exists but empty) — both are the "no summary yet" empty state.
+export async function getSummary(sessionID: string): Promise<string> {
+  try {
+    const res = await request(`/api/sessions/${encodeURIComponent(sessionID)}/summary`)
+    return await res.text()
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return ''
+    throw e
+  }
+}
+
+// getTemplate fetches the raw text of a built-in template by id (e.g.
+// 'summary-todo'). Placeholders like <sid> and <summary_path> are
+// returned verbatim — substitution happens server-side when the prompt
+// is composed.
+export async function getTemplate(id: string): Promise<string> {
+  const res = await request(`/api/templates/${encodeURIComponent(id)}`)
+  return res.text()
+}
