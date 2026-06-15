@@ -22,11 +22,17 @@ const BACKEND = 'http://localhost:8080'
 const SHOTS = path.join(__dirname, '..', '.screenshots')
 fs.mkdirSync(SHOTS, { recursive: true })
 
+// Cache the token across the whole run — backend has a per-IP login
+// rate limiter, and 6 logins back-to-back trips it.
+let cachedToken = ''
+
 async function login(page: Page): Promise<string> {
+  if (cachedToken) return cachedToken
   const r = await page.request.post(`${BACKEND}/api/login`, {
     data: { user: 'admin', password: 'admin' },
   })
   const { token } = await r.json()
+  cachedToken = token
   return token
 }
 
@@ -59,10 +65,30 @@ test.afterEach(async ({ request }) => {
   }
 })
 
+// Belt-and-suspenders: wipe pw-* sessions ONCE at the start of the
+// whole run, in case a previous run crashed before afterEach.
+// Doing it per-test races with the live WS client.
+test.beforeAll(async ({ request }) => {
+  const r = await request.post(`${BACKEND}/api/login`, {
+    data: { user: 'admin', password: 'admin' },
+  })
+  const { token } = await r.json()
+  const list = await request.get(`${BACKEND}/api/sessions`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(r => r.json()) as Array<{ id: string; name: string }>
+  for (const s of list) {
+    if (s.name.startsWith('pw-')) {
+      await request.delete(`${BACKEND}/api/sessions/${s.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {})
+    }
+  }
+})
+
 async function loginUI(page: Page, token: string) {
-  // Set the token directly in localStorage so we skip the login form.
-  // We have to visit a same-origin page first before localStorage is
-  // accessible — the empty / will redirect to login but that's fine.
+  // Skip the login form via direct localStorage injection — going
+  // through the form for every test trips the backend's per-IP login
+  // rate limit after a few runs.
   await page.goto('/')
   await page.evaluate((t) => localStorage.setItem('alfred_token', t), token)
   await page.reload()
@@ -132,6 +158,34 @@ test.describe('regression: typing one command must produce exactly one turn', ()
     expect(total, 'three commands → three turns').toBe(3)
     expect(live, 'all three should have finished').toBe(0)
   })
+})
+
+test.describe('regression: typing `claude` in the composer pops the Start Claude dialog', () => {
+  // Three forms should all be intercepted and routed to the dialog
+  // instead of running as a literal bash command:
+  //   "claude"           — bare invocation, the most common case
+  //   "/claude"          — slash-command form
+  //   "claude --foo"     — with args (treated the same as the CLI)
+  for (const cmd of ['claude', '/claude', 'claude --version']) {
+    test(`composer "${cmd}" opens the renderer picker`, async ({ page }) => {
+      const tok = await login(page)
+      const sid = await freshSessionTracked(page, tok, `pw-claude-${cmd.replace(/[^a-z0-9]/gi, '_')}`)
+      await loginUI(page, tok)
+      await selectSession(page, sid)
+
+      await submitCommand(page, cmd)
+
+      // Dialog visible.
+      await expect(page.locator('text=Start Claude')).toBeVisible({ timeout: 3_000 })
+      // No bash command was submitted: chat stream stays empty.
+      expect(await countTurns(page)).toEqual({ total: 0, live: 0 })
+
+      await page.screenshot({
+        path: path.join(SHOTS, `start-claude-via-${cmd.replace(/[^a-z0-9]/gi, '_')}.png`),
+        fullPage: true,
+      })
+    })
+  }
 })
 
 test.describe('regression: Stop button must terminate a running command', () => {

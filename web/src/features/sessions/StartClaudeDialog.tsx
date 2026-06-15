@@ -18,8 +18,17 @@ export function StartClaudeDialog({ defaultRenderer = 'ui', onStart, onCancel }:
       if (e.key === 'Escape') onCancel()
       if (e.key === 'Enter') onStart(renderer)
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    // Defer attaching by one frame. The dialog is typically opened by
+    // an Enter keypress in the composer (`claude` -> setStartClaudeFor);
+    // if we registered the listener synchronously, the same Enter
+    // keydown would still be propagating to window, and the dialog
+    // would close itself with the default renderer before the user
+    // ever sees it.
+    const t = setTimeout(() => window.addEventListener('keydown', onKey), 0)
+    return () => {
+      clearTimeout(t)
+      window.removeEventListener('keydown', onKey)
+    }
   }, [onCancel, onStart, renderer])
 
   return (
