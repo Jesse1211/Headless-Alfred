@@ -215,10 +215,10 @@ export function WorkspacePage({ token, onLogout }: Props) {
       {startClaudeFor && (
         <StartClaudeDialog
           onCancel={() => setStartClaudeFor(null)}
-          onStart={(renderer: ClaudeRenderer, bypass: boolean) => {
+          onStart={(renderer: ClaudeRenderer, bypass: boolean, templateId: string) => {
             const id = startClaudeFor
             setStartClaudeFor(null)
-            s.enterClaude(id, renderer, bypass)
+            s.enterClaude(id, renderer, bypass, templateId)
           }}
         />
       )}
