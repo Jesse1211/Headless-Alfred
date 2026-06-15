@@ -38,6 +38,19 @@ const (
 	RendererUI  ClaudeRenderer = "ui"
 )
 
+// SessionKind classifies a session by its UX role. "chat" (the
+// default, represented as empty for back-compat with old sessions.json
+// files) is a regular user-driven session that may enter Claude
+// mode via the Start Claude dialog. "recap" is a singleton ephemeral
+// session driven by the "+ 复盘" button; it auto-enters Claude UI
+// mode and is killed when the user navigates away.
+type SessionKind string
+
+const (
+	KindChat  SessionKind = ""      // default; back-compat with old files
+	KindRecap SessionKind = "recap"
+)
+
 // SessionMeta is the persistent metadata for one session. Fields are kept
 // minimal on purpose; runtime state (is bash alive, current command) is
 // not stored here — that lives in the in-memory session.Manager.
@@ -46,6 +59,10 @@ type SessionMeta struct {
 	Name      string      `json:"name"`
 	CreatedAt time.Time   `json:"created_at"`
 	Mode      SessionMode `json:"mode,omitempty"` // empty in old files == shell
+
+	// Kind is the session's UX classification (chat vs recap). See
+	// SessionKind. Empty in old files == KindChat.
+	Kind SessionKind `json:"kind,omitempty"`
 
 	// Renderer is only meaningful when Mode == ModeClaude.
 	// Empty otherwise. On Pod restart, this is reset to "" by

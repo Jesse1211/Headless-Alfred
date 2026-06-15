@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,5 +61,29 @@ func TestSessionsFile_LoadMalformed_ReturnsError(t *testing.T) {
 	_, err := sf.Load()
 	if err == nil {
 		t.Fatal("expected error on malformed JSON, got nil")
+	}
+}
+
+func TestSessionKind_RoundTripAndDefault(t *testing.T) {
+	// Round-trip preserves Kind.
+	m := SessionMeta{ID: "A", Name: "n", Kind: KindRecap}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got SessionMeta
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != KindRecap {
+		t.Errorf("Kind round-trip: got %q want %q", got.Kind, KindRecap)
+	}
+	// Old file without `kind` decodes as KindChat (empty string).
+	var old SessionMeta
+	if err := json.Unmarshal([]byte(`{"id":"X","name":"y"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.Kind != KindChat {
+		t.Errorf("missing kind: got %q want %q", old.Kind, KindChat)
 	}
 }
