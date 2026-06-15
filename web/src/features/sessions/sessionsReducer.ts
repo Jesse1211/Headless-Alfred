@@ -45,6 +45,10 @@ export function reducePerSession(
         running: null,
         mode: m.mode ?? cur.mode,
         renderer,
+        // Rehydrate templateId from the frame — the server persists
+        // SessionMeta.TemplateID and re-sends it on every connect, so
+        // the right-rail summary sidebar can re-mount after a reload.
+        templateId: m.templateId || cur.templateId,
         // If reconnecting and we see we're in UI mode but no claude
         // state yet, initialize it.
         claude: renderer === 'ui' && !cur.claude ? emptyClaudeState() : cur.claude,
@@ -65,6 +69,7 @@ export function reducePerSession(
           truncatedLossWarned: false,
         },
         renderer,
+        templateId: m.templateId || cur.templateId,
         claude: renderer === 'ui' && !cur.claude ? emptyClaudeState() : cur.claude,
         mode: m.mode ?? cur.mode,
       })

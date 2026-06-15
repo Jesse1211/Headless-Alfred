@@ -84,6 +84,14 @@ type OutMsg struct {
 	// Date carries the YYYY-MM-DD date of the recap file that was
 	// written (recap_updated frame).
 	Date string `json:"date,omitempty"`
+
+	// TemplateID accompanies "idle" / "reattach" / "claude_entered"
+	// when the session has an active prompt template (e.g.
+	// "summary-todo"). Empty when no template is bound. Lets the
+	// frontend re-mount the matching right-rail sidebar after a
+	// page reload — without this, perSession.templateId would always
+	// initialize to undefined on cold start.
+	TemplateID string `json:"templateId,omitempty"`
 }
 
 // TypeSummaryUpdated is the WS frame Type pushed by alfred-server

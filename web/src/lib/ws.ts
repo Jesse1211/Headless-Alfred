@@ -23,8 +23,8 @@ export type ClaudeEventKind =
   | 'unknown'
 
 export type ServerMsg =
-  | { type: 'reattach'; sessionID: string; cmdId: string; command: string; startedAt: string; outputSoFar: string; mode?: 'shell' | 'claude'; renderer?: ClaudeRenderer | '' }
-  | { type: 'idle'; sessionID: string; mode?: 'shell' | 'claude'; renderer?: ClaudeRenderer | '' }
+  | { type: 'reattach'; sessionID: string; cmdId: string; command: string; startedAt: string; outputSoFar: string; mode?: 'shell' | 'claude'; renderer?: ClaudeRenderer | ''; templateId?: string }
+  | { type: 'idle'; sessionID: string; mode?: 'shell' | 'claude'; renderer?: ClaudeRenderer | ''; templateId?: string }
   | { type: 'started'; sessionID: string; cmdId: string; command: string; startedAt: string }
   | { type: 'chunk'; sessionID: string; cmdId: string; data: string }
   | { type: 'done'; sessionID: string; cmdId: string; exitCode: number; finishedAt: string }

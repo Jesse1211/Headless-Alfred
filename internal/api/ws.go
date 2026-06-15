@@ -119,9 +119,10 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			mode = "shell"
 		}
 		renderer := string(m.GetRenderer(meta.ID))
+		templateID := m.GetTemplateID(meta.ID)
 		cur := sh.CurrentCommand()
 		if cur == nil {
-			_ = write(OutMsg{Type: "idle", SessionID: meta.ID, Mode: mode, Renderer: renderer})
+			_ = write(OutMsg{Type: "idle", SessionID: meta.ID, Mode: mode, Renderer: renderer, TemplateID: templateID})
 		} else {
 			_ = write(OutMsg{
 				Type:        "reattach",
@@ -132,6 +133,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 				OutputSoFar: base64.StdEncoding.EncodeToString(cur.Buffer),
 				Mode:        mode,
 				Renderer:    renderer,
+				TemplateID:  templateID,
 			})
 		}
 	}
