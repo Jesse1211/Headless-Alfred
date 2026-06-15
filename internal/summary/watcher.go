@@ -62,11 +62,19 @@ func StartWatcher(dataDir string, onWrite func(sessionID string)) (*Watcher, err
 	return w, nil
 }
 
-// Stop blocks until the watcher goroutine drains. Safe to call
-// from a defer.
+// Stop blocks until the watcher goroutine drains AND any pending
+// debounced callbacks are cancelled. Safe to call from a defer.
+// After Stop returns, the onWrite callback is guaranteed NOT to
+// fire again, even if a debounce timer was armed.
 func (w *Watcher) Stop() {
 	close(w.stop)
 	<-w.done
+	w.mu.Lock()
+	for _, t := range w.pending {
+		t.Stop()
+	}
+	w.pending = map[string]*time.Timer{}
+	w.mu.Unlock()
 	w.w.Close()
 }
 

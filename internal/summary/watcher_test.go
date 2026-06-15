@@ -116,3 +116,34 @@ func TestWatcher_FailsGracefullyIfMkdirDenied(t *testing.T) {
 		w.Stop()
 	}
 }
+
+func TestWatcher_StopCancelsPendingDebouncedCallbacks(t *testing.T) {
+	dir := t.TempDir()
+
+	var fired bool
+	var mu sync.Mutex
+	w, err := StartWatcher(dir, func(string) {
+		mu.Lock()
+		fired = true
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Arm a debounce timer, then Stop immediately — the callback
+	// must NOT fire after Stop returns.
+	if err := os.WriteFile(Path(dir, "Stale"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Give fsnotify a few ms to deliver the event so schedule() runs.
+	time.Sleep(20 * time.Millisecond)
+	w.Stop()
+	// Wait past the debounce window — if cancellation worked, fired stays false.
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if fired {
+		t.Error("onWrite fired after Stop — pending timers were not cancelled")
+	}
+}
