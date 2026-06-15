@@ -432,10 +432,12 @@ func (m *Manager) EnsureClaudeConvoID(sessionID string) (string, error) {
 	}); err != nil {
 		return "", err
 	}
-	return m.getClaudeConvoIDLocked(sessionID), nil
+	return m.getClaudeConvoID(sessionID), nil
 }
 
-func (m *Manager) getClaudeConvoIDLocked(sessionID string) string {
+// getClaudeConvoID returns the persisted ClaudeSessionID for sessionID,
+// acquiring m.mu internally. Empty if the session is unknown.
+func (m *Manager) getClaudeConvoID(sessionID string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if meta, ok := m.metas[sessionID]; ok {
