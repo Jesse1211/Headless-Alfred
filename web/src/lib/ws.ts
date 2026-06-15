@@ -43,12 +43,13 @@ export type ServerMsg =
   // the run ended cleanly with a `result`, the frame is redundant
   // and the reducer treats it as a no-op for the turn state.
   | { type: 'claude_run_ended'; sessionID: string; message?: string }
+  | { type: 'summary_updated'; sessionID: string }
   | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
 
 export type ClientMsg =
   | { type: 'run'; sessionID: string; command: string }
-  | { type: 'enter_claude'; sessionID: string; renderer?: ClaudeRenderer; bypassPermissions?: boolean }
+  | { type: 'enter_claude'; sessionID: string; renderer?: ClaudeRenderer; bypassPermissions?: boolean; templateId?: string }
   | { type: 'exit_claude'; sessionID: string }
   | { type: 'stdin'; sessionID: string; data: string }
   | { type: 'claude_prompt'; sessionID: string; text: string }
