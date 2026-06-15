@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"q1"},"uuid":"u1","timestamp":"2026-06-15T10:00:00.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a1"}]}}
+{this is not json
+{"type":"user","message":{"role":"user","content":"q2"},"uuid":"u2","timestamp":"2026-06-15T10:01:00.000Z"}
