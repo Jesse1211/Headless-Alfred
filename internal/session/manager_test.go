@@ -36,7 +36,7 @@ func newTestManager(t *testing.T) (*Manager, *tmuxio.FakeRunner) {
 
 func TestManager_EmptyOnFreshConstruction(t *testing.T) {
 	m, _ := newTestManager(t)
-	list := m.List()
+	list := m.ListAll()
 	if len(list) != 0 {
 		t.Fatalf("fresh Manager should list zero sessions, got %+v", list)
 	}
@@ -156,7 +156,7 @@ func TestManager_Rename_UpdatesAndPersists(t *testing.T) {
 	if err := m.Rename(meta.ID, "training"); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
-	list := m.List()
+	list := m.ListAll()
 	if list[0].Name != "training" {
 		t.Fatalf("name not updated: %+v", list[0])
 	}
@@ -215,8 +215,8 @@ func TestManager_Close_RemovesFromListAndDeletesStoreDir(t *testing.T) {
 	if err := m.Close(meta.ID); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if len(m.List()) != 0 {
-		t.Fatalf("after Close list should be empty: %+v", m.List())
+	if len(m.ListAll()) != 0 {
+		t.Fatalf("after Close list should be empty: %+v", m.ListAll())
 	}
 	// Tmux session killed.
 	calls := fr.Calls()
@@ -323,7 +323,7 @@ func TestManager_Reconcile_StoredIntersectLive_ResumesWithoutRecreate(t *testing
 	if err := m.Reconcile(); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	list := m.List()
+	list := m.ListAll()
 	if len(list) != 1 || list[0].ID != id {
 		t.Fatalf("after reconcile list = %+v", list)
 	}
@@ -387,8 +387,8 @@ func TestManager_Reconcile_LiveMinusStored_KillsOrphan(t *testing.T) {
 	if !sawKill {
 		t.Fatalf("orphan tmux session not killed: %+v", calls)
 	}
-	if len(m.List()) != 0 {
-		t.Fatalf("orphan should not appear in list: %+v", m.List())
+	if len(m.ListAll()) != 0 {
+		t.Fatalf("orphan should not appear in list: %+v", m.ListAll())
 	}
 }
 
@@ -397,8 +397,8 @@ func TestManager_Reconcile_EmptyBoth_IsNoop(t *testing.T) {
 	if err := m.Reconcile(); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if len(m.List()) != 0 {
-		t.Fatalf("list non-empty: %+v", m.List())
+	if len(m.ListAll()) != 0 {
+		t.Fatalf("list non-empty: %+v", m.ListAll())
 	}
 }
 
@@ -418,13 +418,47 @@ func TestManager_Reconcile_Idempotent(t *testing.T) {
 	if err := m.Reconcile(); err != nil {
 		t.Fatalf("second Reconcile: %v", err)
 	}
-	if len(m.List()) != 1 {
-		t.Fatalf("after 2x Reconcile list = %+v, want 1 entry", m.List())
+	if len(m.ListAll()) != 1 {
+		t.Fatalf("after 2x Reconcile list = %+v, want 1 entry", m.ListAll())
 	}
 	// The second resumeShell logs an "already started" error from
 	// TmuxShell.Resume and moves on — verify our shells map still
 	// holds exactly one entry for the id.
 	if got, _ := m.Get(id); got == nil {
 		t.Fatalf("session %s no longer accessible via Get", id)
+	}
+}
+
+func TestManager_CreateOrGetRecapSession_Idempotent(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, err := m.CreateOrGetRecapSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != store.KindRecap {
+		t.Errorf("Kind = %q, want %q", a.Kind, store.KindRecap)
+	}
+	b, err := m.CreateOrGetRecapSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.ID != a.ID {
+		t.Errorf("second call returned a different session (got %q, want %q)", b.ID, a.ID)
+	}
+}
+
+func TestManager_List_FiltersByKind(t *testing.T) {
+	m, _ := newTestManager(t)
+	chat, _ := m.Create("chat-session")
+	rec, _ := m.CreateOrGetRecapSession()
+
+	chats := m.List(store.KindChat)
+	recaps := m.List(store.KindRecap)
+
+	if len(chats) != 1 || chats[0].ID != chat.ID {
+		t.Errorf("List(KindChat): got %+v, want 1 chat session", chats)
+	}
+	if len(recaps) != 1 || recaps[0].ID != rec.ID {
+		t.Errorf("List(KindRecap): got %+v, want 1 recap session", recaps)
 	}
 }

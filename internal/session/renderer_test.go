@@ -19,7 +19,7 @@ func TestCreate_HasEmptyRendererAndConvoID(t *testing.T) {
 	if got := m.GetRenderer(meta.ID); got != "" {
 		t.Errorf("GetRenderer = %q, want empty", got)
 	}
-	all := m.List()
+	all := m.ListAll()
 	for _, mt := range all {
 		if mt.ID == meta.ID && mt.ClaudeSessionID != "" {
 			t.Errorf("freshly-created session has ClaudeSessionID = %q, want empty", mt.ClaudeSessionID)

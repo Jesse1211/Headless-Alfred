@@ -114,9 +114,25 @@ func (m *Manager) AddCreateListener(fn func(sessionID string)) (remove func()) {
 	return m.onCreate.Add(fn)
 }
 
-// List returns a snapshot of all current session metadata in
-// creation-time-ascending order.
-func (m *Manager) List() []store.SessionMeta {
+// List returns SessionMetas filtered by Kind. Pass store.KindChat
+// for chat sessions (the default sidebar view), store.KindRecap for
+// just the singleton recap session. For all kinds, call ListAll.
+func (m *Manager) List(kind store.SessionKind) []store.SessionMeta {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]store.SessionMeta, 0, len(m.metas))
+	for _, mt := range m.metas {
+		if mt.Kind != kind {
+			continue
+		}
+		out = append(out, mt)
+	}
+	sortByCreatedAtAsc(out)
+	return out
+}
+
+// ListAll returns all sessions regardless of kind.
+func (m *Manager) ListAll() []store.SessionMeta {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]store.SessionMeta, 0, len(m.metas))
@@ -228,6 +244,56 @@ func (m *Manager) Create(name string) (store.SessionMeta, error) {
 	}
 
 	m.onCreate.Fire(id)
+	return meta, nil
+}
+
+// CreateOrGetRecapSession returns the existing recap session, or
+// creates one if none exists. If multiple recap sessions are found
+// (orphans from a previous run), all but the most recently created
+// are killed via Close, and the survivor is returned.
+//
+// Uses Manager.mu for the existence-check; Create is called outside
+// the lock (it takes the lock itself). Concurrent callers may both
+// pass the initial scan and create two sessions; the orphan kill
+// path on subsequent calls is the self-heal.
+func (m *Manager) CreateOrGetRecapSession() (store.SessionMeta, error) {
+	m.mu.Lock()
+	var existing []store.SessionMeta
+	for _, meta := range m.metas {
+		if meta.Kind == store.KindRecap {
+			existing = append(existing, meta)
+		}
+	}
+	m.mu.Unlock()
+
+	if len(existing) > 0 {
+		sortByCreatedAtAsc(existing)
+		keep := existing[len(existing)-1]
+		// Kill the orphans (older recap sessions).
+		for _, orphan := range existing[:len(existing)-1] {
+			if err := m.Close(orphan.ID); err != nil {
+				m.cfg.Logger.Warn("CreateOrGetRecapSession: orphan close failed",
+					"id", orphan.ID, "err", err)
+			}
+		}
+		return keep, nil
+	}
+
+	// No existing recap session — create one and tag it.
+	meta, err := m.Create("Recap")
+	if err != nil {
+		return store.SessionMeta{}, err
+	}
+	m.mu.Lock()
+	if cur, ok := m.metas[meta.ID]; ok {
+		cur.Kind = store.KindRecap
+		m.metas[meta.ID] = cur
+		meta = cur
+	}
+	m.mu.Unlock()
+	if err := m.persistMetas(); err != nil {
+		return store.SessionMeta{}, fmt.Errorf("persist recap kind: %w", err)
+	}
 	return meta, nil
 }
 

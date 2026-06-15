@@ -149,8 +149,8 @@ func TestRenameSession_Success(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("code = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if m.List()[0].Name != "training" {
-		t.Fatalf("name not updated: %+v", m.List()[0])
+	if m.ListAll()[0].Name != "training" {
+		t.Fatalf("name not updated: %+v", m.ListAll()[0])
 	}
 }
 
@@ -192,7 +192,7 @@ func TestDeleteSession_Success(t *testing.T) {
 	if rec.Code != 204 {
 		t.Fatalf("code = %d", rec.Code)
 	}
-	if len(m.List()) != 0 {
+	if len(m.ListAll()) != 0 {
 		t.Fatalf("session not deleted")
 	}
 }

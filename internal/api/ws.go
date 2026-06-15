@@ -79,7 +79,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 		return conn.WriteJSON(msg)
 	}
 
-	sessions := m.List()
+	sessions := m.ListAll()
 	subs := make([]NamedSubscriber, 0, len(sessions))
 	cancels := []func(){}
 	// ptyChunks carries raw PTY bytes (claude mode). It's a single shared

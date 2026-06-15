@@ -14,7 +14,7 @@ import (
 // Returns [] when empty (never null).
 func ListSessionsHandler(m *session.Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		list := m.List()
+		list := m.List(store.KindChat)
 		if list == nil {
 			list = []store.SessionMeta{}
 		}
