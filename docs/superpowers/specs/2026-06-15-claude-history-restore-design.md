@@ -31,12 +31,12 @@ rather than a crash.
 ### Architecture
 
 ```
-~/.claude/projects/<encoded-cwd>/<uuid>.jsonl   ← Claude CLI writes
+~/.claude/projects/<some-dir>/<uuid>.jsonl   ← Claude CLI writes
                   │
                   │ read on demand
                   ▼
         internal/claudehistory          (new Go package)
-         ├─ Locate(cwd, uuid)  → path
+         ├─ Locate(uuid)  → path        (walks ~/.claude/projects)
          └─ Parse(path, limit, before) → []Turn
                   │
                   │
@@ -59,33 +59,40 @@ new turns the same as today. The jsonl is just for cold start.
 Claude CLI stores each session at:
 
 ```
-~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
+~/.claude/projects/<dir>/<uuid>.jsonl
 ```
 
-Where `<encoded-cwd>` is the absolute cwd with `/` and `.` both replaced
-by `-`. Verified across this user's existing project folders:
+`<dir>` is derived from the cwd Claude was invoked in (an encoding of
+`/` and `.` to `-`), but we deliberately do not compute it.
 
-| cwd | encoded |
-|---|---|
-| `/Users/jesseliu` | `-Users-jesseliu` |
-| `/Users/jesseliu/Desktop/Chore/Headless-Alfred` | `-Users-jesseliu-Desktop-Chore-Headless-Alfred` |
-| `/Users/jesseliu/.claude-mem/observer-sessions` | `-Users-jesseliu--claude-mem-observer-sessions` |
-| `/Users/jesseliu/Desktop/Chore/mywebsite/jesse1211.github.io` | `-Users-jesseliu-Desktop-Chore-mywebsite-jesse1211-github-io` |
+**Why not compute the directory.** alfred-server picks its claude
+invocation cwd dynamically (`/home/alfred` on the pod, `$HOME` on a
+dev box; see `claudeInvocationCWD()` in `internal/api/claude_handlers.go`).
+That cwd is never persisted into SessionMeta. A compute-then-stat
+strategy would work only on a stable single host, and would silently
+fall through to a walk anyway after any environment change — making
+compute optimistic dead code most of the time. Walking is also
+already fast enough (see below), so the compute path costs complexity
+without saving real time.
 
-`Locate` follows a compute-first / fallback-walk strategy:
-
-1. Compute the path from `cwd` + `uuid` and `os.Stat` it. If it exists,
-   return it.
-2. Otherwise `filepath.Walk` under `~/.claude/projects` for a file
-   named `<uuid>.jsonl` and return the first match. (Measured ~80ms
-   for 752 jsonl files locally — acceptable on a refresh, and the
-   result is cached.)
-3. Both miss → return `os.ErrNotExist`. The handler returns `[]` —
-   empty history is a valid state.
+**Strategy: walk `~/.claude/projects` for `<uuid>.jsonl`.** `Locate(uuid)`
+runs `filepath.Walk` and returns the first file whose basename is
+`<uuid>.jsonl`. Measured ~80ms across 752 existing jsonl files locally;
+a refresh runs this at most once per session (then it's cached).
 
 A small in-memory cache `map[sessionID]string` (mutex-guarded) skips
-both steps on subsequent calls. The cache lives for the lifetime of
-the alfred-server process; it does not need persistence.
+the walk on repeat calls. The cache:
+
+- is keyed by sessionID, not uuid, so it follows the SessionMeta even
+  if `ClaudeSessionID` rotates.
+- is invalidated when the cached path no longer stats — handles the
+  case where the jsonl was moved or the user re-entered Claude with
+  a fresh uuid (the old cached entry would now point at a stale path).
+- lives for the lifetime of the alfred-server process; does not
+  need persistence.
+
+If the walk turns up nothing → `os.ErrNotExist`. The handler returns
+`[]`; empty history is a valid state.
 
 ### jsonl line types we care about
 
@@ -97,7 +104,7 @@ files, only four contribute to user-visible turns:
 | `type: "user"`, `message.content` is a **string** | Start a new `Turn` with `prompt = content` |
 | `type: "user"`, `message.content[].type == "tool_result"` | Find the matching tool in the current turn (by `tool_use_id`), set its `result` and `isError` |
 | `type: "assistant"`, `message.content[].type == "text"` | Append `text` to the current turn's `text` |
-| `type: "assistant"`, `message.content[].type == "tool_use"` | Append a `ClaudeToolCall{id, name, input, decision: 'allow'}` to the current turn's `tools`. (Decision is presumed `allow` because the tool actually ran — if it had been denied, we'd see a `tool_result` with `is_error: true` and the rejection message.) |
+| `type: "assistant"`, `message.content[].type == "tool_use"` | Append a `ClaudeToolCall{id, name, input, decision: 'allow'}` to the current turn's `tools`. **Known lossy reconstruction:** a tool that was actually denied by Alfred's PreToolUse hook also shows up here with `decision: 'allow'`. The denial is reflected in the matching `tool_result` (`is_error: true`, content like "user rejected"), so the user can still tell — but the `decision` field on the rebuilt turn doesn't distinguish. We accept this; the alternative is fragile string heuristics on the result content. |
 
 Everything else (`attachment`, `system`, `permission-mode`, `ai-title`,
 `last-prompt`, `file-history-snapshot`, `queue-operation`, and any
@@ -140,10 +147,11 @@ handler can `json.Marshal` straight to a shape the frontend reducer
 already understands. Field tags use the existing camelCase names
 (`startedAt`, `toolUseId`, etc.) to match `web/src/features/sessions/types.ts`.
 
-**`locate.go`** — `Locate(cwd, uuid string) (string, error)` and an
-internal cache. Pure function plus a sync.Map. Unit-testable by
-parameterizing `$HOME` via an env var (`HOME` is read at start; tests
-override).
+**`locate.go`** — `Locate(sessionID, uuid string) (string, error)` and
+an internal `sync.Map` cache. Walks `<homeDir>/.claude/projects` for
+a basename match. `homeDir` is `os.UserHomeDir()` at startup (tests
+override via `t.Setenv("HOME", ...)`). Cache entry is invalidated if
+its stored path no longer stats.
 
 **`parse.go`** — `Parse(path string, limit int, beforeTurnID string) ([]Turn, error)`:
 - Opens the file, scans line by line with `bufio.Scanner` (set
@@ -225,10 +233,22 @@ Body:
 5. Standard `alive` cancellation pattern.
 
 New flag on `ClaudeState`: `turnsLoaded?: boolean`. Default-false in
-`emptyClaudeState()`. Set true after a successful jsonl seed. Cleared
-implicitly by `claude_exited` only if we want to refetch on
-re-entry — for v1 we leave it sticky once true, because re-entering
-the same session resumes the same uuid and the jsonl keeps growing.
+`emptyClaudeState()`. Set true after a successful jsonl seed.
+
+**Lifecycle:**
+- A successful fetch (incl. an empty array — no history is still a
+  valid "loaded" state) sets `turnsLoaded: true`.
+- An error also sets it true, to avoid retry loops. The frontend shows
+  the "history unavailable" banner once and stays put.
+- `claude_exited` clears `turnsLoaded` back to false. Reason: Alfred
+  may have rotated the underlying `ClaudeSessionID` between exit and
+  the next enter (the backend's reset paths in `manager.go` blank
+  `meta.ClaudeSessionID` under some conditions), in which case the
+  next enter will resolve to a different jsonl. A refetch on re-enter
+  is cheap and idempotent for the common case (same uuid → same jsonl,
+  same turns).
+- The flag is page-lifecycle, not WS-lifecycle. WS reconnects (network
+  flap) do NOT clear it — the cached turns are still valid.
 
 New API helper: `getClaudeHistory(sid: string, opts?: { limit?: number; before?: string }) => Promise<ClaudeTurn[]>` in `web/src/lib/api.ts`.
 
@@ -278,10 +298,12 @@ The reducer still sets `turnsLoaded: true` so we don't retry-loop.
   - `empty.jsonl` — zero bytes (returns [])
   - Pagination: `before=<turnId>` returns turns strictly before that id; default returns last N.
 
-- `locate_test.go`:
-  - Compute path matches on a synthetic `$HOME` with the dash-encoded fixture dir.
-  - Fallback walk finds the file when compute fails (different encoding).
-  - Cache returns the same path on repeated calls.
+- `locate_test.go` (uses `t.Setenv("HOME", tmpDir)` + a fixture tree
+  `tmpDir/.claude/projects/whatever/<uuid>.jsonl`):
+  - Walk finds the file by basename match.
+  - Returns `os.ErrNotExist` when the uuid is missing.
+  - Cache returns the same path on repeated calls (no re-walk).
+  - Cache invalidates when the cached path is unlinked between calls.
 
 **Frontend unit (Vitest):**
 
@@ -293,9 +315,15 @@ The reducer still sets `turnsLoaded: true` so we don't retry-loop.
 
 **E2e (Playwright):**
 
-- New describe in `regression.spec.ts`: enter Claude UI, send "say
-  hello", wait for response, reload page, assert prompt + reply
+- New describe in `regression.spec.ts`: enter Claude UI, send "reply
+  with 'k'", wait for response, reload page, assert prompt + reply
   both still visible. Cleanup deletes the synthetic history.
+- Uses the real Claude API path (no way to fake jsonl writes
+  end-to-end without also faking the runner). `test.setTimeout(60_000)`
+  to absorb the API round-trip, same as the existing
+  `Claude UI: AskUserQuestion` test. Acknowledged: this test will be
+  slow and occasionally flaky on network hiccups, like the other
+  Claude e2e tests.
 
 ### Out of scope (explicit YAGNI)
 
@@ -309,6 +337,13 @@ The reducer still sets `turnsLoaded: true` so we don't retry-loop.
   payload bounded.
 - Showing CLI internal events (`permission-mode`, `attachment`, etc.)
   in the chat view — silently skipped.
+- Cross-environment history portability. A session that ran in the
+  pod (cwd `/home/alfred`) generates a jsonl under
+  `/home/alfred/.claude/projects/...`. If you copy ALFRED_DATA_DIR
+  to a local machine and refresh there, the `~/.claude/projects/`
+  tree the walk searches is the local user's, not the pod's — so the
+  jsonl won't be found. Handled gracefully (empty history banner);
+  not a supported migration path.
 
 ### File layout
 
@@ -324,5 +359,6 @@ The reducer still sets `turnsLoaded: true` so we don't retry-loop.
 | `web/src/lib/api.ts` | `getClaudeHistory` helper (existing file) |
 | `web/src/features/sessions/useClaudeHistoryLoader.ts` | new hook |
 | `web/src/features/sessions/types.ts` | add `turnsLoaded?: boolean` to ClaudeState (existing file) |
+| `web/src/features/sessions/claudeReducer.ts` | clear `turnsLoaded` on `claude_exited` (existing file) |
 | `web/src/features/sessions/WorkspacePage.tsx` | mount the new hook (existing file) |
 | `web/e2e/regression.spec.ts` | refresh-restores-history e2e (existing file) |
