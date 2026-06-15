@@ -8,8 +8,10 @@ import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
 import { ClaudeTerminal } from '../claude/ClaudeTerminal'
 import { SummarySidebar } from './SummarySidebar'
+import { RecapSidebar } from './RecapSidebar'
 import { ClaudeChatView } from './ClaudeChatView'
 import { StartClaudeDialog } from './StartClaudeDialog'
+import { getTemplate } from '../../lib/api'
 import ChatStream from '../terminal/ChatStream'
 import CommandInput from '../terminal/CommandInput'
 import { emptyClaudeState, emptyPerSessionState } from './types'
@@ -75,16 +77,23 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const composerDisabled = s.connState !== 'open' || !s.selectedSessionID
   const composerBusy = !!ps?.running
 
-  // The sidebar's *content* is mountable only when the active session is in
-  // Claude mode AND was started with the summary template opted in.
-  const showSidebarSlot = !!(selected && ps && ps.mode === 'claude' && ps.templateId === 'summary-todo')
-  // The re-open handle is shown whenever the user is in any Chat UI Claude
+  const isRecap = selected?.kind === 'recap'
+  // The summary sidebar's *content* is mountable only for chat sessions in
+  // Claude UI mode with the summary template opted in. Recap sessions
+  // get RecapSidebar instead (mutually exclusive).
+  const showSummarySidebar = !!(selected && ps && ps.mode === 'claude' && ps.templateId === 'summary-todo' && !isRecap)
+  // RecapSidebar is the sidebar for recap-kind sessions. Always shown
+  // when the user is on a recap session.
+  const showRecapSidebar = !!(selected && isRecap)
+  // has-sidebar: any of the right-column sidebars is rendering.
+  const sidebarShown = (showSummarySidebar && !sidebarHidden) || showRecapSidebar
+  // The re-open handle is shown whenever the user is in a Chat UI Claude
   // session — even sessions without a template — so a deliberate hide
-  // gesture can always be undone. (Per spec; hide state is global.)
-  const showSidebarHandle = !!(selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && sidebarHidden)
+  // gesture can always be undone. Excluded for recap (which has its own intrinsic sidebar).
+  const showSidebarHandle = !!(selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && sidebarHidden && !isRecap)
 
   return (
-    <div className={`workspace ${showSidebarSlot && !sidebarHidden ? 'has-sidebar' : ''}`}>
+    <div className={`workspace ${sidebarShown ? 'has-sidebar' : ''}`}>
       <SessionsSidebar
         sessions={s.sessions}
         selectedSessionID={s.selectedSessionID}
@@ -242,13 +251,30 @@ export function WorkspacePage({ token, onLogout }: Props) {
         )}
       </div>
 
-      {showSidebarSlot && !sidebarHidden && selected && ps && (
+      {showSummarySidebar && !sidebarHidden && selected && ps && (
         <SummarySidebar
           key={selected.id}
           sessionID={selected.id}
           templateId={ps.templateId!}
           summaryFetchCounter={ps.summaryFetchCounter ?? 0}
           onClose={() => setSidebarHiddenPersisted(true)}
+        />
+      )}
+
+      {showRecapSidebar && selected && (
+        <RecapSidebar
+          recapFetchCounter={s.recapFetchCounter}
+          generating={!!ps?.claude?.inFlight}
+          onGenerate={async () => {
+            const tpl = await getTemplate('recap-daily')
+            const date = new Date().toLocaleDateString('en-CA')
+            const recapPath = `recaps/${date}.md`
+            const text = tpl
+              .replaceAll('<date>', date)
+              .replaceAll('<cwd>', '$(pwd)')
+              .replaceAll('<recap_path>', recapPath)
+            s.claudePrompt(selected.id, text)
+          }}
         />
       )}
 
