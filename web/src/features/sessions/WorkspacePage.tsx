@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useSessions } from './useSessions'
 import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { SessionsSidebar } from './SessionsSidebar'
@@ -6,6 +6,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
 import { ClaudeTerminal } from '../claude/ClaudeTerminal'
+import { SummarySidebar } from './SummarySidebar'
 import { ClaudeChatView } from './ClaudeChatView'
 import { StartClaudeDialog } from './StartClaudeDialog'
 import ChatStream from '../terminal/ChatStream'
@@ -37,6 +38,28 @@ export function WorkspacePage({ token, onLogout }: Props) {
   // Session ID for which the "Start Claude" renderer-pick dialog is open.
   const [startClaudeFor, setStartClaudeFor] = useState<string | null>(null)
 
+  // Global "summary sidebar hidden" toggle. Persisted to localStorage so
+  // the user's preference survives reload. Per spec it's intentionally
+  // global, not per-session — hiding on session A keeps it hidden when
+  // switching to session B.
+  const [sidebarHidden, setSidebarHidden] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('alfred_summary_sidebar_hidden') === '1'
+    } catch {
+      return false
+    }
+  })
+
+  const setSidebarHiddenPersisted = useCallback((hidden: boolean) => {
+    setSidebarHidden(hidden)
+    try {
+      localStorage.setItem('alfred_summary_sidebar_hidden', hidden ? '1' : '0')
+    } catch {
+      // localStorage unavailable (private mode, etc.) — silently fall back
+      // to in-memory only
+    }
+  }, [])
+
   const selected = s.selectedSessionID
     ? s.sessions.find((x) => x.id === s.selectedSessionID)
     : null
@@ -46,8 +69,12 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const composerDisabled = s.connState !== 'open' || !s.selectedSessionID
   const composerBusy = !!ps?.running
 
+  // The sidebar is mountable only when the active session is in Claude
+  // mode AND was started with the summary template opted in.
+  const showSidebarSlot = !!(selected && ps && ps.mode === 'claude' && ps.templateId === 'summary-todo')
+
   return (
-    <div className="workspace">
+    <div className={`workspace ${showSidebarSlot && !sidebarHidden ? 'has-sidebar' : ''}`}>
       <SessionsSidebar
         sessions={s.sessions}
         selectedSessionID={s.selectedSessionID}
@@ -203,6 +230,28 @@ export function WorkspacePage({ token, onLogout }: Props) {
           </>
         )}
       </div>
+
+      {showSidebarSlot && !sidebarHidden && selected && ps && (
+        <SummarySidebar
+          key={selected.id}
+          sessionID={selected.id}
+          templateId={ps.templateId!}
+          summaryFetchCounter={ps.summaryFetchCounter ?? 0}
+          onClose={() => setSidebarHiddenPersisted(true)}
+        />
+      )}
+
+      {showSidebarSlot && sidebarHidden && (
+        <button
+          type="button"
+          className="workspace__sidebar-handle"
+          onClick={() => setSidebarHiddenPersisted(false)}
+          title="Show summary sidebar"
+          aria-label="Show summary sidebar"
+        >
+          Summary
+        </button>
+      )}
 
       {gitCredsOpen && (
         <GitCredentialsDialog onClose={() => setGitCredsOpen(false)} />

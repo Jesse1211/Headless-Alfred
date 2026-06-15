@@ -163,3 +163,35 @@
   max-width: 768px;
   margin: 0 auto;
 }
+
+.workspace.has-sidebar {
+  grid-template-columns: 260px 1fr 320px;
+}
+
+/* Reopen handle pinned to the right edge when sidebar is hidden. */
+.workspace__sidebar-handle {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%) rotate(-90deg);
+  transform-origin: right center;
+  background: var(--bg-elevated, #1a1d24);
+  color: var(--fg-muted, #9aa3b2);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: none;
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  z-index: 10;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.workspace__sidebar-handle:hover {
+  color: var(--fg, #eaeaea);
+  background: rgba(255, 255, 255, 0.04);
+}
