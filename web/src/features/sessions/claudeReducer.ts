@@ -67,8 +67,12 @@ export function reduceClaudeMsg(
         templateId: undefined,
         // Keep the prior conversation history for re-display next time —
         // we just clear the "in-flight" state. (If we wanted to drop
-        // the conversation on Exit we'd null `claude` here.)
-        claude: cur.claude ? { ...cur.claude, inFlight: false, pending: [], pendingQuestions: [] } : undefined,
+        // the conversation on Exit we'd null `claude` here.) turnsLoaded
+        // is reset so the next enter triggers a fresh history fetch — the
+        // underlying ClaudeSessionID may have rotated.
+        claude: cur.claude
+          ? { ...cur.claude, inFlight: false, pending: [], pendingQuestions: [], turnsLoaded: false }
+          : undefined,
       })
       return next
     }

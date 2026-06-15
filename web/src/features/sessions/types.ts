@@ -62,6 +62,11 @@ export interface ClaudeToolCall {
 export interface ClaudeState {
   // The conversation as a list of turns, oldest first.
   turns: ClaudeTurn[]
+  // True once useClaudeHistoryLoader has done its one-shot fetch
+  // from the backend jsonl-restore endpoint. Cleared on claude_exited
+  // so re-entering re-runs the fetch (the underlying uuid may have
+  // rotated). Sticky across WS reconnects within the same page load.
+  turnsLoaded?: boolean
   // True while a claude_prompt is in flight (claude -p running).
   inFlight: boolean
   // Pending tool approvals waiting for the user.
