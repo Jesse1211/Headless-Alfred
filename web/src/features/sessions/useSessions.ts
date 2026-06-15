@@ -236,8 +236,8 @@ export function useSessions(token: string) {
   }, [])
 
   const enterClaude = useCallback(
-    (sid: string, renderer?: 'tui' | 'ui', bypassPermissions?: boolean) => {
-      socket.send({ type: 'enter_claude', sessionID: sid, renderer, bypassPermissions })
+    (sid: string, renderer?: 'tui' | 'ui', bypassPermissions?: boolean, templateId?: string) => {
+      socket.send({ type: 'enter_claude', sessionID: sid, renderer, bypassPermissions, templateId })
     },
     [socket],
   )
