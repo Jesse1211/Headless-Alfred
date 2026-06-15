@@ -331,13 +331,15 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
 		return
 	}
-	// claude --resume requires running from the original cwd. We don't
-	// track per-session cwds today (V0 sessions inherit /home/alfred).
-	// For v1 we always invoke from /home/alfred — also where claude
-	// wrote its first transcript, so --resume works. If the user
-	// changed cwd inside a TUI claude before switching to UI, this
-	// would mismatch; punted to v1.5.
-	cwd := "/home/alfred"
+	// claude --session-id keys its transcript on (cwd, uuid). We don't
+	// track per-session cwds today, so for v1 we always invoke from a
+	// single stable cwd — `/home/alfred` in the pod. On local dev
+	// machines (macOS) that path doesn't exist; fall back to the
+	// process's HOME, then "/" as a last resort. We must hand
+	// exec.Cmd a directory that ACTUALLY EXISTS, or Start() fails with
+	// a misleading "no such file or directory" pointing at the
+	// binary path.
+	cwd := claudeInvocationCWD()
 	ctx, cancel := context.WithCancel(context.Background())
 	pr, err := runner.Prompt(ctx, claude.PromptOptions{
 		SessionUUID:    convoID,
@@ -411,4 +413,28 @@ func handleToolDecision(msg InMsg, bridge *claude.Bridge, write func(OutMsg) err
 		Permission: msg.Decision,
 		Reason:     msg.Reason,
 	})
+}
+
+// claudeInvocationCWD returns the directory we run `claude -p` from.
+// Preference order:
+//  1. /home/alfred — the canonical pod path. Always exists in
+//     production; the on-disk transcript cwd-hash uses this path.
+//  2. $HOME — for local dev on macOS where /home/alfred doesn't
+//     exist. The first prompt creates a new transcript under this
+//     cwd, and the same UUID will keep resolving to it.
+//  3. "/" — last resort; should never happen on a sane system.
+//
+// We only check existence, not writability. If the chosen dir
+// turns out to be read-only, claude itself will surface that.
+func claudeInvocationCWD() string {
+	const podHome = "/home/alfred"
+	if st, err := os.Stat(podHome); err == nil && st.IsDir() {
+		return podHome
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if st, err := os.Stat(home); err == nil && st.IsDir() {
+			return home
+		}
+	}
+	return "/"
 }
