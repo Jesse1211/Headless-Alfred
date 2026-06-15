@@ -64,9 +64,11 @@ describe('reducePerSession', () => {
     expect(fetchCommandForSession).toEqual({ sessionID: 'A', cmdID: 'c1' })
   })
 
-  it('done is idempotent (StrictMode safe)', () => {
+  it('done is idempotent when running is already null', () => {
+    // After the original done has moved the cmd into messages and
+    // cleared running, a duplicate done frame should be a no-op.
     const seed = new Map<string, PerSessionState>([
-      ['A', { ...emptyPerSessionState(), messages: [{ id: 'c1', command: 'ls', output: '', startedAt: 't', finishedAt: 't2', exitCode: 0, status: 'completed', truncated: false }], running: { id: 'c1', command: 'ls', startedAt: 't', output: '', truncatedLossWarned: false } }],
+      ['A', { ...emptyPerSessionState(), messages: [{ id: 'c1', command: 'ls', output: '', startedAt: 't', finishedAt: 't2', exitCode: 0, status: 'completed', truncated: false }], running: null }],
     ])
     const { perSession } = reducePerSession(
       seed,
@@ -74,6 +76,74 @@ describe('reducePerSession', () => {
       b64decode,
     )
     expect(perSession).toBe(seed)
+  })
+
+  it('done clears stale phantom running with same cmdId (cleanup path)', () => {
+    // Scenario: a duplicate `started` for an already-finished cmdId
+    // resurrected a phantom running turn. The matching duplicate
+    // `done` MUST clear that running, otherwise the UI stays
+    // stuck on "live" forever. (This is the regression that
+    // caused the bug where a quick `echo` showed as live.)
+    const seed = new Map<string, PerSessionState>([
+      ['A', { ...emptyPerSessionState(),
+        messages: [{ id: 'c1', command: 'ls', output: 'real', startedAt: 't', finishedAt: 't2', exitCode: 0, status: 'completed', truncated: false }],
+        running: { id: 'c1', command: 'ls', startedAt: 't', output: '', truncatedLossWarned: false },
+      }],
+    ])
+    const { perSession } = reducePerSession(
+      seed,
+      { type: 'done', sessionID: 'A', cmdId: 'c1', exitCode: 0, finishedAt: 't2' },
+      b64decode,
+    )
+    expect(perSession.get('A')!.running).toBeNull()
+    // messages preserved, NOT duplicated.
+    expect(perSession.get('A')!.messages).toHaveLength(1)
+  })
+
+  it('started for already-completed cmdId is ignored (no phantom resurrection)', () => {
+    const seed = new Map<string, PerSessionState>([
+      ['A', { ...emptyPerSessionState(),
+        messages: [{ id: 'c1', command: 'ls', output: 'real', startedAt: 't', finishedAt: 't2', exitCode: 0, status: 'completed', truncated: false }],
+        running: null,
+      }],
+    ])
+    const r = reducePerSession(
+      seed,
+      { type: 'started', sessionID: 'A', cmdId: 'c1', command: 'ls', startedAt: 't' },
+      b64decode,
+    )
+    expect(r.perSession).toBe(seed)
+  })
+
+  it('full duplicate sequence (started, chunk, done) twice ends with one message and no running', () => {
+    let s = new Map<string, PerSessionState>()
+    const frames = [
+      { type: 'started', sessionID: 'A', cmdId: 'X', command: 'echo hi', startedAt: 't1' },
+      { type: 'chunk',   sessionID: 'A', cmdId: 'X', data: id('hi\n') },
+      { type: 'done',    sessionID: 'A', cmdId: 'X', exitCode: 0, finishedAt: 't2' },
+      { type: 'started', sessionID: 'A', cmdId: 'X', command: 'echo hi', startedAt: 't1' },
+      { type: 'chunk',   sessionID: 'A', cmdId: 'X', data: id('hi\n') },
+      { type: 'done',    sessionID: 'A', cmdId: 'X', exitCode: 0, finishedAt: 't2' },
+    ] as const
+    for (const f of frames) {
+      s = reducePerSession(s, f as any, b64decode).perSession
+    }
+    const ps = s.get('A')!
+    expect(ps.running).toBeNull()
+    expect(ps.messages).toHaveLength(1)
+    expect(ps.messages[0].output).toBe('hi\n')
+  })
+
+  it('duplicate chunk (same tail bytes) is not appended twice', () => {
+    const seed = new Map<string, PerSessionState>([
+      ['A', { ...emptyPerSessionState(), running: { id: 'c1', command: 'ls', startedAt: 't', output: 'abc', truncatedLossWarned: false } }],
+    ])
+    // First chunk extends output.
+    const s1 = reducePerSession(seed, { type: 'chunk', sessionID: 'A', cmdId: 'c1', data: id('de') } as any, b64decode).perSession
+    expect(s1.get('A')!.running!.output).toBe('abcde')
+    // Same chunk again — must NOT double-append.
+    const s2 = reducePerSession(s1, { type: 'chunk', sessionID: 'A', cmdId: 'c1', data: id('de') } as any, b64decode).perSession
+    expect(s2.get('A')!.running!.output).toBe('abcde')
   })
 })
 

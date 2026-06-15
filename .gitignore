@@ -11,6 +11,11 @@
 /web/node_modules/
 /web/dist/
 
+# Playwright artifacts (local-only)
+/web/.screenshots/
+/web/playwright-report/
+/web/test-results/
+
 # Editor
 .idea/
 .vscode/
