@@ -67,6 +67,14 @@ func NewRouter(d Deps) http.Handler {
 		r.Get("/api/sessions/{sid}/claude-history",
 			GetClaudeHistoryHandler(d.Manager, claudehistory.NewLocator()).ServeHTTP)
 
+		// Recap (file content).
+		r.Get("/api/recaps", ListRecapsHandler(d.Manager.DataDir()).ServeHTTP)
+		r.Get("/api/recaps/{date}", GetRecapHandler(d.Manager.DataDir()).ServeHTTP)
+
+		// Recap session (lifecycle).
+		r.Post("/api/recap-sessions", CreateRecapSessionHandler(d.Manager).ServeHTTP)
+		r.Delete("/api/recap-sessions/current", DeleteRecapSessionHandler(d.Manager).ServeHTTP)
+
 		// Git credentials (writes ~/.git-credentials so git clone/pull/push
 		// don't need the token on the command line and don't prompt).
 		r.Post("/api/git-credentials", GitCredentialsHandler().ServeHTTP)
