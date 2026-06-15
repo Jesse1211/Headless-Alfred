@@ -416,3 +416,87 @@ test.describe('Claude UI composer: slash-command hint', () => {
     await page.screenshot({ path: path.join(SHOTS, 'slash-command-hint.png'), fullPage: true })
   })
 })
+
+const DATA_DIR = process.env.ALFRED_DATA_DIR || '/tmp/alfred-dev'
+const SUMMARIES_DIR = path.join(DATA_DIR, 'summaries')
+
+test.describe('SummarySidebar: end-to-end summary refresh + hide/restore', () => {
+  // Make sure the summaries directory exists before writing.
+  test.beforeAll(() => {
+    fs.mkdirSync(SUMMARIES_DIR, { recursive: true })
+  })
+
+  test('summary file write → sidebar renders content; close → handle → reopen', async ({ page }) => {
+    test.setTimeout(60_000)
+
+    const tok = await login(page)
+    const sid = await freshSessionTracked(page, tok, 'pw-summary-sidebar')
+    await loginUI(page, tok)
+    await selectSession(page, sid)
+
+    // Make sure no stale summary file from a prior run lingers.
+    const summaryPath = path.join(SUMMARIES_DIR, `${sid}.md`)
+    try { fs.unlinkSync(summaryPath) } catch {}
+
+    // Clear any "sidebar hidden" preference so we start with it visible.
+    await page.evaluate(() => localStorage.removeItem('alfred_summary_sidebar_hidden'))
+    await page.reload()
+    await page.waitForLoadState('networkidle')
+
+    // Enter Claude UI mode — keep the "Maintain a task summary" checkbox
+    // ON (its default state). The bypass checkbox is also default ON.
+    await page.locator('.workspace__claude-btn').click()
+    await expect(page.locator('text=Start Claude')).toBeVisible()
+    await page.locator('label:has-text("Chat UI")').click()
+
+    // Sanity: the summary checkbox should be visible and checked.
+    const summaryCheckbox = page.locator('input[type="checkbox"]').nth(1)
+    await expect(summaryCheckbox).toBeChecked()
+
+    await page.locator('button:has-text("Start")').click()
+
+    // Sidebar mounts. Look for the title.
+    const sidebar = page.locator('.summary-sidebar')
+    await expect(sidebar).toBeVisible({ timeout: 10_000 })
+    await expect(sidebar.locator('.summary-sidebar__title')).toHaveText('Task Summary')
+
+    // Empty state placeholder shows up.
+    await expect(sidebar).toContainText('No summary yet')
+
+    // Write a synthetic summary file. The fsnotify watcher emits
+    // summary_updated, the reducer bumps the fetch counter, the sidebar
+    // re-fetches and renders the markdown.
+    const body = '## Goal\nShip the summary sidebar e2e\n\n## Status\n- [x] Working on it\n'
+    fs.writeFileSync(summaryPath, body, 'utf8')
+
+    // Assert the rendered markdown shows up (debounce is 200ms; give
+    // it generous slack for the file watcher → WS → fetch round trip).
+    await expect(sidebar.locator('.summary-sidebar__markdown h2:has-text("Goal")'))
+      .toBeVisible({ timeout: 10_000 })
+    await expect(sidebar).toContainText('Ship the summary sidebar e2e')
+    await page.screenshot({ path: path.join(SHOTS, 'summary-sidebar-content.png'), fullPage: true })
+
+    // Hide: click ×.
+    await sidebar.locator('.summary-sidebar__close').click()
+    await expect(sidebar).toHaveCount(0)
+    const handle = page.locator('.workspace__sidebar-handle')
+    await expect(handle).toBeVisible()
+
+    // localStorage flag is set to '1'.
+    const flag = await page.evaluate(() => localStorage.getItem('alfred_summary_sidebar_hidden'))
+    expect(flag).toBe('1')
+
+    // Reopen: click the handle.
+    await handle.click()
+    await expect(page.locator('.summary-sidebar')).toBeVisible()
+    // Content is still there (no flicker / no re-fetch loading state expected).
+    await expect(page.locator('.summary-sidebar')).toContainText('Ship the summary sidebar e2e')
+
+    // localStorage flag goes back to '0'.
+    const flag2 = await page.evaluate(() => localStorage.getItem('alfred_summary_sidebar_hidden'))
+    expect(flag2).toBe('0')
+
+    // Cleanup the synthetic summary file.
+    try { fs.unlinkSync(summaryPath) } catch {}
+  })
+})
