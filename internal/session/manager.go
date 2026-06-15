@@ -405,6 +405,27 @@ func (m *Manager) SetRenderer(sessionID string, r store.ClaudeRenderer) error {
 	})
 }
 
+// GetTemplateID returns the per-session prompt template ID
+// (e.g. "summary-todo"), or "" if no template is active. Empty
+// for unknown sessions.
+func (m *Manager) GetTemplateID(sessionID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if meta, ok := m.metas[sessionID]; ok {
+		return meta.TemplateID
+	}
+	return ""
+}
+
+// SetTemplateID atomically updates the in-memory template id and
+// persists. Empty string clears it (no template; no injection).
+// Returns ErrSessionNotFound if sessionID is unknown.
+func (m *Manager) SetTemplateID(sessionID string, id string) error {
+	return m.mutateAndPersist(sessionID, func(meta *store.SessionMeta) {
+		meta.TemplateID = id
+	})
+}
+
 // GetClaudeBypass reports whether claude_prompt invocations on this
 // session should pass --dangerously-skip-permissions. Defaults to
 // false for unknown sessions.
@@ -595,6 +616,12 @@ func (m *Manager) Reconcile() error {
 		// it on the next Start Claude dialog.
 		if err := m.SetClaudeBypass(meta.ID, false); err != nil && !errors.Is(err, ErrSessionNotFound) {
 			m.cfg.Logger.Error("reset claude bypass after recreate", "session", meta.ID, "err", err)
+		}
+		// Same for the template id — it's an entry-time choice and
+		// the per-session summary file (if any) on disk is what
+		// remembers across restarts, not the template flag.
+		if err := m.SetTemplateID(meta.ID, ""); err != nil && !errors.Is(err, ErrSessionNotFound) {
+			m.cfg.Logger.Error("reset template id after recreate", "session", meta.ID, "err", err)
 		}
 	}
 
