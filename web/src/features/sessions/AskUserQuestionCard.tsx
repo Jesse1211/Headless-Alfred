@@ -2,6 +2,11 @@ import { useState } from 'react'
 import type { ClaudeQuestionRequest } from './types'
 import './AskUserQuestionCard.css'
 
+// Sentinel label used in `selected` for the per-question "Other"
+// free-text input. Anything else in `selected` is a real option
+// label from the tool input.
+const OTHER = '__other__'
+
 interface Props {
   request: ClaudeQuestionRequest
   onSubmit: (toolUseId: string, formattedAnswer: string) => void
@@ -37,7 +42,7 @@ export function AskUserQuestionCard({ request, onSubmit, onCancel }: Props) {
     for (let i = 0; i < request.questions.length; i++) {
       const q = request.questions[i]
       const picks = (selected[i] ?? []).map((label) => {
-        if (label === '__other__') {
+        if (label === OTHER) {
           const txt = (other[i] ?? '').trim()
           return txt ? `Other: ${txt}` : null
         }
@@ -59,7 +64,7 @@ export function AskUserQuestionCard({ request, onSubmit, onCancel }: Props) {
     const picks = selected[i] ?? []
     if (picks.length === 0) return false
     // If "Other" is picked, the free-text field must have content.
-    if (picks.includes('__other__') && !(other[i] ?? '').trim()) return false
+    if (picks.includes(OTHER) && !(other[i] ?? '').trim()) return false
     return true
   })
 
@@ -91,16 +96,16 @@ export function AskUserQuestionCard({ request, onSubmit, onCancel }: Props) {
                   </div>
                 </label>
               ))}
-              <label className={`ask-question__option ${picks.includes('__other__') ? 'is-selected' : ''}`}>
+              <label className={`ask-question__option ${picks.includes(OTHER) ? 'is-selected' : ''}`}>
                 <input
                   type={q.multiSelect ? 'checkbox' : 'radio'}
                   name={name}
-                  checked={picks.includes('__other__')}
-                  onChange={() => toggle(qIdx, '__other__', q.multiSelect)}
+                  checked={picks.includes(OTHER)}
+                  onChange={() => toggle(qIdx, OTHER, q.multiSelect)}
                 />
                 <div className="ask-question__other">
                   <div className="ask-question__option-label">Other</div>
-                  {picks.includes('__other__') && (
+                  {picks.includes(OTHER) && (
                     <input
                       type="text"
                       className="ask-question__other-input"
