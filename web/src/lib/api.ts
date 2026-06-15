@@ -1,6 +1,8 @@
 // Shared fetch wrapper. Reads token from localStorage; on 401 fires a hook
 // the auth feature can register to flush local state and route back to login.
 
+import type { ClaudeTurn } from '../features/sessions/types'
+
 let on401: (() => void) | null = null
 
 export function setOn401(fn: () => void): void {
@@ -181,4 +183,23 @@ export async function getSummary(sessionID: string): Promise<string> {
 export async function getTemplate(id: string): Promise<string> {
   const res = await request(`/api/templates/${encodeURIComponent(id)}`)
   return res.text()
+}
+
+// getClaudeHistory fetches the reconstructed Claude UI chat history
+// for a session from the backend's jsonl-restore endpoint. Returns
+// [] when the session has no jsonl yet (user hasn't entered Claude,
+// or the file has been moved/deleted) — empty is a valid state, not
+// an error.
+export async function getClaudeHistory(
+  sessionID: string,
+  opts: { limit?: number; before?: string } = {},
+): Promise<ClaudeTurn[]> {
+  const qs = new URLSearchParams()
+  if (opts.limit != null) qs.set('limit', String(opts.limit))
+  if (opts.before) qs.set('before', opts.before)
+  const url =
+    `/api/sessions/${encodeURIComponent(sessionID)}/claude-history` +
+    (qs.size ? '?' + qs.toString() : '')
+  const res = await request(url)
+  return res.json()
 }
