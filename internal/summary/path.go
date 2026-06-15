@@ -8,5 +8,11 @@ import "path/filepath"
 // Path returns the on-disk summary path for the session.
 // <dataDir>/summaries/<sessionID>.md
 func Path(dataDir, sessionID string) string {
-	return filepath.Join(dataDir, "summaries", sessionID+".md")
+	return filepath.Join(Dir(dataDir), sessionID+".md")
+}
+
+// Dir returns the directory holding all summary files. Useful for
+// fsnotify watchers and for tests that want to seed files.
+func Dir(dataDir string) string {
+	return filepath.Join(dataDir, "summaries")
 }
