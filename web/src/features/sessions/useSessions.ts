@@ -8,6 +8,9 @@ import {
   renameSession as apiRenameSession,
   deleteSession as apiDeleteSession,
   stopCommand as apiStopCommand,
+  createRecapSession as apiCreateRecapSession,
+  deleteRecapSession as apiDeleteRecapSession,
+  getSession as apiGetSession,
 } from '../../lib/api'
 import {
   PerSessionState, CompletedMsg, RunningCmd,
@@ -40,6 +43,7 @@ export function useSessions(token: string) {
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(null)
   const [perSession, setPerSession] = useState<Map<string, PerSessionState>>(new Map())
   const [lastError, setLastError] = useState<{ code: string; message: string } | null>(null)
+  const [recapFetchCounter, setRecapFetchCounter] = useState(0)
 
   const tokenRef = useRef(token)
   tokenRef.current = token
@@ -64,17 +68,43 @@ export function useSessions(token: string) {
     [],
   )
 
+  // setSessionMeta replaces or inserts a Session meta in the local list.
+  // Used after createOrEnterRecap when the new session isn't in the
+  // chat-filtered list, and after getSession() rehydration on selection.
+  const setSessionMeta = useCallback((s: Session) => {
+    setSessions((prev) => {
+      const idx = prev.findIndex((x) => x.id === s.id)
+      if (idx >= 0) {
+        const next = [...prev]
+        next[idx] = s
+        return next
+      }
+      return [...prev, s]
+    })
+  }, [])
+
   // Initial REST fetch.
   useEffect(() => {
     let alive = true
     listSessions()
-      .then((list) => {
+      .then(async (list) => {
         if (!alive) return
         setSessions(list)
-        // Rehydrate selection.
         const stored = localStorage.getItem(STORAGE_KEY)
-        let pick = list.find((s) => s.id === stored)
+        let pick: Session | undefined = list.find((s) => s.id === stored)
+        if (!pick && stored) {
+          // Maybe the selection is a recap session (not in chat list).
+          // Fetch it explicitly; tolerate 404 (session was deleted).
+          try {
+            const single = await apiGetSession(stored)
+            setSessionMeta(single)
+            pick = single
+          } catch {
+            // 404 or other — fall through to default selection
+          }
+        }
         if (!pick) pick = list[0]
+        if (!alive) return
         setSelectedSessionID(pick?.id ?? null)
         if (pick) localStorage.setItem(STORAGE_KEY, pick.id)
       })
@@ -116,6 +146,10 @@ export function useSessions(token: string) {
           }
           if (m.type === 'session_renamed') {
             setSessions((prev) => prev.map((s) => (s.id === m.sessionID ? { ...s, name: m.name } : s)))
+            return
+          }
+          if (m.type === 'recap_updated') {
+            setRecapFetchCounter((c) => c + 1)
             return
           }
           if (m.type === 'error') {
@@ -327,12 +361,49 @@ export function useSessions(token: string) {
 
   const clearError = useCallback(() => setLastError(null), [])
 
+  const createOrEnterRecap = useCallback(async () => {
+    try {
+      const s = await apiCreateRecapSession()
+      setSessionMeta(s)
+      selectSession(s.id)
+      // No StartClaudeDialog: backend has already entered Claude UI mode
+      // with bypassPermissions=true. We send an explicit enter_claude here
+      // to ensure the perSession state knows it's in claude mode immediately,
+      // even before the WS 'idle' frame arrives.
+      socket.send({
+        type: 'enter_claude',
+        sessionID: s.id,
+        renderer: 'ui',
+        bypassPermissions: true,
+        templateId: '', // recap doesn't use the summary template
+      })
+    } catch (e: any) {
+      setLastError({ code: e?.code ?? 'recap_create_failed', message: e?.message ?? 'failed' })
+    }
+  }, [socket, selectSession, setSessionMeta])
+
+  // Track the previously selected session's kind so we can detect a
+  // switch-away from a recap session and trigger backend cleanup.
+  const prevRecapIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    const sid = selectedSessionID
+    const meta = sid ? sessions.find((x) => x.id === sid) : undefined
+    const isRecap = meta?.kind === 'recap'
+    if (prevRecapIdRef.current && prevRecapIdRef.current !== sid) {
+      apiDeleteRecapSession().catch(() => {
+        // Idempotent; orphan-cleanup on next createOrEnter recovers if this fails.
+      })
+    }
+    prevRecapIdRef.current = isRecap ? sid : null
+  }, [selectedSessionID, sessions])
+
   return {
     connState, sessions, selectedSessionID, selectSession, perSession, setPerSession,
     submit, stop, createSession, renameSession, closeSession,
     enterClaude, exitClaude, sendStdin, registerPtyHandler,
     claudePrompt, toolDecision, interruptClaude, submitQuestionAnswer,
     lastError, clearError,
+    recapFetchCounter, createOrEnterRecap, setSessionMeta,
   }
 }
 

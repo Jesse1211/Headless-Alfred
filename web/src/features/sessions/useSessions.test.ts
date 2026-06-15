@@ -1,6 +1,7 @@
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { useSessions } from './useSessions'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import * as api from '../../lib/api'
 
 // Mock the lib/api module so we don't make real HTTP calls.
 vi.mock('../../lib/api', () => {
@@ -17,6 +18,11 @@ vi.mock('../../lib/api', () => {
     renameSession: vi.fn(() => Promise.resolve()),
     deleteSession: vi.fn(() => Promise.resolve()),
     stopCommand: vi.fn(),
+    createRecapSession: vi.fn(() =>
+      Promise.resolve({ id: 'sess-RECAP', name: 'Recap', kind: 'recap', created_at: 'now' }),
+    ),
+    deleteRecapSession: vi.fn(() => Promise.resolve()),
+    getSession: vi.fn(() => Promise.reject(new Error('not found'))),
   }
 })
 
@@ -170,5 +176,47 @@ describe('useSessions — WS events', () => {
     await waitFor(() => expect(result.current.sessions.length).toBe(2))
     act(() => { result.current.enterClaude('sess-A', 'ui', true) })
     expect(result.current.perSession.get('sess-A')?.templateId).toBeUndefined()
+  })
+})
+
+describe('useSessions — recap', () => {
+  it('recap_updated frame bumps recapFetchCounter', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    const before = result.current.recapFetchCounter
+    act(() => _onMessage!({ type: 'recap_updated', date: '2026-06-15' }))
+    expect(result.current.recapFetchCounter).toBe(before + 1)
+  })
+
+  it('createOrEnterRecap selects the returned session and seeds meta', async () => {
+    const createSpy = vi.spyOn(api, 'createRecapSession')
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    await act(async () => {
+      await result.current.createOrEnterRecap()
+    })
+    expect(createSpy).toHaveBeenCalled()
+    expect(result.current.selectedSessionID).toBe('sess-RECAP')
+    const meta = result.current.sessions.find((s) => s.id === 'sess-RECAP')
+    expect(meta?.kind).toBe('recap')
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'enter_claude', sessionID: 'sess-RECAP', bypassPermissions: true }),
+    )
+  })
+
+  it('switch-away from recap session fires deleteRecapSession', async () => {
+    const deleteSpy = vi.spyOn(api, 'deleteRecapSession')
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    // Enter recap session
+    await act(async () => {
+      await result.current.createOrEnterRecap()
+    })
+    expect(result.current.selectedSessionID).toBe('sess-RECAP')
+    deleteSpy.mockClear()
+    // Switch away to a chat session
+    act(() => result.current.selectSession('sess-A'))
+    // The auto-delete effect fires after the selectedSessionID change
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalled())
   })
 })

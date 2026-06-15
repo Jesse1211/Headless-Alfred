@@ -173,6 +173,12 @@ export function reducePerSession(
       })
       return { perSession: next }
     }
+    case 'recap_updated': {
+      // Recap files are global (not per-session); the counter that
+      // triggers refetch lives on useSessions top-level state, NOT
+      // perSession. Reducer is a no-op here.
+      return { perSession: prev }
+    }
     default:
       return { perSession: prev }
   }
