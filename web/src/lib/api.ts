@@ -77,6 +77,8 @@ export interface CommandFull extends CommandSummary {
 export interface Session {
   id: string
   name: string
+  // 'chat' (default; empty/missing on old records) or 'recap'.
+  kind?: 'chat' | 'recap'
   created_at: string
 }
 
@@ -202,4 +204,44 @@ export async function getClaudeHistory(
     (qs.size ? '?' + qs.toString() : '')
   const res = await request(url)
   return res.json()
+}
+
+// getSession fetches one session's metadata by id. Used to look up
+// the currently selected recap session, which doesn't appear in the
+// chat-only sessions list.
+export async function getSession(id: string): Promise<Session> {
+  const res = await request(`/api/sessions/${encodeURIComponent(id)}`)
+  return res.json()
+}
+
+// createRecapSession is POST /api/recap-sessions — find-or-create
+// the singleton recap session. Returns the session metadata
+// (including the new `kind: 'recap'` field).
+export async function createRecapSession(): Promise<Session> {
+  const res = await request('/api/recap-sessions', { method: 'POST' })
+  return res.json()
+}
+
+// deleteRecapSession is DELETE /api/recap-sessions/current —
+// idempotent kill. 204 even if no recap session exists.
+export async function deleteRecapSession(): Promise<void> {
+  await request('/api/recap-sessions/current', { method: 'DELETE' })
+}
+
+export interface RecapEntry {
+  date: string
+  isToday: boolean
+}
+
+// listRecaps returns the dates that have recap files, newest first.
+export async function listRecaps(): Promise<RecapEntry[]> {
+  const res = await request('/api/recaps')
+  return res.json()
+}
+
+// getRecap returns the markdown body of one date's recap.
+// Throws ApiError(404, 'not_found', ...) when no such recap exists.
+export async function getRecap(date: string): Promise<string> {
+  const res = await request(`/api/recaps/${encodeURIComponent(date)}`)
+  return res.text()
 }
