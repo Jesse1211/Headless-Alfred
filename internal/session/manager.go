@@ -556,6 +556,18 @@ func (m *Manager) GetClaudeSessionID(sessionID string) string {
 	return m.getClaudeConvoID(sessionID)
 }
 
+// FindByID returns the SessionMeta for sessionID or (zero, false)
+// if no such session exists. Cheap, lock-protected map lookup.
+// Returned regardless of Kind — used by the GET /api/sessions/{id}
+// endpoint to surface recap sessions that the chat-filtered list
+// hides.
+func (m *Manager) FindByID(sessionID string) (store.SessionMeta, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	meta, ok := m.metas[sessionID]
+	return meta, ok
+}
+
 // getClaudeConvoID returns the persisted ClaudeSessionID for sessionID,
 // acquiring m.mu internally. Empty if the session is unknown.
 func (m *Manager) getClaudeConvoID(sessionID string) string {

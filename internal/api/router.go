@@ -47,6 +47,7 @@ func NewRouter(d Deps) http.Handler {
 
 		// Session CRUD.
 		r.Get("/api/sessions", ListSessionsHandler(d.Manager).ServeHTTP)
+		r.Get("/api/sessions/{id}", GetSessionHandler(d.Manager).ServeHTTP)
 		r.Post("/api/sessions", CreateSessionHandler(d.Manager).ServeHTTP)
 		r.Patch("/api/sessions/{id}", RenameSessionHandler(d.Manager).ServeHTTP)
 		r.Delete("/api/sessions/{id}", DeleteSessionHandler(d.Manager).ServeHTTP)

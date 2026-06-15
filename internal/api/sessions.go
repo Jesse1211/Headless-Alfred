@@ -23,6 +23,23 @@ func ListSessionsHandler(m *session.Manager) http.Handler {
 	})
 }
 
+// GetSessionHandler: GET /api/sessions/{id}
+// Returns one SessionMeta by id, regardless of Kind. Used by the
+// frontend to learn metadata for the currently selected recap
+// session, which the chat-filtered list endpoint hides.
+func GetSessionHandler(m *session.Manager) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		meta, ok := m.FindByID(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, "not_found", "no such session")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(meta)
+	})
+}
+
 // CreateSessionHandler: POST /api/sessions
 // Body: { "name"?: string } — missing/empty triggers auto-naming.
 // Responses:
