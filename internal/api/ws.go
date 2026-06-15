@@ -18,6 +18,7 @@ import (
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell"
 	"github.com/jesseliu/headless-alfred/internal/store"
+	"github.com/jesseliu/headless-alfred/internal/summary"
 )
 
 const (
@@ -174,6 +175,24 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 		}
 	}()
 
+	// Per-WS fsnotify watcher on <DataDir>/summaries/. On a write
+	// event, push a summary_updated frame for the matching session.
+	// Failure to start is non-fatal: the sidebar stays stale until
+	// the user navigates away and back, but the rest of the app
+	// keeps working.
+	summaryUpdates := make(chan string, 4)
+	sw, swErr := summary.StartWatcher(m.DataDir(), func(sid string) {
+		select {
+		case summaryUpdates <- sid:
+		case <-stop:
+		}
+	})
+	if swErr != nil {
+		slog.Warn("ws: summary watcher disabled", "err", swErr)
+	} else {
+		defer sw.Stop()
+	}
+
 	// Subscribe each existing session to the bridge's ask dispatcher.
 	// Forwards to the per-WS asks channel.
 	if disp != nil {
@@ -268,6 +287,16 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 				EventKind: string(fwd.kind),
 				Payload:   fwd.payload,
 			})
+		case sid, ok := <-summaryUpdates:
+			if !ok {
+				continue
+			}
+			// Skip if the session was deleted between fsnotify
+			// firing and us processing.
+			if _, err := m.Get(sid); err != nil {
+				continue
+			}
+			_ = write(OutMsg{Type: TypeSummaryUpdated, SessionID: sid})
 		case sid := <-closedCh:
 			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
