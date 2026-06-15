@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { getSummary, getTemplate } from '../../lib/api'
+import { MarkdownView } from './MarkdownView'
 import './SummarySidebar.css'
 
 interface Props {
@@ -143,19 +142,7 @@ function SummaryView({ text, loading, error }: { text: string; loading: boolean;
       </div>
     )
   }
-  return (
-    <div className="summary-sidebar__markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          code(props) {
-            const { className, children, ...rest } = props as React.ComponentPropsWithoutRef<'code'>
-            return <code className={className} {...rest}>{children}</code>
-          },
-        }}
-      >{text}</ReactMarkdown>
-    </div>
-  )
+  return <MarkdownView text={text} />
 }
 
 function TemplateView({ text, loading, error }: { text: string | null; loading: boolean; error: string | null }) {

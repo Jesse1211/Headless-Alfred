@@ -1,0 +1,62 @@
+/* web/src/features/sessions/MarkdownView.css */
+.markdown-view {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg, #eaeaea);
+}
+
+.markdown-view h1,
+.markdown-view h2,
+.markdown-view h3 {
+  margin: 16px 0 8px 0;
+  font-weight: 600;
+}
+
+.markdown-view h1 { font-size: 16px; }
+.markdown-view h2 { font-size: 14px; }
+.markdown-view h3 { font-size: 13px; }
+
+.markdown-view h1:first-child,
+.markdown-view h2:first-child,
+.markdown-view h3:first-child {
+  margin-top: 0;
+}
+
+.markdown-view p,
+.markdown-view ul,
+.markdown-view ol {
+  margin: 8px 0;
+}
+
+.markdown-view ul,
+.markdown-view ol {
+  padding-left: 20px;
+}
+
+.markdown-view li {
+  margin: 4px 0;
+}
+
+.markdown-view code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.markdown-view a {
+  color: var(--accent, #7aa2f7);
+  text-decoration: none;
+}
+
+.markdown-view a:hover {
+  text-decoration: underline;
+}
+
+.markdown-view blockquote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  border-left: 3px solid rgba(255, 255, 255, 0.15);
+  color: var(--fg-muted, #9aa3b2);
+}
