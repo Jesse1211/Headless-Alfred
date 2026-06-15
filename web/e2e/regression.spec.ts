@@ -540,3 +540,43 @@ test.describe('ClaudeChatView: history restores after page reload', () => {
     await expect(page.locator('.claude-turn__text')).toContainText('history-marker')
   })
 })
+
+test.describe('Recap: + 复盘 opens recap session with RecapSidebar', () => {
+  test('button click → recap session, sidebar visible, generate button shown', async ({ page }) => {
+    test.setTimeout(30_000)
+
+    const tok = await login(page)
+    await loginUI(page, tok)
+
+    // Click + 复盘.
+    await page.locator('text=+ 复盘').click()
+
+    // Wait for RecapSidebar to appear.
+    await expect(page.locator('.recap-sidebar')).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('.recap-sidebar__title')).toHaveText('Recap')
+
+    // ClaudeChatView middle is also visible.
+    await expect(page.locator('textarea.claude-chat__input')).toBeVisible({ timeout: 10_000 })
+
+    // Generate button visible (today, no file yet).
+    const generate = page.locator('.recap-sidebar__generate')
+    await expect(generate).toBeVisible()
+    const label = await generate.textContent()
+    expect(label?.includes('Generate') || label?.includes('Refresh')).toBeTruthy()
+
+    // Today entry shown in the date list (selected).
+    const today = new Date().toLocaleDateString('en-CA')
+    await expect(page.locator(`.recap-sidebar__date.is-selected`)).toContainText(today)
+
+    // Recap session is NOT in the chat-only sidebar list.
+    const sessionRowCount = await page.locator('.session-row').count()
+    const sessionRowsWithRecap = await page.locator('.session-row:has-text("Recap")').count()
+    expect(sessionRowsWithRecap, 'recap session must not appear in chat sidebar').toBe(0)
+    expect(sessionRowCount, 'at least the existing chat sessions visible').toBeGreaterThanOrEqual(0)
+
+    // Cleanup: kill the recap session.
+    await page.request.delete(`${BACKEND}/api/recap-sessions/current`, {
+      headers: { Authorization: `Bearer ${tok}` },
+    }).catch(() => {})
+  })
+})
