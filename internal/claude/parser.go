@@ -3,7 +3,6 @@ package claude
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"io"
 	"strings"
 )
@@ -341,17 +340,11 @@ type userContent struct {
 	IsError   bool            `json:"is_error"`
 }
 
-// silence unused import linter; keep fmt available if we need
-// debug-printing during development.
-var _ = fmt.Sprintf
-
 // parseAssistantToolInputs extracts tool_use blocks (with the fully
 // assembled input JSON) from an `assistant` snapshot line and emits
 // one ToolUseEnd event per tool. The CLI sends this snapshot AFTER
-// the matching content_block_start (ToolUseStart) + input_json_deltas
-// have streamed past, so by the time the frontend sees ToolUseEnd
-// the tool card is already on screen and only needs its input
-// field populated.
+// the matching input_json_deltas have streamed past, so this is
+// where the full input first appears as one parseable JSON value.
 func parseAssistantToolInputs(line []byte) []Event {
 	var wrap struct {
 		Message struct {
