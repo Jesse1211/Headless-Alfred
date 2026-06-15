@@ -80,18 +80,43 @@ export class ShellSocket {
 
   start(): void {
     this.stopped = false
+    // If start() is called while a previous ws is still hanging
+    // around (React StrictMode dev double-mount races: stop() set
+    // stopped=true and called ws.close(), but the browser hasn't
+    // actually torn down the underlying socket yet), abandon the
+    // old socket BEFORE creating a new one. Otherwise the old
+    // socket can keep firing onMessage from in-flight frames AND
+    // the server sees two concurrent WS clients for several seconds
+    // — which doubles pty_data, doubles tool approvals, and lets
+    // user keystrokes echo on the stale xterm too.
+    this.abandonCurrent()
     this.connect()
   }
 
   stop(): void {
     this.stopped = true
+    this.abandonCurrent()
+    this.opts.onState('closed')
+  }
+
+  // abandonCurrent detaches all listeners from this.ws so any
+  // late-firing events (a final pty_data, the close handler that
+  // would otherwise schedule a reconnect, etc.) don't leak into
+  // the parent's handlers. Then closes the socket. Safe to call
+  // when this.ws is null.
+  private abandonCurrent(): void {
     if (this.pingTimer != null) {
       window.clearInterval(this.pingTimer)
       this.pingTimer = null
     }
-    this.ws?.close()
+    const ws = this.ws
+    if (!ws) return
+    ws.onopen = null
+    ws.onmessage = null
+    ws.onclose = null
+    ws.onerror = null
+    try { ws.close() } catch { /* already closing */ }
     this.ws = null
-    this.opts.onState('closed')
   }
 
   send(m: ClientMsg): void {
@@ -109,37 +134,46 @@ export class ShellSocket {
     const ws = new WebSocket(url)
     this.ws = ws
 
-    ws.addEventListener('open', () => {
+    // Use direct on* assignment instead of addEventListener so that
+    // abandonCurrent() can wipe them with a single assignment.
+    ws.onopen = () => {
+      // Guard: if this socket was abandoned while in CONNECTING state,
+      // ignore its eventual open. (Browsers fire onopen before they
+      // honour an early close() in some implementations.)
+      if (this.ws !== ws) return
       this.retry = 0
       this.opts.onState('open')
       this.pingTimer = window.setInterval(() => {
         this.send({ type: 'ping' })
       }, 25_000) as unknown as number
-    })
+    }
 
-    ws.addEventListener('message', (ev) => {
+    ws.onmessage = (ev) => {
+      if (this.ws !== ws) return
       try {
         const m = JSON.parse(ev.data as string) as ServerMsg
         this.opts.onMessage(m)
       } catch {
         // ignore malformed payloads — server protocol bug, not our problem
       }
-    })
+    }
 
-    ws.addEventListener('close', () => {
+    ws.onclose = () => {
+      if (this.ws !== ws) return // abandoned
       if (this.pingTimer != null) {
         window.clearInterval(this.pingTimer)
         this.pingTimer = null
       }
+      this.ws = null
       if (this.stopped) return
       const delay = DELAYS[Math.min(this.retry, DELAYS.length - 1)]
       this.retry += 1
       this.opts.onState('reconnecting')
       window.setTimeout(() => this.connect(), delay)
-    })
+    }
 
-    ws.addEventListener('error', () => {
+    ws.onerror = () => {
       // Close handler will follow with the actual reconnect.
-    })
+    }
   }
 }

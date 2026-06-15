@@ -15,6 +15,7 @@
 /web/.screenshots/
 /web/playwright-report/
 /web/test-results/
+/test-results/
 
 # Editor
 .idea/

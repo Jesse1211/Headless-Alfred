@@ -71,8 +71,18 @@ export function ClaudeTerminal({ sessionID, registerPtyHandler, sendStdin }: Pro
       window.removeEventListener('resize', onResize)
       unregister()
       dataDisposable.dispose()
-      term.dispose()
+      // xterm.js schedules internal viewport refreshes via rAF /
+      // setTimeout. Calling term.dispose() synchronously while one
+      // of those is queued causes "Cannot read properties of
+      // undefined (reading 'dimensions')" the next tick. Defer
+      // dispose so the queued refresh runs against a still-live
+      // renderer, then nuke. The setTimeout(0) is enough — xterm
+      // schedules at most one frame ahead.
+      const t = term
       termRef.current = null
+      setTimeout(() => {
+        try { t.dispose() } catch { /* already gone */ }
+      }, 0)
     }
   }, [sessionID, registerPtyHandler, sendStdin])
 

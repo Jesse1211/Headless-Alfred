@@ -215,3 +215,41 @@ test.describe('regression: Stop button must terminate a running command', () => 
     expect(total).toBeGreaterThanOrEqual(1)
   })
 })
+
+test.describe('regression: Claude TUI mode renderer lifecycle', () => {
+  // Bug B: switching to another session and back used to crash xterm
+  //   ("Cannot read properties of undefined (reading 'dimensions')"),
+  //   wiping the main area to blank. The dispose+re-mount race against
+  //   xterm.js' queued viewport refresh now defers dispose by one tick.
+  test('switching session away and back keeps the workspace rendered', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (e) => pageErrors.push(e.message))
+
+    const tok = await login(page)
+    const sidTUI = await freshSessionTracked(page, tok, 'pw-tui-switch-a')
+    const sidShell = await freshSessionTracked(page, tok, 'pw-tui-switch-b')
+
+    await loginUI(page, tok)
+    await selectSession(page, sidTUI)
+
+    // Enter Claude TUI.
+    await page.locator('.workspace__claude-btn').click()
+    await expect(page.locator('text=Start Claude')).toBeVisible()
+    await page.locator('label:has-text("Terminal")').click()
+    await page.locator('button:has-text("Start")').click()
+    await page.waitForTimeout(2000)
+
+    // Switch to the shell session…
+    await page.locator(`text=pw-tui-switch-b`).click()
+    await page.waitForTimeout(500)
+    // …and back.
+    await page.locator(`text=pw-tui-switch-a`).click()
+    await page.waitForTimeout(800)
+
+    // The Sign out button is a stable always-on element in the header;
+    // if React's render aborted halfway it would not be present.
+    await expect(page.locator('button:has-text("Sign out")')).toBeVisible()
+    expect(pageErrors, 'no uncaught render errors during switch').toEqual([])
+  })
+
+})
