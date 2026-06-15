@@ -65,6 +65,13 @@ type SessionMeta struct {
 	// Start Claude dialog. Reset along with Renderer on Pod restart
 	// because it's an entry-time choice the user has to re-make.
 	ClaudeBypassPermissions bool `json:"claude_bypass_permissions,omitempty"`
+
+	// TemplateID names the active prompt template (key into
+	// internal/template.Builtins), e.g. "summary-todo". Empty = no
+	// template active; handleClaudePrompt skips injection. Set on
+	// enter_claude based on the dialog checkbox; cleared by
+	// Manager.Reconcile on Pod restart along with Renderer.
+	TemplateID string `json:"template_id,omitempty"`
 }
 
 // SessionsFile is the persisted list of sessions. The file lives at
