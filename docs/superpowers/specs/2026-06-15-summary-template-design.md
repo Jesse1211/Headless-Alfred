@@ -63,8 +63,14 @@ showing the read-only template content the user opted in to. Closing
 returns to summary view.
 
 A close button (×) at the top hides the sidebar; a thin re-open tab on
-the right edge re-shows it. Hidden state persists in `localStorage`
-(not per-session).
+the right edge re-shows it. Hidden state is **global**, stored in
+`localStorage['alfred_summary_sidebar_hidden']`. Once the user clicks
+× the sidebar stays hidden across session switches, page reloads,
+and even sessions that don't have a template enabled — the user has
+to click the re-open tab to bring it back. Rationale: switching
+sessions shouldn't undo a deliberate "hide" gesture. The re-open tab
+is always present in Chat UI mode regardless of whether the
+currently-selected session has a template.
 
 ### Updating
 
@@ -169,8 +175,9 @@ Steps:
 
 1. Use Read on <summary_path> first if it exists; preserve
    still-relevant content, remove obsolete items.
-2. Rewrite the whole file in this shape (keep it short — bullets,
-   no narrative):
+2. Rewrite the whole file in this shape (keep the WHOLE file under
+   1500 characters — short bullets, no narrative paragraphs, no
+   verbatim code blocks):
 
 ## Goal
 <one line: what we're trying to achieve>
@@ -241,32 +248,65 @@ compatibility with old sessions that don't have one.
 
 Today: dispatcher routes every PreToolUse approval to the WS
 subscriber. We need a fourth fallback before that: if the tool is
-`Write` and the input's `file_path` is exactly the summary path for
-the matched Alfred session → auto-allow without bothering the user.
+`Read` or `Write` AND the input's path is **exactly** the summary
+path for the matched Alfred session AND (for Write) the content
+size is reasonable → auto-allow without bothering the user.
 
 ```go
 // inside OnAsk, after lookup() succeeds:
-if isSummaryWrite(req, alfredSID, m.DataDir()) {
+if isSummaryIO(req, alfredSID, m.DataDir()) {
     autoAllow(req.ToolUseID)
     return
 }
 // ... existing channel push path
 ```
 
-`isSummaryWrite`:
+`isSummaryIO`:
 
 ```go
-func isSummaryWrite(req PendingRequest, alfredSID, dataDir string) bool {
-    if req.ToolName != "Write" { return false }
-    var in struct { FilePath string `json:"file_path"` }
-    if json.Unmarshal(req.ToolInput, &in) != nil { return false }
-    return in.FilePath == summary.Path(dataDir, alfredSID)
+const maxSummaryWriteBytes = 8 * 1024 // 8 KB; the template asks for
+                                       // "short bullets, no narrative"
+                                       // — anything larger is wrong.
+
+func isSummaryIO(req PendingRequest, alfredSID, dataDir string) bool {
+    wantPath := summary.Path(dataDir, alfredSID)
+    switch req.ToolName {
+    case "Read":
+        var in struct { FilePath string `json:"file_path"` }
+        if json.Unmarshal(req.ToolInput, &in) != nil { return false }
+        return in.FilePath == wantPath
+    case "Write":
+        var in struct {
+            FilePath string `json:"file_path"`
+            Content  string `json:"content"`
+        }
+        if json.Unmarshal(req.ToolInput, &in) != nil { return false }
+        if in.FilePath != wantPath { return false }
+        if len(in.Content) > maxSummaryWriteBytes { return false }
+        return true
+    }
+    return false
 }
 ```
 
-Reasoning: user opted in by checking the box; making them re-click
-"Allow" every turn for the same path defeats the purpose. Other
-paths still go through the normal approval flow.
+Reasoning:
+
+- Read AND Write both need auto-allow — the template instructs Claude
+  to Read first then Write. Auto-allowing only Write would still pop
+  an approval card every turn for the Read.
+- `wantPath` is computed from the dispatcher-side `alfredSID` (which
+  we looked up — not user input), so path traversal via `<sid>` is
+  not possible.
+- The `==` comparison is strict-string-equal (after Go's normal
+  syscall canonicalisation when the file is actually opened). No
+  prefix matching, no glob.
+- Write content cap (`8 KB`) defends against a prompt-injection
+  attacker convincing Claude to overwrite the summary with a huge
+  blob. Anything legitimately summary-shaped is well under 2 KB.
+  Oversized writes fall through to the normal approval flow — the
+  user sees them and can deny.
+- Other paths, other tools, and oversized Writes still go through
+  the normal approval channel — user retains full control.
 
 ### 6. Watcher — `internal/summary/watcher.go`
 
@@ -300,16 +340,25 @@ on `enter_claude`.
 { type: "summary_updated", sessionID: "..." }
 ```
 
-Carries no body — the frontend re-fetches the file via HTTP. Frame is
-small, encoder-cheap, broadcast to all sessions on the WS (sender
-filters by `sessionID == selectedSessionID`).
+Carries no body — the frontend re-fetches the file via HTTP. The
+backend sends the frame **only on WS connections that are subscribed
+to the affected session** (the same per-session subscriber set that
+already routes `started` / `chunk` / `done` / `claude_event` to the
+right tab). v1 is single-user so this is just defensive hygiene; if
+the deploy ever grows to multi-user, summary updates don't leak
+across users.
 
 ### 8. HTTP endpoints
 
 `GET /api/sessions/{sid}/summary`
-- 200 → `text/markdown` body (file content)
+- 200 → `text/markdown` body (file content, possibly empty)
 - 404 → file doesn't exist (frontend renders empty state)
 - 403 → if `sid` is unknown to the manager (defensive)
+
+The frontend treats both 404 AND a 200 with `body.trim() === ''` as
+the empty state. Claude has been seen to Write a literally-empty
+summary occasionally; we don't want a blank pane just because the
+file exists.
 
 `GET /api/templates/{id}`
 - 200 → `text/plain` body (raw template content, including `<sid>` and
@@ -450,9 +499,14 @@ Total latency from claude's Write to UI update: ~50-200 ms.
 
 ## Error handling
 
-- **fsnotify fails on Start** (rare; macOS limit, missing perms): log a
-  warn, continue without the watcher. Sidebar will just show stale
-  content until the user navigates away and back; functional but lossy.
+- **fsnotify fails on Start** (rare; macOS limit, missing perms,
+  `mkdir summaries/` denied): log Warn with the underlying error,
+  return nil from the constructor anyway, and do NOT block
+  `alfred-server` startup. Sidebar will show stale content until
+  the user navigates away and back; functional but lossy. The
+  binary's exit code path is the same as if the watcher hadn't been
+  requested. Bookkeeping: the watcher constructor returns `nil,
+  nil` on a recoverable failure; main.go just continues.
 - **GET /summary 500** (disk read fail): sidebar shows "Couldn't load
   summary: <err message>" — kept visible because the WS keeps trying.
 - **GET /template 500**: same pattern in the template view.
@@ -483,7 +537,12 @@ data dir is harmless.
 - Editability: read-only viewer ✓
 - v1 builtins: one (`summary-todo`), task-list style ✓
 - Freshness: fsnotify → WS summary_updated → frontend GET ✓
-- Auto-allow summary writes in dispatcher ✓
+- Auto-allow: Read AND Write of the canonical summary path; Write
+  rejected if content > 8 KB (anti-prompt-injection guard) ✓
+- summary_updated frame is per-session, not broadcast ✓
+- Sidebar hidden state is global and sticky across session switches ✓
+- 200 with empty body treated identically to 404 ✓
+- Template instructs Claude to keep the file under 1500 chars ✓
 
 ## Future (v1.x+, out of v1 scope)
 
