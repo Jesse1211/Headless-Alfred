@@ -142,3 +142,8 @@
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
+
+.start-claude__checkbox.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

@@ -4,7 +4,7 @@ import './StartClaudeDialog.css'
 
 interface Props {
   defaultRenderer?: ClaudeRenderer
-  onStart: (renderer: ClaudeRenderer, bypassPermissions: boolean) => void
+  onStart: (renderer: ClaudeRenderer, bypassPermissions: boolean, templateId: string) => void
   onCancel: () => void
 }
 
@@ -18,11 +18,15 @@ export function StartClaudeDialog({ defaultRenderer = 'ui', onStart, onCancel }:
   // PreToolUse hook still fires under bypass, so user control is
   // unaffected — Alfred remains the actual gate.
   const [bypass, setBypass] = useState(true)
+  // Task-summary template default ON for Chat UI. The checkbox is
+  // visually disabled (muted + non-interactive) when the renderer
+  // is TUI — that mode has its own /memory machinery.
+  const [summary, setSummary] = useState(true)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onCancel()
-      if (e.key === 'Enter') onStart(renderer, bypass)
+      if (e.key === 'Enter') onStart(renderer, bypass, summary && renderer === 'ui' ? 'summary-todo' : '')
     }
     // Defer attaching by one frame. The dialog is typically opened by
     // an Enter keypress in the composer (`claude` -> setStartClaudeFor);
@@ -35,7 +39,7 @@ export function StartClaudeDialog({ defaultRenderer = 'ui', onStart, onCancel }:
       clearTimeout(t)
       window.removeEventListener('keydown', onKey)
     }
-  }, [onCancel, onStart, renderer, bypass])
+  }, [onCancel, onStart, renderer, bypass, summary])
 
   return (
     <div className="start-claude__backdrop" onClick={onCancel}>
@@ -105,12 +109,31 @@ export function StartClaudeDialog({ defaultRenderer = 'ui', onStart, onCancel }:
             </div>
           </div>
         </label>
+        <label className={`start-claude__checkbox ${renderer === 'tui' ? 'is-disabled' : ''}`}>
+          <input
+            type="checkbox"
+            checked={summary && renderer === 'ui'}
+            onChange={(e) => setSummary(e.target.checked)}
+            disabled={renderer === 'tui'}
+          />
+          <div>
+            <div className="start-claude__checkbox-title">
+              Maintain a task summary
+            </div>
+            <div className="start-claude__checkbox-desc">
+              After every reply, Claude updates a short summary you
+              can read in the right sidebar. Lets you pick up where
+              you left off without re-explaining yourself.
+              {renderer === 'tui' && ' (Chat UI only.)'}
+            </div>
+          </div>
+        </label>
         <div className="start-claude__actions">
           <button type="button" onClick={onCancel}>Cancel</button>
           <button
             type="button"
             className="start-claude__primary"
-            onClick={() => onStart(renderer, bypass)}
+            onClick={() => onStart(renderer, bypass, summary && renderer === 'ui' ? 'summary-todo' : '')}
           >
             Start
           </button>
