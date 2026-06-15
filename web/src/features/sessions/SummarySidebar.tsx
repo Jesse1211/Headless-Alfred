@@ -24,6 +24,19 @@ export function SummarySidebar({ sessionID, templateId, summaryFetchCounter, onC
   const firstSummaryFetchDone = useRef(false)
   const [summaryLoading, setSummaryLoading] = useState(true)
 
+  // Tracks the most recent in-flight template fetch. setStates from older
+  // requests are ignored. Also flipped in the cleanup so unmount aborts
+  // pending work without React warnings.
+  const templateAliveRef = useRef(true)
+  useEffect(() => () => { templateAliveRef.current = false }, [])
+
+  useEffect(() => {
+    // On sessionID change the parent typically remounts us (key={sid}),
+    // but reset the flag here too so an unmounted-then-remounted same-
+    // sid call still shows the spinner first.
+    firstSummaryFetchDone.current = false
+  }, [sessionID])
+
   useEffect(() => {
     let alive = true
     const showSpinner = !firstSummaryFetchDone.current
@@ -46,15 +59,6 @@ export function SummarySidebar({ sessionID, templateId, summaryFetchCounter, onC
     return () => { alive = false }
   }, [sessionID, summaryFetchCounter])
 
-  // Reset cached summary state when the session changes — sessionID is the
-  // identity key; if the parent re-mounts us for a new session we'd want a
-  // clean slate. (React already remounts on key change, but the ref-based
-  // first-fetch flag survives a same-mount sessionID swap, so explicit
-  // reset is the safe default.)
-  useEffect(() => {
-    firstSummaryFetchDone.current = false
-  }, [sessionID])
-
   // Template state -----------------------------------------------------------
   const [template, setTemplate] = useState<string | null>(null)
   const [templateErr, setTemplateErr] = useState<string | null>(null)
@@ -64,9 +68,19 @@ export function SummarySidebar({ sessionID, templateId, summaryFetchCounter, onC
     if (template !== null || templateLoading) return
     setTemplateLoading(true)
     getTemplate(templateId)
-      .then((text) => { setTemplate(text); setTemplateErr(null) })
-      .catch((e) => setTemplateErr(e instanceof Error ? e.message : String(e)))
-      .finally(() => setTemplateLoading(false))
+      .then((text) => {
+        if (!templateAliveRef.current) return
+        setTemplate(text)
+        setTemplateErr(null)
+      })
+      .catch((e) => {
+        if (!templateAliveRef.current) return
+        setTemplateErr(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        if (!templateAliveRef.current) return
+        setTemplateLoading(false)
+      })
   }, [templateId, template, templateLoading])
 
   useEffect(() => {
@@ -145,8 +159,8 @@ function SummaryView({ text, loading, error }: { text: string; loading: boolean;
 }
 
 function TemplateView({ text, loading, error }: { text: string | null; loading: boolean; error: string | null }) {
-  if (loading || text === null) return <div className="summary-sidebar__placeholder">Loading…</div>
   if (error) return <div className="summary-sidebar__error">Failed to load template: {error}</div>
+  if (loading || text === null) return <div className="summary-sidebar__placeholder">Loading…</div>
   return (
     <>
       <div className="summary-sidebar__note">

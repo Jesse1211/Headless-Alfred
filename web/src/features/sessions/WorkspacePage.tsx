@@ -69,9 +69,13 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const composerDisabled = s.connState !== 'open' || !s.selectedSessionID
   const composerBusy = !!ps?.running
 
-  // The sidebar is mountable only when the active session is in Claude
-  // mode AND was started with the summary template opted in.
+  // The sidebar's *content* is mountable only when the active session is in
+  // Claude mode AND was started with the summary template opted in.
   const showSidebarSlot = !!(selected && ps && ps.mode === 'claude' && ps.templateId === 'summary-todo')
+  // The re-open handle is shown whenever the user is in any Chat UI Claude
+  // session — even sessions without a template — so a deliberate hide
+  // gesture can always be undone. (Per spec; hide state is global.)
+  const showSidebarHandle = !!(selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && sidebarHidden)
 
   return (
     <div className={`workspace ${showSidebarSlot && !sidebarHidden ? 'has-sidebar' : ''}`}>
@@ -241,7 +245,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
         />
       )}
 
-      {showSidebarSlot && sidebarHidden && (
+      {showSidebarHandle && (
         <button
           type="button"
           className="workspace__sidebar-handle"
