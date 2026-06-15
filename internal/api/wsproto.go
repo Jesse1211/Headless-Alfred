@@ -81,3 +81,9 @@ type OutMsg struct {
 	Tool      string `json:"tool,omitempty"`
 	ToolInput any    `json:"toolInput,omitempty"`
 }
+
+// TypeSummaryUpdated is the WS frame Type pushed by alfred-server
+// when the on-disk summary file for a session is written. The
+// frame carries no body — the frontend re-fetches via
+// GET /api/sessions/{sid}/summary.
+const TypeSummaryUpdated = "summary_updated"
