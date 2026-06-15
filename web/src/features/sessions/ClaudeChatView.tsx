@@ -14,7 +14,8 @@ interface Props {
 }
 
 // ClaudeChatView is the V1 ChatGPT-style renderer for a Claude conversation.
-// Phase 5 will swap the plain <pre> text for react-markdown + syntax highlighting.
+// Renders assistant text as markdown (via react-markdown + remark-gfm),
+// surfaces tool calls inline, and floats pending approval cards at the bottom.
 export function ClaudeChatView({
   state, disabled, onPrompt, onToolDecision, onInterrupt,
 }: Props) {
@@ -137,11 +138,7 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
 }
 
 function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
-  const status =
-    tool.decision === 'deny' ? 'denied' :
-    tool.result != null ? 'done' :
-    tool.decision === 'allow' ? 'running' :
-    'pending'
+  const status = toolStatus(tool)
   return (
     <div className={`claude-tool claude-tool--${status} ${tool.isError ? 'is-error' : ''}`}>
       <div className="claude-tool__header">
@@ -160,4 +157,16 @@ function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
 
 function formatJSON(v: unknown): string {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+
+// toolStatus picks a single status label out of three independent
+// pieces of state: the user's decision (deny|allow|pending) and
+// whether a result has come back. Order matters — a denied tool
+// never produces a result, and an allowed tool is "running" until
+// the result arrives.
+function toolStatus(tool: ClaudeToolCall): 'pending' | 'denied' | 'running' | 'done' {
+  if (tool.decision === 'deny') return 'denied'
+  if (tool.result != null) return 'done'
+  if (tool.decision === 'allow') return 'running'
+  return 'pending'
 }
