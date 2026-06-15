@@ -73,6 +73,14 @@ type PromptOptions struct {
 	// hook still fires under bypass, so Alfred remains the actual gate.
 	// Default false; opt in via the Start Claude dialog checkbox.
 	BypassPermissions bool
+
+	// Continue, when true, invokes `claude -c` instead of
+	// `--resume <uuid>`. Used by recap sessions which want to
+	// continue the most recent conversation in the cwd rather than
+	// resume a specific Alfred-tracked UUID. Mutually exclusive with
+	// --resume: if Continue is true, SessionUUID is ignored for the
+	// resume-flag selection.
+	Continue bool
 }
 
 // PromptResult bundles the channel of streaming Events with handles
@@ -128,7 +136,12 @@ func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult,
 		// remains the actual permission gate.
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	if opts.SessionUUID != "" {
+	if opts.Continue {
+		// `claude -c` resumes the most recent conversation in cwd.
+		// Recap sessions use this so they don't have to track a uuid
+		// across alfred restarts.
+		args = append(args, "-c")
+	} else if opts.SessionUUID != "" {
 		// The CLI is asymmetric here:
 		//   --session-id <uuid>: only valid the FIRST time. On a second
 		//     invocation with the same UUID it errors with
