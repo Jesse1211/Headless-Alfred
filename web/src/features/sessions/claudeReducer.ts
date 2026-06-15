@@ -74,34 +74,28 @@ export function reduceClaudeMsg(
     case 'claude_event':
       return mutateClaude(prev, m.sessionID, (c) => applyClaudeEvent(c, m.eventKind, m.payload))
     case 'tool_approval_request': {
-      const cur = prev.get(m.sessionID) ?? emptyPerSessionState()
-      const c = cur.claude ?? emptyClaudeState()
+      const c = prev.get(m.sessionID)?.claude ?? emptyClaudeState()
+      // Dedup against BOTH queues — a re-emitted toolUseId could
+      // belong to either depending on which branch ran first.
+      const alreadyQueued =
+        c.pending.some((p) => p.toolUseId === m.toolUseId) ||
+        c.pendingQuestions.some((q) => q.toolUseId === m.toolUseId)
+      if (alreadyQueued) return prev
       // AskUserQuestion is special: it IS a question for the user, not
-      // a "may I run this?" Render it as a dedicated question card.
-      // The answer rides back through tool_decision('deny', reason)
-      // so the CLI surfaces it as the tool's tool_result.
+      // "may I run this?". Route well-formed input to the dedicated
+      // question card; the answer rides back through
+      // tool_decision('deny', reason) so the CLI surfaces it as the
+      // tool's tool_result. Malformed input falls through to the
+      // generic approval card so the user can at least see and
+      // dismiss the call instead of the runner hanging.
       if (m.tool === 'AskUserQuestion') {
-        if (c.pendingQuestions.some((q) => q.toolUseId === m.toolUseId)) {
-          return prev
-        }
         const questions = parseAskUserQuestionInput(m.toolInput)
-        if (questions.length === 0) {
-          // Malformed — auto-deny so the runner doesn't hang and
-          // surface as a regular approval so the user at least sees
-          // something happened.
+        if (questions.length > 0) {
           return mutateClaude(prev, m.sessionID, (cc) => ({
             ...cc,
-            pending: [...cc.pending, { toolUseId: m.toolUseId, tool: m.tool, input: m.toolInput }],
+            pendingQuestions: [...cc.pendingQuestions, { toolUseId: m.toolUseId, questions }],
           }))
         }
-        return mutateClaude(prev, m.sessionID, (cc) => ({
-          ...cc,
-          pendingQuestions: [...cc.pendingQuestions, { toolUseId: m.toolUseId, questions }],
-        }))
-      }
-      // Normal tool approval flow.
-      if (c.pending.some((p) => p.toolUseId === m.toolUseId)) {
-        return prev
       }
       return mutateClaude(prev, m.sessionID, (cc) => ({
         ...cc,
