@@ -317,6 +317,14 @@ describe('claude UI reducer', () => {
     expect(ps.claude!.turns.length).toBe(1)
   })
 
+  it('claude_exited clears templateId', () => {
+    const seed = new Map<string, PerSessionState>([
+      ['A', { ...emptyPerSessionState(), mode: 'claude', renderer: 'ui', templateId: 'summary-todo' }],
+    ])
+    const { perSession } = reducePerSession(seed, { type: 'claude_exited', sessionID: 'A' }, b64decode)
+    expect(perSession.get('A')?.templateId).toBeUndefined()
+  })
+
   it('claude_run_ended finalizes an open turn (runner died without result)', () => {
     const seed = new Map<string, PerSessionState>([
       ['A', { ...emptyPerSessionState(), renderer: 'ui', claude: beginClaudeTurn(emptyClaudeState(), 'hi') }],

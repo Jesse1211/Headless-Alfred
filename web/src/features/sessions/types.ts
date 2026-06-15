@@ -108,6 +108,10 @@ export interface PerSessionState {
   messagesLoaded: boolean
   mode: SessionMode
   renderer?: ClaudeRenderer
+  // Template id active for this session's Claude run (e.g. 'summary-todo').
+  // Set by useSessions.enterClaude when the user opts in via
+  // StartClaudeDialog; cleared on claude_exited.
+  templateId?: string
   claude?: ClaudeState
 }
 

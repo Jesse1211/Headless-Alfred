@@ -64,6 +64,7 @@ export function reduceClaudeMsg(
         ...cur,
         mode: 'shell',
         renderer: '',
+        templateId: undefined,
         // Keep the prior conversation history for re-display next time —
         // we just clear the "in-flight" state. (If we wanted to drop
         // the conversation on Exit we'd null `claude` here.)

@@ -237,6 +237,12 @@ export function useSessions(token: string) {
 
   const enterClaude = useCallback(
     (sid: string, renderer?: 'tui' | 'ui', bypassPermissions?: boolean, templateId?: string) => {
+      setPerSession((prev) => {
+        const next = new Map(prev)
+        const cur = next.get(sid) ?? emptyPerSessionState()
+        next.set(sid, { ...cur, templateId: templateId || undefined })
+        return next
+      })
       socket.send({ type: 'enter_claude', sessionID: sid, renderer, bypassPermissions, templateId })
     },
     [socket],

@@ -157,4 +157,18 @@ describe('useSessions — WS events', () => {
     act(() => result.current.submit('ls -la'))
     expect(sendMock).toHaveBeenCalledWith({ type: 'run', sessionID: 'sess-B', command: 'ls -la' })
   })
+
+  it('enterClaude with templateId writes it to perSession', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() => { result.current.enterClaude('sess-A', 'ui', true, 'summary-todo') })
+    expect(result.current.perSession.get('sess-A')?.templateId).toBe('summary-todo')
+  })
+
+  it('enterClaude without templateId leaves it undefined', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() => { result.current.enterClaude('sess-A', 'ui', true) })
+    expect(result.current.perSession.get('sess-A')?.templateId).toBeUndefined()
+  })
 })
