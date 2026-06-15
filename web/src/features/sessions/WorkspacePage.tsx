@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { useSessions } from './useSessions'
 import { useSessionHistoryLoader } from './useSessionHistoryLoader'
+import { useClaudeHistoryLoader } from './useClaudeHistoryLoader'
 import { SessionsSidebar } from './SessionsSidebar'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
@@ -26,6 +27,11 @@ interface Props {
 export function WorkspacePage({ token, onLogout }: Props) {
   const s = useSessions(token)
   useSessionHistoryLoader({
+    selectedSessionID: s.selectedSessionID,
+    perSession: s.perSession,
+    setPerSession: s.setPerSession,
+  })
+  useClaudeHistoryLoader({
     selectedSessionID: s.selectedSessionID,
     perSession: s.perSession,
     setPerSession: s.setPerSession,
