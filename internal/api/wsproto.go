@@ -80,6 +80,10 @@ type OutMsg struct {
 	// approve (tool_approval_request frame).
 	Tool      string `json:"tool,omitempty"`
 	ToolInput any    `json:"toolInput,omitempty"`
+
+	// Date carries the YYYY-MM-DD date of the recap file that was
+	// written (recap_updated frame).
+	Date string `json:"date,omitempty"`
 }
 
 // TypeSummaryUpdated is the WS frame Type pushed by alfred-server
@@ -87,3 +91,9 @@ type OutMsg struct {
 // frame carries no body — the frontend re-fetches via
 // GET /api/sessions/{sid}/summary.
 const TypeSummaryUpdated = "summary_updated"
+
+// TypeRecapUpdated is the WS frame Type pushed by alfred-server when
+// a recap file (<dataDir>/recaps/<date>.md) is written. The frame
+// carries the Date field so the frontend knows which recap changed
+// and can re-fetch via GET /api/recaps/{date}.
+const TypeRecapUpdated = "recap_updated"

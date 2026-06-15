@@ -18,6 +18,7 @@ import (
 	"github.com/jesseliu/headless-alfred/internal/api"
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/recap"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -141,13 +142,33 @@ func main() {
 	logger.Info("claude bridge listening", "addr", bridge.Addr())
 
 	rl := auth.NewRateLimiter(5, time.Minute)
+
+	// Recap-file watcher: emits date strings when a recaps/<date>.md
+	// file is written. Broadcaster in api package fans out to all WS
+	// clients. Failure is non-fatal — the rest of the server runs fine
+	// without it (recap UI becomes stale but still usable).
+	recapUpdates := make(chan string, 16)
+	recapWatcher, recapWatchErr := recap.StartWatcher(dataDir, func(date string) {
+		select {
+		case recapUpdates <- date:
+		default:
+			logger.Warn("recapUpdates channel full; dropping", "date", date)
+		}
+	})
+	if recapWatchErr != nil {
+		logger.Warn("recap watcher startup failed; recap UI will be stale", "err", recapWatchErr)
+	} else {
+		defer recapWatcher.Stop()
+	}
+
 	router := api.NewRouter(api.Deps{
-		Manager:     mgr,
-		Auth:        a,
-		RateLimiter: rl,
-		Ready:       ready.Load,
-		Bridge:      bridge,
-		Dispatcher:  dispatcher,
+		Manager:      mgr,
+		Auth:         a,
+		RateLimiter:  rl,
+		Ready:        ready.Load,
+		Bridge:       bridge,
+		Dispatcher:   dispatcher,
+		RecapUpdates: recapUpdates,
 	})
 
 	srv := &http.Server{

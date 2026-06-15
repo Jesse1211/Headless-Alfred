@@ -46,7 +46,9 @@ var upgrader = websocket.Upgrader{
 
 // bridge / dispatcher accept nil for the legacy V0 path / tests that
 // don't use claude UI; callers that want claude UI must pass both.
-func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *claude.Dispatcher) http.Handler {
+// broadcaster is nil-safe: pass newRecapBroadcaster(nil) or a real
+// broadcaster — the connection loop behaves correctly either way.
+func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *claude.Dispatcher, broadcaster *recapBroadcaster) http.Handler {
 	runner := claude.NewRunner()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := r.URL.Query().Get("token")
@@ -59,11 +61,11 @@ func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *cla
 			slog.Error("ws upgrade", "err", err)
 			return
 		}
-		runClientLoop(conn, m, bridge, disp, runner)
+		runClientLoop(conn, m, bridge, disp, runner, broadcaster)
 	})
 }
 
-func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner) {
+func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner, broadcaster *recapBroadcaster) {
 	defer conn.Close()
 	conn.SetReadLimit(maxInboundMessage)
 	_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
@@ -193,6 +195,11 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 		defer sw.Stop()
 	}
 
+	// Per-connection subscription to the process-wide recap broadcaster.
+	// Receives a date string each time a recap file is written.
+	recapSub, recapUnsub := broadcaster.subscribe()
+	defer recapUnsub()
+
 	// Subscribe each existing session to the bridge's ask dispatcher.
 	// Forwards to the per-WS asks channel.
 	if disp != nil {
@@ -297,6 +304,11 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 				continue
 			}
 			_ = write(OutMsg{Type: TypeSummaryUpdated, SessionID: sid})
+		case date, ok := <-recapSub:
+			if !ok {
+				return
+			}
+			_ = write(OutMsg{Type: TypeRecapUpdated, Date: date})
 		case sid := <-closedCh:
 			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:

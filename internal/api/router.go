@@ -30,6 +30,12 @@ type Deps struct {
 	// the appropriate WS client per Alfred session. Always paired
 	// with Bridge.
 	Dispatcher *claude.Dispatcher
+
+	// RecapUpdates receives a date string each time a recap file is
+	// written. WS handler subscribes via recapBroadcaster to fan out to
+	// every connected client. Nil-safe — broadcaster degrades to no-op
+	// when source is nil.
+	RecapUpdates <-chan string
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -40,7 +46,8 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/healthz", HealthzHandler().ServeHTTP)
 	r.Get("/readyz", ReadyzHandler(d.Ready).ServeHTTP)
 	r.Post("/api/login", LoginHandler(d.Auth, d.RateLimiter).ServeHTTP)
-	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher).ServeHTTP)
+	broadcaster := newRecapBroadcaster(d.RecapUpdates)
+	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher, broadcaster).ServeHTTP)
 
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(d.Auth))
