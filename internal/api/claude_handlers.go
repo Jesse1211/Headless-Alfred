@@ -30,7 +30,10 @@ import (
 // message separated by a markdown horizontal rule so Claude can
 // tell what came from the user and what came from the harness.
 func composePromptText(userText, templateID, sessionID, summaryPath string) string {
-	rendered := template.Render(templateID, sessionID, summaryPath)
+	rendered := template.Render(templateID, template.RenderArgs{
+		SessionID:   sessionID,
+		SummaryPath: summaryPath,
+	})
 	if rendered == "" {
 		return userText
 	}

@@ -23,6 +23,9 @@ type Template struct {
 	//   <sid>            — the Alfred session ID
 	//   <summary_path>   — the absolute path to the session's
 	//                      summary file on disk
+	//   <date>           — today's local date (YYYY-MM-DD)
+	//   <cwd>            — the claude invocation cwd
+	//   <recap_path>     — the absolute path to today's recap file
 	Content string
 }
 
@@ -62,6 +65,51 @@ Steps:
 3. Use Write (one tool call, full file contents).
 
 Session id: <sid>.
+`,
+	},
+	"recap-daily": {
+		ID:   "recap-daily",
+		Name: "Daily recap",
+		Content: `Generate today's daily recap for the user. Today is <date>.
+
+Steps:
+
+1. Before doing anything, check whether any superpowers skills apply
+   (e.g. a 'daily-recap' or 'summarize' skill). If one does, invoke
+   it and follow its instructions instead of these steps.
+
+2. Otherwise, gather data IN PARALLEL (single response with multiple
+   tool calls):
+   - Bash: cd <cwd> && git log --since="<date> 00:00" --until="<date> 23:59" --all --pretty=format:"%h %s (%an)"
+     plus git diff --shortstat HEAD@{midnight}..HEAD
+   - If a claude-mem timeline tool is available, call it for today's slice.
+   - If a claude-mem memory_search tool is available, query "today's decisions".
+
+   If the claude-mem tools are not available (the user hasn't
+   installed the plugin), skip those calls — git alone is enough to
+   produce a useful recap.
+
+3. Synthesize a markdown recap with this exact structure:
+
+   # Recap · <date>
+
+   ## Shipped
+   - <bullet of concrete output: PR opened, file written, deploy>
+
+   ## Decisions
+   - <bullet of judgement calls made, with the why>
+
+   ## Open questions
+   - <bullet of unresolved items the user should address tomorrow>
+
+   ## Notes
+   - <anything else worth remembering>
+
+4. Write the result to <recap_path> (overwriting any existing file).
+   Use the Write tool; do NOT print the recap inline.
+
+5. Confirm to the user with one short line: "Recap saved to <date>.md.
+   Ask me about anything from today."
 `,
 	},
 }
