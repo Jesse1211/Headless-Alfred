@@ -103,6 +103,10 @@ func (d *Dispatcher) OnAsk(
 			autoAllow(req.ToolUseID)
 			return
 		}
+		if dataDir != "" && isRecapIO(req, dataDir) {
+			autoAllow(req.ToolUseID)
+			return
+		}
 		d.mu.Lock()
 		ch, ok := d.subs[alfredSID]
 		d.mu.Unlock()
