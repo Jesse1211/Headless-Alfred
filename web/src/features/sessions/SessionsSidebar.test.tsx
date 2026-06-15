@@ -17,6 +17,7 @@ describe('SessionsSidebar', () => {
         selectedSessionID="A"
         maxSessions={MAX}
         onCreate={() => {}}
+        onCreateRecap={() => {}}
         onSelect={() => {}}
         onRename={() => {}}
         onClose={() => {}}
@@ -34,6 +35,7 @@ describe('SessionsSidebar', () => {
         selectedSessionID="S0"
         maxSessions={MAX}
         onCreate={() => {}}
+        onCreateRecap={() => {}}
         onSelect={() => {}}
         onRename={() => {}}
         onClose={() => {}}
@@ -50,6 +52,7 @@ describe('SessionsSidebar', () => {
         selectedSessionID={null}
         maxSessions={MAX}
         onCreate={onCreate}
+        onCreateRecap={() => {}}
         onSelect={() => {}}
         onRename={() => {}}
         onClose={() => {}}
@@ -66,6 +69,7 @@ describe('SessionsSidebar', () => {
         selectedSessionID="B"
         maxSessions={MAX}
         onCreate={() => {}}
+        onCreateRecap={() => {}}
         onSelect={() => {}}
         onRename={() => {}}
         onClose={() => {}}
@@ -83,6 +87,7 @@ describe('SessionsSidebar', () => {
         selectedSessionID="A"
         maxSessions={MAX}
         onCreate={() => {}}
+        onCreateRecap={() => {}}
         onSelect={onSelect}
         onRename={() => {}}
         onClose={() => {}}
@@ -100,6 +105,7 @@ describe('SessionsSidebar', () => {
         selectedSessionID="A"
         maxSessions={MAX}
         onCreate={() => {}}
+        onCreateRecap={() => {}}
         onSelect={() => {}}
         onRename={onRename}
         onClose={() => {}}
@@ -120,6 +126,7 @@ describe('SessionsSidebar', () => {
         selectedSessionID="A"
         maxSessions={MAX}
         onCreate={() => {}}
+        onCreateRecap={() => {}}
         onSelect={() => {}}
         onRename={onRename}
         onClose={() => {}}
@@ -142,6 +149,7 @@ describe('SessionsSidebar', () => {
         selectedSessionID="A"
         maxSessions={MAX}
         onCreate={() => {}}
+        onCreateRecap={() => {}}
         onSelect={() => {}}
         onRename={() => {}}
         onClose={onClose}

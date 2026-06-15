@@ -90,6 +90,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
         selectedSessionID={s.selectedSessionID}
         maxSessions={MAX_SESSIONS}
         onCreate={() => s.createSession()}
+        onCreateRecap={() => s.createOrEnterRecap()}
         onSelect={s.selectSession}
         onRename={(id, name) => s.renameSession(id, name)}
         onClose={(id) => setPendingClose(id)}

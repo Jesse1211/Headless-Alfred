@@ -8,6 +8,7 @@ interface Props {
   selectedSessionID: string | null
   maxSessions: number
   onCreate: () => void
+  onCreateRecap: () => void | Promise<void>
   onSelect: (id: string) => void
   onRename: (id: string, name: string) => void
   onClose: (id: string) => void
@@ -18,6 +19,7 @@ export function SessionsSidebar({
   selectedSessionID,
   maxSessions,
   onCreate,
+  onCreateRecap,
   onSelect,
   onRename,
   onClose,
@@ -33,6 +35,14 @@ export function SessionsSidebar({
         title={atLimit ? 'Close one first' : 'New chat'}
       >
         + New chat
+      </button>
+      <button
+        type="button"
+        className="sessions-sidebar__create-recap"
+        onClick={() => onCreateRecap()}
+        title="Open today's recap"
+      >
+        + 复盘
       </button>
       <div className="sessions-sidebar__header">ACTIVE SESSIONS</div>
       <ul className="sessions-sidebar__list">
