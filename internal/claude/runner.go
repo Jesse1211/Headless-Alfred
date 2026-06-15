@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -111,15 +113,23 @@ func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult,
 		"--include-partial-messages",
 	}
 	if opts.SessionUUID != "" {
-		// --session-id always (NOT --resume). Empirically the CLI
-		// accepts --session-id whether or not the transcript file
-		// already exists on disk: first invocation creates it,
-		// subsequent ones resume from it. --resume requires the
-		// transcript to exist and fails the first time with
-		// "No conversation found with session ID". Probing the
-		// transcript path is fragile (depends on cwd-hash
-		// encoding), so we just use --session-id unconditionally.
-		args = append(args, "--session-id", opts.SessionUUID)
+		// The CLI is asymmetric here:
+		//   --session-id <uuid>: only valid the FIRST time. On a second
+		//     invocation with the same UUID it errors with
+		//     "Session ID <uuid> is already in use." and exits 1.
+		//   --resume <uuid>: only valid AFTER a transcript exists. On
+		//     the first invocation it errors with "No conversation
+		//     found with session ID <uuid>".
+		// So we probe the transcript path and choose the right flag.
+		// The transcript lives at
+		//   ~/.claude/projects/<cwd-with-/-as--><uuid>.jsonl
+		// where <cwd-with-/-as--> is the absolute cwd with every '/'
+		// replaced by '-' (so a leading '-' shows up too).
+		if transcriptExists(opts.CWD, opts.SessionUUID) {
+			args = append(args, "--resume", opts.SessionUUID)
+		} else {
+			args = append(args, "--session-id", opts.SessionUUID)
+		}
 	}
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
@@ -225,4 +235,36 @@ func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult,
 		},
 	}
 	return pr, nil
+}
+
+// transcriptExists reports whether the on-disk transcript file for
+// (cwd, uuid) already exists. Used to pick between --session-id
+// (first invocation, no file) and --resume (subsequent, file
+// exists).
+//
+// Claude stores transcripts at:
+//
+//	$HOME/.claude/projects/<cwd-flattened>/<uuid>.jsonl
+//
+// where <cwd-flattened> is the absolute cwd with every '/'
+// replaced by '-'. An absolute path like "/Users/jesseliu" becomes
+// "-Users-jesseliu" (note the leading '-' from the leading '/').
+//
+// We don't try to be clever about $XDG_DATA_HOME or alternative
+// claude config locations — the CLI's own default is hardcoded to
+// $HOME/.claude/projects too. If the user has set up a non-default
+// location, the worst case is we choose --session-id when we
+// should have chosen --resume and get a misleading error one time
+// at the API boundary.
+func transcriptExists(cwd, uuid string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	flat := strings.ReplaceAll(cwd, "/", "-")
+	path := filepath.Join(home, ".claude", "projects", flat, uuid+".jsonl")
+	if _, err := os.Stat(path); err == nil {
+		return true
+	}
+	return false
 }

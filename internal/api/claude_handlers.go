@@ -355,7 +355,13 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	runStates.set(msg.SessionID, &claudeRunState{cancel: cancel, stop: pr.Stop})
 
 	stopCh := make(chan struct{})
-	// Forward parsed events as long as the runner emits.
+	// Forward parsed events as long as the runner emits. As soon as we
+	// see a `result` event (Claude's signal that this turn is logically
+	// finished), release the runStates slot — otherwise the next
+	// user prompt races against the reaper's pr.Wait() and gets a
+	// spurious "busy" rejection. The process itself may still be
+	// flushing stderr / cleaning up for tens of ms after `result`;
+	// the reaper below handles its actual exit.
 	go func() {
 		defer close(stopCh)
 		for ev := range pr.Events {
@@ -365,14 +371,21 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 			case <-ctx.Done():
 				return
 			}
+			if ev.Kind == claude.KindResult {
+				// Logical end-of-turn. Free the slot so the user can
+				// send another prompt immediately. The take() is
+				// idempotent with the reaper's take below.
+				_, _ = runStates.take(msg.SessionID)
+			}
 		}
 	}()
 	// Reap the process exit + clean up. take() returns false if
-	// exit_claude already cleared the state — in that case the frontend
-	// already got a claude_exited frame and cleared its in-flight UI,
-	// so we don't need a backstop. Otherwise (natural exit, runner
-	// crashed, interrupt, etc.) emit claude_run_ended so the frontend
-	// never gets stuck on inFlight=true if no `result` event arrived.
+	// either (a) exit_claude already cleared the state, or (b) the
+	// result-event branch above already cleared it. In all those
+	// cases the frontend has the information it needs; no need for
+	// the claude_run_ended backstop. We only emit claude_run_ended
+	// when the process died without ever emitting a `result` AND
+	// nobody explicitly exited — i.e., a crash.
 	go func() {
 		<-stopCh
 		waitErr := pr.Wait()
