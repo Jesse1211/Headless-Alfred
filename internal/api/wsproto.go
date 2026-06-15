@@ -18,6 +18,7 @@ type InMsg struct {
 
 	// V1 claude UI renderer additions:
 	Renderer           string `json:"renderer,omitempty"`           // "tui" | "ui" on enter_claude
+	TemplateID         string `json:"templateId,omitempty"`         // enter_claude: which template to attach to the session
 	BypassPermissions  *bool  `json:"bypassPermissions,omitempty"`  // enter_claude: pass --dangerously-skip-permissions to claude -p. Pointer so absent ≠ false.
 	Text               string `json:"text,omitempty"`               // claude_prompt body
 	ToolUseID          string `json:"toolUseId,omitempty"`          // tool_decision target

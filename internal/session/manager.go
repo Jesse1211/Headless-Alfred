@@ -139,6 +139,13 @@ func (m *Manager) Get(sessionID string) (Shell, error) {
 	return sh, nil
 }
 
+// DataDir returns the root data directory passed in Config.DataDir.
+// Used by callers that need to compute on-disk paths (e.g. the
+// per-session summary file).
+func (m *Manager) DataDir() string {
+	return m.cfg.DataDir
+}
+
 // streamPath / offsetPath return the per-session file paths.
 func (m *Manager) streamPath(sessionID string) string {
 	return filepath.Join(m.cfg.Store.SessionDir(sessionID), "pty.stream")

@@ -20,7 +20,22 @@ import (
 	"github.com/jesseliu/headless-alfred/internal/claude"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/store"
+	"github.com/jesseliu/headless-alfred/internal/summary"
+	"github.com/jesseliu/headless-alfred/internal/template"
 )
+
+// composePromptText assembles the final prompt text that will be
+// piped to `claude -p` stdin. If the session has a template
+// active, the rendered template is appended after the user's
+// message separated by a markdown horizontal rule so Claude can
+// tell what came from the user and what came from the harness.
+func composePromptText(userText, templateID, sessionID, summaryPath string) string {
+	rendered := template.Render(templateID, sessionID, summaryPath)
+	if rendered == "" {
+		return userText
+	}
+	return userText + "\n\n---\n" + rendered
+}
 
 // claudeRunState tracks one in-flight `claude -p` invocation per
 // alfred session. Stored in a per-WS-connection map; lifetime ends
@@ -246,6 +261,9 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 	if err := m.SetClaudeBypass(msg.SessionID, bypass); err != nil {
 		slog.Warn("SetClaudeBypass failed", "session", msg.SessionID, "err", err)
 	}
+	if err := m.SetTemplateID(msg.SessionID, msg.TemplateID); err != nil {
+		slog.Warn("SetTemplateID failed", "session", msg.SessionID, "err", err)
+	}
 	_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID, Renderer: string(renderer)})
 }
 
@@ -345,10 +363,16 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	// claudeInvocationCWD for the resolution + fallback policy.
 	cwd := claudeInvocationCWD()
 	ctx, cancel := context.WithCancel(context.Background())
+	finalText := composePromptText(
+		msg.Text,
+		m.GetTemplateID(msg.SessionID),
+		msg.SessionID,
+		summary.Path(m.DataDir(), msg.SessionID),
+	)
 	pr, err := runner.Prompt(ctx, claude.PromptOptions{
 		SessionUUID:       convoID,
 		CWD:               cwd,
-		Prompt:            msg.Text,
+		Prompt:            finalText,
 		BypassPermissions: m.GetClaudeBypass(msg.SessionID),
 	})
 	if err != nil {
