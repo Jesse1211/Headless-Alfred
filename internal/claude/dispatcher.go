@@ -97,7 +97,7 @@ func (d *Dispatcher) OnAsk(lookup func(claudeConvoID string) string,
 		}
 		select {
 		case ch <- req:
-			slog.Info("dispatcher: routed approval to UI", "session", alfredSID, "tool", req.ToolName, "toolUseID", req.ToolUseID)
+			slog.Debug("dispatcher: routed approval to UI", "session", alfredSID, "tool", req.ToolName, "toolUseID", req.ToolUseID)
 		default:
 			slog.Warn("dispatcher: queue full, auto-deny", "session", alfredSID, "tool", req.ToolName, "toolUseID", req.ToolUseID)
 			autoDeny(req.ToolUseID, "approval queue full for this session")
