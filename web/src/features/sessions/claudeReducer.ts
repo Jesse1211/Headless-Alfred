@@ -1,0 +1,305 @@
+// Claude-UI–specific reducer slice. The shell-lifecycle cases
+// (started/chunk/done/idle/reattach) stay in sessionsReducer.ts; this
+// file owns everything that touches `claude: ClaudeState` —
+// claude_entered, claude_exited, claude_event, tool_approval_request,
+// claude_error, claude_run_ended — plus the small helpers that
+// useSessions calls to drive optimistic UI (beginClaudeTurn,
+// resolveClaudeTool, finalizeInFlightTurn).
+//
+// applyClaudeEvent is the inner state machine that folds one parsed
+// stream-json event into a ClaudeState; everything else delegates to
+// it.
+import { ServerMsg } from '../../lib/ws'
+import {
+  PerSessionState,
+  emptyPerSessionState,
+  ClaudeState,
+  ClaudeTurn,
+  ClaudeToolCall,
+  emptyClaudeState,
+} from './types'
+
+// mutateClaude returns a new perSession map with `mut` applied to the
+// target session's claude state. If the session has no claude state
+// yet, it is initialised to emptyClaudeState() first. Centralises the
+// `next = new Map(prev); cur.claude ?? emptyClaudeState(); next.set(…)`
+// boilerplate every Claude case used to repeat.
+function mutateClaude(
+  prev: Map<string, PerSessionState>,
+  sessionID: string,
+  mut: (c: ClaudeState) => ClaudeState,
+): Map<string, PerSessionState> {
+  const cur = prev.get(sessionID) ?? emptyPerSessionState()
+  const c = cur.claude ?? emptyClaudeState()
+  const next = new Map(prev)
+  next.set(sessionID, { ...cur, claude: mut(c) })
+  return next
+}
+
+// reduceClaudeMsg handles every WS frame that affects Claude state.
+// Returns the next perSession map, or `null` if the message isn't a
+// Claude frame (so the caller can fall through to the shell reducer).
+export function reduceClaudeMsg(
+  prev: Map<string, PerSessionState>,
+  m: ServerMsg,
+): Map<string, PerSessionState> | null {
+  switch (m.type) {
+    case 'claude_entered': {
+      const cur = prev.get(m.sessionID) ?? emptyPerSessionState()
+      const next = new Map(prev)
+      next.set(m.sessionID, {
+        ...cur,
+        mode: 'claude',
+        renderer: m.renderer ?? cur.renderer ?? 'tui',
+        // Initialise claude state for UI mode if not already present.
+        claude: m.renderer === 'ui' && !cur.claude ? emptyClaudeState() : cur.claude,
+      })
+      return next
+    }
+    case 'claude_exited': {
+      const cur = prev.get(m.sessionID) ?? emptyPerSessionState()
+      const next = new Map(prev)
+      next.set(m.sessionID, {
+        ...cur,
+        mode: 'shell',
+        renderer: '',
+        // Keep the prior conversation history for re-display next time —
+        // we just clear the "in-flight" state. (If we wanted to drop
+        // the conversation on Exit we'd null `claude` here.)
+        claude: cur.claude ? { ...cur.claude, inFlight: false, pending: [] } : undefined,
+      })
+      return next
+    }
+    case 'claude_event':
+      return mutateClaude(prev, m.sessionID, (c) => applyClaudeEvent(c, m.eventKind, m.payload))
+    case 'tool_approval_request': {
+      const cur = prev.get(m.sessionID) ?? emptyPerSessionState()
+      const c = cur.claude ?? emptyClaudeState()
+      // Skip duplicates (in case the same request arrives twice).
+      if (c.pending.some((p) => p.toolUseId === m.toolUseId)) {
+        return prev
+      }
+      return mutateClaude(prev, m.sessionID, (cc) => ({
+        ...cc,
+        pending: [...cc.pending, { toolUseId: m.toolUseId, tool: m.tool, input: m.toolInput }],
+      }))
+    }
+    case 'claude_error':
+      return mutateClaude(prev, m.sessionID, (c) =>
+        finalizeInFlightTurn(
+          { ...c, lastError: { code: m.code, message: m.message } },
+          m.message || m.code,
+        ),
+      )
+    case 'claude_run_ended': {
+      // Backstop: the runner has exited. If the turn already saw a
+      // `result` event, the turn is already done and finalize is a
+      // no-op. If it didn't (runner crashed, was SIGINT'd before
+      // result, etc.), we mark the last turn done+isError so the
+      // composer unlocks and the user sees something happened.
+      const cur = prev.get(m.sessionID)
+      if (!cur || !cur.claude) return prev
+      const next = new Map(prev)
+      next.set(m.sessionID, { ...cur, claude: finalizeInFlightTurn(cur.claude, m.message) })
+      return next
+    }
+    default:
+      return null
+  }
+}
+
+// applyClaudeEvent folds one parsed stream-json event into the
+// Claude conversation state. The latest turn is mutated in place
+// (immutably, via map); older turns are left untouched.
+//
+// `payload` arrives as `unknown` over the WS, so we narrow with
+// per-kind type guards (see asXxx helpers below). The shapes mirror
+// internal/claude/event.go.
+export function applyClaudeEvent(
+  prev: ClaudeState,
+  kind: string,
+  payload: unknown,
+): ClaudeState {
+  const turns = [...prev.turns]
+  const lastIdx = turns.length - 1
+  const last = lastIdx >= 0 ? { ...turns[lastIdx] } : null
+
+  switch (kind) {
+    case 'system':
+    case 'message_start':
+    case 'text_block_end':
+    case 'message_stop':
+    case 'rate_limit':
+    case 'unknown':
+      // Currently no-op for the UI. Could surface model / session id
+      // / rate-limit warnings later. message_stop fires per assistant
+      // message but a turn may have several when tool use kicks in,
+      // so we wait for `result` to mark the turn done.
+      return prev
+    case 'text_delta': {
+      const text = asTextDelta(payload)
+      if (!last || last.done) return prev
+      last.text = last.text + text
+      turns[lastIdx] = last
+      return { ...prev, turns }
+    }
+    case 'tool_use_start': {
+      const p = asToolUseStart(payload)
+      if (!p.toolUseId || !last || last.done) return prev
+      const tools: ClaudeToolCall[] = [
+        ...last.tools,
+        { toolUseId: p.toolUseId, name: p.name, decision: 'pending' },
+      ]
+      last.tools = tools
+      turns[lastIdx] = last
+      return { ...prev, turns }
+    }
+    case 'tool_use_end': {
+      const p = asToolUseEnd(payload)
+      if (!p.toolUseId || !last) return prev
+      last.tools = last.tools.map((t) =>
+        t.toolUseId === p.toolUseId ? { ...t, input: p.input } : t,
+      )
+      turns[lastIdx] = last
+      return { ...prev, turns }
+    }
+    case 'tool_result': {
+      const p = asToolResult(payload)
+      if (!p.toolUseId || !last) return prev
+      last.tools = last.tools.map((t) =>
+        t.toolUseId === p.toolUseId ? { ...t, result: p.content, isError: p.isError } : t,
+      )
+      turns[lastIdx] = last
+      return { ...prev, turns }
+    }
+    case 'message_delta': {
+      const usage = asMessageDeltaUsage(payload)
+      if (!last || !usage) return prev
+      last.usage = usage
+      turns[lastIdx] = last
+      return { ...prev, turns }
+    }
+    case 'result': {
+      const p = asResult(payload)
+      if (!last) return { ...prev, inFlight: false }
+      last.done = true
+      last.isError = p.isError
+      last.totalCostUsd = p.totalCostUsd
+      // If the turn has no assistant text yet (auth failure, etc.),
+      // surface the result string as the text so the user sees
+      // something.
+      if (!last.text && p.result) {
+        last.text = p.result
+      }
+      turns[lastIdx] = last
+      return { ...prev, turns, inFlight: false }
+    }
+    default:
+      return prev
+  }
+}
+
+// beginClaudeTurn registers a fresh turn for the user's outgoing
+// prompt. Called from useSessions when claude_prompt is sent.
+export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState {
+  const turn: ClaudeTurn = {
+    id: crypto.randomUUID(),
+    prompt,
+    startedAt: new Date().toISOString(),
+    text: '',
+    tools: [],
+    done: false,
+  }
+  return { ...prev, turns: [...prev.turns, turn], inFlight: true, lastError: undefined }
+}
+
+// finalizeInFlightTurn clears inFlight and pending, and if the
+// latest turn is still open (no `result` event arrived), marks it
+// done + isError so the chat view stops spinning on "…" and the
+// composer unlocks. Used by claude_run_ended, claude_error, and
+// per-session error frames as a backstop against the runner dying
+// or the backend rejecting a prompt after beginClaudeTurn already
+// fired optimistically.
+export function finalizeInFlightTurn(prev: ClaudeState, reason?: string): ClaudeState {
+  const turns = [...prev.turns]
+  const lastIdx = turns.length - 1
+  if (lastIdx >= 0 && !turns[lastIdx].done) {
+    const last = { ...turns[lastIdx], done: true, isError: true }
+    if (!last.text && reason) {
+      last.text = reason
+    }
+    turns[lastIdx] = last
+  }
+  return { ...prev, turns, inFlight: false, pending: [] }
+}
+
+// resolveClaudeTool removes a pending approval from the queue and
+// optimistically marks the corresponding tool call's decision.
+export function resolveClaudeTool(
+  prev: ClaudeState,
+  toolUseId: string,
+  decision: 'allow' | 'deny',
+): ClaudeState {
+  const pending = prev.pending.filter((p) => p.toolUseId !== toolUseId)
+  const turns = prev.turns.map((t) => ({
+    ...t,
+    tools: t.tools.map((tool) =>
+      tool.toolUseId === toolUseId ? { ...tool, decision } : tool,
+    ),
+  }))
+  return { ...prev, pending, turns }
+}
+
+// ---- payload narrowing ---------------------------------------------------
+
+function asTextDelta(payload: unknown): string {
+  const p = payload as { text?: string } | null
+  return p?.text ?? ''
+}
+
+function asToolUseStart(payload: unknown): { toolUseId: string; name: string } {
+  const p = payload as { tool_use_id?: string; name?: string } | null
+  return { toolUseId: p?.tool_use_id ?? '', name: p?.name ?? 'tool' }
+}
+
+function asToolUseEnd(payload: unknown): { toolUseId: string; input: unknown } {
+  const p = payload as { tool_use_id?: string; input?: unknown } | null
+  return { toolUseId: p?.tool_use_id ?? '', input: p?.input }
+}
+
+function asToolResult(
+  payload: unknown,
+): { toolUseId: string; content: string; isError: boolean } {
+  const p = payload as { tool_use_id?: string; content?: string; is_error?: boolean } | null
+  return {
+    toolUseId: p?.tool_use_id ?? '',
+    content: p?.content ?? '',
+    isError: !!p?.is_error,
+  }
+}
+
+function asMessageDeltaUsage(payload: unknown): ClaudeTurn['usage'] | null {
+  const p = payload as { usage?: Record<string, number> } | null
+  const u = p?.usage
+  if (!u) return null
+  // The CLI uses snake_case; older code also tolerated camelCase. Keep
+  // both for forward-compat with any wrapper that pre-normalises.
+  return {
+    inputTokens: u.input_tokens ?? u.inputTokens ?? 0,
+    outputTokens: u.output_tokens ?? u.outputTokens ?? 0,
+    cacheReadInputTokens: u.cache_read_input_tokens ?? u.cacheReadInputTokens ?? 0,
+    cacheCreationInputTokens:
+      u.cache_creation_input_tokens ?? u.cacheCreationInputTokens ?? 0,
+  }
+}
+
+function asResult(
+  payload: unknown,
+): { isError: boolean; totalCostUsd?: number; result?: string } {
+  const p = payload as { is_error?: boolean; total_cost_usd?: number; result?: string } | null
+  return {
+    isError: !!p?.is_error,
+    totalCostUsd: p?.total_cost_usd,
+    result: p?.result,
+  }
+}
