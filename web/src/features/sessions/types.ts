@@ -112,6 +112,10 @@ export interface PerSessionState {
   // Set by useSessions.enterClaude when the user opts in via
   // StartClaudeDialog; cleared on claude_exited.
   templateId?: string
+  // Bumped on every WS summary_updated frame for this session. The
+  // summary sidebar's fetch effect depends on this counter, so any
+  // bump triggers a re-fetch of the summary file content.
+  summaryFetchCounter?: number
   claude?: ClaudeState
 }
 

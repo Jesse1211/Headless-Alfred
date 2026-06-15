@@ -468,3 +468,21 @@ describe('claude UI reducer', () => {
     })
   })
 })
+
+describe('summary_updated', () => {
+  it('bumps summaryFetchCounter for known session', () => {
+    const seed = new Map<string, PerSessionState>([
+      ['A', { ...emptyPerSessionState() }],
+    ])
+    const r1 = reducePerSession(seed, { type: 'summary_updated', sessionID: 'A' }, b64decode)
+    expect(r1.perSession.get('A')?.summaryFetchCounter).toBe(1)
+    const r2 = reducePerSession(r1.perSession, { type: 'summary_updated', sessionID: 'A' }, b64decode)
+    expect(r2.perSession.get('A')?.summaryFetchCounter).toBe(2)
+  })
+
+  it('ignores summary_updated for unknown session', () => {
+    const seed = new Map<string, PerSessionState>()
+    const { perSession } = reducePerSession(seed, { type: 'summary_updated', sessionID: 'A' }, b64decode)
+    expect(perSession.size).toBe(0)
+  })
+})

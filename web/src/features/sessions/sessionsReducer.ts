@@ -163,6 +163,16 @@ export function reducePerSession(
         fetchCommandForSession: { sessionID: m.sessionID, cmdID: m.cmdId },
       }
     }
+    case 'summary_updated': {
+      const cur = prev.get(m.sessionID)
+      if (!cur) return { perSession: prev }
+      const next = new Map(prev)
+      next.set(m.sessionID, {
+        ...cur,
+        summaryFetchCounter: (cur.summaryFetchCounter ?? 0) + 1,
+      })
+      return { perSession: next }
+    }
     default:
       return { perSession: prev }
   }
