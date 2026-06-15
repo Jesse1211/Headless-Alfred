@@ -7,6 +7,7 @@ import (
 
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/claudehistory"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/static"
 )
@@ -60,6 +61,10 @@ func NewRouter(d Deps) http.Handler {
 
 		// Summary.
 		r.Get("/api/sessions/{sid}/summary", GetSummaryHandler(d.Manager.DataDir()).ServeHTTP)
+
+		// Claude UI chat history (rebuilt from CLI jsonl).
+		r.Get("/api/sessions/{sid}/claude-history",
+			GetClaudeHistoryHandler(d.Manager, claudehistory.NewLocator()).ServeHTTP)
 
 		// Git credentials (writes ~/.git-credentials so git clone/pull/push
 		// don't need the token on the command line and don't prompt).

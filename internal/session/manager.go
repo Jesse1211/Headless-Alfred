@@ -483,6 +483,13 @@ func (m *Manager) EnsureClaudeConvoID(sessionID string) (string, error) {
 	return m.getClaudeConvoID(sessionID), nil
 }
 
+// GetClaudeSessionID returns the persisted ClaudeSessionID for sessionID,
+// or "" if the session is unknown or hasn't started Claude yet. Public
+// counterpart of the package-internal getClaudeConvoID.
+func (m *Manager) GetClaudeSessionID(sessionID string) string {
+	return m.getClaudeConvoID(sessionID)
+}
+
 // getClaudeConvoID returns the persisted ClaudeSessionID for sessionID,
 // acquiring m.mu internally. Empty if the session is unknown.
 func (m *Manager) getClaudeConvoID(sessionID string) string {
