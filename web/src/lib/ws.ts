@@ -48,7 +48,7 @@ export type ServerMsg =
 
 export type ClientMsg =
   | { type: 'run'; sessionID: string; command: string }
-  | { type: 'enter_claude'; sessionID: string; renderer?: ClaudeRenderer }
+  | { type: 'enter_claude'; sessionID: string; renderer?: ClaudeRenderer; bypassPermissions?: boolean }
   | { type: 'exit_claude'; sessionID: string }
   | { type: 'stdin'; sessionID: string; data: string }
   | { type: 'claude_prompt'; sessionID: string; text: string }

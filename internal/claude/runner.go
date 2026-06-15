@@ -62,12 +62,17 @@ type PromptOptions struct {
 	Prompt string
 
 	// PermissionMode, if non-empty, is passed as --permission-mode.
-	// Largely vestigial now that we always pass
-	// --dangerously-skip-permissions: hooks still fire under bypass
-	// mode and our PreToolUse hook is the real gate. Kept on the
-	// struct so a future feature can override per-call without
-	// reshaping the API.
+	// Mutually exclusive with BypassPermissions (which is the same
+	// thing in a more specific shape). Kept around for future flag
+	// overrides; today nothing sets it.
 	PermissionMode string
+
+	// BypassPermissions, when true, passes --dangerously-skip-permissions
+	// — the CLI then skips its built-in "may I?" prompts that would
+	// otherwise deadlock in -p mode (no TTY for the answer). PreToolUse
+	// hook still fires under bypass, so Alfred remains the actual gate.
+	// Default false; opt in via the Start Claude dialog checkbox.
+	BypassPermissions bool
 }
 
 // PromptResult bundles the channel of streaming Events with handles
@@ -114,12 +119,14 @@ func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult,
 		"--output-format", "stream-json",
 		"--verbose",
 		"--include-partial-messages",
+	}
+	if opts.BypassPermissions {
 		// Skip the CLI's built-in "Run this Bash command? Y/N" prompts —
 		// in -p (headless) mode they would deadlock because there's no
-		// TTY. Our PreToolUse hook is still invoked and is the single
-		// source of truth for permissions (bypassPermissions does NOT
-		// disable hooks, verified empirically).
-		"--dangerously-skip-permissions",
+		// TTY for the user's answer. Our PreToolUse hook is still
+		// invoked under bypass mode (verified empirically), so Alfred
+		// remains the actual permission gate.
+		args = append(args, "--dangerously-skip-permissions")
 	}
 	if opts.SessionUUID != "" {
 		// The CLI is asymmetric here:

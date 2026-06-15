@@ -59,6 +59,12 @@ type SessionMeta struct {
 	// first time the session enters Claude mode and never cleared
 	// until the Alfred session itself is deleted.
 	ClaudeSessionID string `json:"claude_session_id,omitempty"`
+
+	// ClaudeBypassPermissions, when true, causes runner.go to pass
+	// --dangerously-skip-permissions to `claude -p`. Set by the
+	// Start Claude dialog. Reset along with Renderer on Pod restart
+	// because it's an entry-time choice the user has to re-make.
+	ClaudeBypassPermissions bool `json:"claude_bypass_permissions,omitempty"`
 }
 
 // SessionsFile is the persisted list of sessions. The file lives at

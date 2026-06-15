@@ -4,7 +4,7 @@ import './StartClaudeDialog.css'
 
 interface Props {
   defaultRenderer?: ClaudeRenderer
-  onStart: (renderer: ClaudeRenderer) => void
+  onStart: (renderer: ClaudeRenderer, bypassPermissions: boolean) => void
   onCancel: () => void
 }
 
@@ -12,11 +12,17 @@ interface Props {
 // Renderer is locked at entry; switching requires Exit Claude then re-entering.
 export function StartClaudeDialog({ defaultRenderer = 'ui', onStart, onCancel }: Props) {
   const [renderer, setRenderer] = useState<ClaudeRenderer>(defaultRenderer)
+  // bypass = pass --dangerously-skip-permissions to `claude -p`. Default
+  // ON because in -p mode without a TTY, claude's default "ask the
+  // user" path will deadlock waiting for stdin it cannot read. Our
+  // PreToolUse hook still fires under bypass, so user control is
+  // unaffected — Alfred remains the actual gate.
+  const [bypass, setBypass] = useState(true)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onCancel()
-      if (e.key === 'Enter') onStart(renderer)
+      if (e.key === 'Enter') onStart(renderer, bypass)
     }
     // Defer attaching by one frame. The dialog is typically opened by
     // an Enter keypress in the composer (`claude` -> setStartClaudeFor);
@@ -29,7 +35,7 @@ export function StartClaudeDialog({ defaultRenderer = 'ui', onStart, onCancel }:
       clearTimeout(t)
       window.removeEventListener('keydown', onKey)
     }
-  }, [onCancel, onStart, renderer])
+  }, [onCancel, onStart, renderer, bypass])
 
   return (
     <div className="start-claude__backdrop" onClick={onCancel}>
@@ -81,12 +87,30 @@ export function StartClaudeDialog({ defaultRenderer = 'ui', onStart, onCancel }:
             </div>
           </label>
         </div>
+        <label className="start-claude__checkbox">
+          <input
+            type="checkbox"
+            checked={bypass}
+            onChange={(e) => setBypass(e.target.checked)}
+          />
+          <div>
+            <div className="start-claude__checkbox-title">
+              Skip Claude CLI's built-in permission prompts
+            </div>
+            <div className="start-claude__checkbox-desc">
+              Adds <code>--dangerously-skip-permissions</code>. Alfred still asks
+              you before running any tool (the card you see in the chat). Without
+              this, headless Claude may deadlock waiting for keyboard input
+              it can't read.
+            </div>
+          </div>
+        </label>
         <div className="start-claude__actions">
           <button type="button" onClick={onCancel}>Cancel</button>
           <button
             type="button"
             className="start-claude__primary"
-            onClick={() => onStart(renderer)}
+            onClick={() => onStart(renderer, bypass)}
           >
             Start
           </button>

@@ -341,3 +341,78 @@ test.describe('Claude UI: AskUserQuestion tool adaptation', () => {
     expect(decision.permissionDecisionReason).toContain('Blue')
   })
 })
+
+test.describe('Sidebar: session rename via double-click', () => {
+  test('double-click name → input → Enter commits new name', async ({ page }) => {
+    const tok = await login(page)
+    const sid = await freshSessionTracked(page, tok, 'pw-rename-source')
+    await loginUI(page, tok)
+    await selectSession(page, sid)
+
+    const row = page.locator(`text=pw-rename-source`).first()
+    await row.dblclick()
+
+    // The row replaces the span with an input.
+    const editor = page.locator('input.session-row__input').first()
+    await expect(editor).toBeVisible({ timeout: 2_000 })
+    await editor.fill('pw-rename-renamed')
+    await editor.press('Enter')
+
+    await expect(page.locator(`text=pw-rename-renamed`).first()).toBeVisible()
+    // The old name must be gone.
+    await expect(page.locator(`text=pw-rename-source`)).toHaveCount(0)
+
+    await page.screenshot({ path: path.join(SHOTS, 'session-rename.png'), fullPage: true })
+  })
+})
+
+test.describe('Start Claude dialog: bypass checkbox', () => {
+  test('checkbox visible, default checked, unchecking warns about deadlock', async ({ page }) => {
+    const tok = await login(page)
+    const sid = await freshSessionTracked(page, tok, 'pw-bypass')
+    await loginUI(page, tok)
+    await selectSession(page, sid)
+
+    await page.locator('.workspace__claude-btn').click()
+    await expect(page.locator('text=Start Claude')).toBeVisible()
+
+    const checkbox = page.locator('.start-claude__checkbox input[type="checkbox"]')
+    await expect(checkbox).toBeChecked()
+    // Help-text mentions the flag verbatim so users can grep for it.
+    await expect(page.locator('.start-claude__checkbox-desc')).toContainText('--dangerously-skip-permissions')
+
+    // Toggling off is allowed (we don't disable the box).
+    await checkbox.uncheck()
+    await expect(checkbox).not.toBeChecked()
+
+    await page.screenshot({ path: path.join(SHOTS, 'start-claude-bypass-checkbox.png'), fullPage: true })
+  })
+})
+
+test.describe('Claude UI composer: slash-command hint', () => {
+  test('typing a leading slash shows the "sent to CLI" hint with the command name', async ({ page }) => {
+    const tok = await login(page)
+    const sid = await freshSessionTracked(page, tok, 'pw-slash-hint')
+    await loginUI(page, tok)
+    await selectSession(page, sid)
+
+    await page.locator('.workspace__claude-btn').click()
+    await expect(page.locator('text=Start Claude')).toBeVisible()
+    await page.locator('label:has-text("Chat UI")').click()
+    await page.locator('button:has-text("Start")').click()
+    await expect(page.locator('textarea.claude-chat__input')).toBeVisible({ timeout: 5_000 })
+
+    const composer = page.locator('textarea.claude-chat__input')
+    // No hint when input is plain text.
+    await composer.fill('hello world')
+    await expect(page.locator('.claude-chat__slash-hint')).toHaveCount(0)
+
+    // Hint appears when the input starts with '/'.
+    await composer.fill('/compact')
+    const hint = page.locator('.claude-chat__slash-hint')
+    await expect(hint).toBeVisible()
+    await expect(hint).toContainText('/compact')
+
+    await page.screenshot({ path: path.join(SHOTS, 'slash-command-hint.png'), fullPage: true })
+  })
+})

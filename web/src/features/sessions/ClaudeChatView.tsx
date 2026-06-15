@@ -74,6 +74,14 @@ export function ClaudeChatView({
       </div>
 
       <div className="claude-chat__composer">
+        {draft.startsWith('/') && (
+          <div className="claude-chat__slash-hint">
+            Slash command — sent to Claude CLI ({(draft.trim().split(/\s+/)[0]) || '/'}).
+            Commands like <code>/compact</code> and <code>/clear</code> work; some
+            interactive ones may fail in headless mode.
+          </div>
+        )}
+        <div className="claude-chat__composer-row">
         <textarea
           className="claude-chat__input"
           placeholder={state.inFlight ? 'Claude is thinking…' : 'Message Claude…'}
@@ -108,6 +116,7 @@ export function ClaudeChatView({
               Send
             </button>
           )}
+        </div>
         </div>
       </div>
     </div>

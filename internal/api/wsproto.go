@@ -17,11 +17,12 @@ type InMsg struct {
 	Data      string `json:"data,omitempty"` // base64-encoded raw stdin bytes (stdin frame)
 
 	// V1 claude UI renderer additions:
-	Renderer  string `json:"renderer,omitempty"`  // "tui" | "ui" on enter_claude
-	Text      string `json:"text,omitempty"`      // claude_prompt body
-	ToolUseID string `json:"toolUseId,omitempty"` // tool_decision target
-	Decision  string `json:"decision,omitempty"`  // "allow" | "deny" on tool_decision
-	Reason    string `json:"reason,omitempty"`    // optional deny reason
+	Renderer           string `json:"renderer,omitempty"`           // "tui" | "ui" on enter_claude
+	BypassPermissions  *bool  `json:"bypassPermissions,omitempty"`  // enter_claude: pass --dangerously-skip-permissions to claude -p. Pointer so absent ≠ false.
+	Text               string `json:"text,omitempty"`               // claude_prompt body
+	ToolUseID          string `json:"toolUseId,omitempty"`          // tool_decision target
+	Decision           string `json:"decision,omitempty"`           // "allow" | "deny" on tool_decision
+	Reason             string `json:"reason,omitempty"`             // optional deny reason
 }
 
 // OutMsg is a server → client WS frame.

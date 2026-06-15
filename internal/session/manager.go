@@ -405,6 +405,26 @@ func (m *Manager) SetRenderer(sessionID string, r store.ClaudeRenderer) error {
 	})
 }
 
+// GetClaudeBypass reports whether claude_prompt invocations on this
+// session should pass --dangerously-skip-permissions. Defaults to
+// false for unknown sessions.
+func (m *Manager) GetClaudeBypass(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if meta, ok := m.metas[sessionID]; ok {
+		return meta.ClaudeBypassPermissions
+	}
+	return false
+}
+
+// SetClaudeBypass atomically updates the bypass flag and persists.
+// Returns ErrSessionNotFound if sessionID is unknown.
+func (m *Manager) SetClaudeBypass(sessionID string, bypass bool) error {
+	return m.mutateAndPersist(sessionID, func(meta *store.SessionMeta) {
+		meta.ClaudeBypassPermissions = bypass
+	})
+}
+
 // EnsureClaudeConvoID returns the session's Claude conversation
 // UUID, generating + persisting one if absent. Idempotent.
 func (m *Manager) EnsureClaudeConvoID(sessionID string) (string, error) {
@@ -570,6 +590,11 @@ func (m *Manager) Reconcile() error {
 		// the same conversation.)
 		if err := m.SetRenderer(meta.ID, ""); err != nil && !errors.Is(err, ErrSessionNotFound) {
 			m.cfg.Logger.Error("reset renderer after recreate", "session", meta.ID, "err", err)
+		}
+		// Same for the bypass-permissions opt-in — the user re-picks
+		// it on the next Start Claude dialog.
+		if err := m.SetClaudeBypass(meta.ID, false); err != nil && !errors.Is(err, ErrSessionNotFound) {
+			m.cfg.Logger.Error("reset claude bypass after recreate", "session", meta.ID, "err", err)
 		}
 	}
 

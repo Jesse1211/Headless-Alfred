@@ -236,6 +236,16 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 	if err := m.SetRenderer(msg.SessionID, renderer); err != nil {
 		slog.Warn("SetRenderer failed", "session", msg.SessionID, "err", err)
 	}
+	// Bypass flag default: true (matches the dialog's default checkbox).
+	// Absent ↔ legacy clients that don't send the field — keep the
+	// safer default so things just work.
+	bypass := true
+	if msg.BypassPermissions != nil {
+		bypass = *msg.BypassPermissions
+	}
+	if err := m.SetClaudeBypass(msg.SessionID, bypass); err != nil {
+		slog.Warn("SetClaudeBypass failed", "session", msg.SessionID, "err", err)
+	}
 	_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID, Renderer: string(renderer)})
 }
 
@@ -336,11 +346,10 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	cwd := claudeInvocationCWD()
 	ctx, cancel := context.WithCancel(context.Background())
 	pr, err := runner.Prompt(ctx, claude.PromptOptions{
-		SessionUUID: convoID,
-		CWD:         cwd,
-		Prompt:      msg.Text,
-		// PermissionMode intentionally empty — runner always passes
-		// --dangerously-skip-permissions; PreToolUse hook is the gate.
+		SessionUUID:       convoID,
+		CWD:               cwd,
+		Prompt:            msg.Text,
+		BypassPermissions: m.GetClaudeBypass(msg.SessionID),
 	})
 	if err != nil {
 		cancel()

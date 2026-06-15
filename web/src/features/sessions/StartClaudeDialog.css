@@ -105,3 +105,40 @@
 .start-claude__primary:hover {
   filter: brightness(1.08);
 }
+
+.start-claude__checkbox {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.start-claude__checkbox input[type='checkbox'] {
+  margin-top: 3px;
+  accent-color: var(--accent, #7aa2f7);
+}
+
+.start-claude__checkbox-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.start-claude__checkbox-desc {
+  color: var(--fg-muted, #9aa3b2);
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 2px;
+}
+
+.start-claude__checkbox-desc code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
