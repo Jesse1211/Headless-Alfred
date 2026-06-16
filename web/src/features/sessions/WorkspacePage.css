@@ -196,23 +196,28 @@
   background: rgba(224, 108, 117, 0.1);
 }
 
-.workspace__summary-btn {
+.workspace__sidebar-icon-btn {
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 10px;
-  color: var(--text);
-  font-size: 12px;
+  padding: 4px 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, #9aa3b2);
   cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
 }
 
-.workspace__summary-btn:hover {
-  background: var(--bubble);
+.workspace__sidebar-icon-btn:hover {
+  color: var(--text, #eaeaea);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 
-.workspace__summary-btn.is-active {
-  border-color: var(--accent, #7aa2f7);
+.workspace__sidebar-icon-btn.is-active {
   color: var(--accent, #7aa2f7);
+  border-color: var(--accent, #7aa2f7);
 }
 
 .workspace__banner {

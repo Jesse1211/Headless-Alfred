@@ -52,6 +52,11 @@ export function WorkspacePage({ token, onLogout }: Props) {
   // switching to session B.
   const [sidebarHidden, setSidebarHidden] = useState<boolean>(() => {
     try {
+      // Prefer the new key. Fall back to the old summary-only key for
+      // a one-time migration so returning users keep their hide
+      // preference.
+      const v = localStorage.getItem('alfred_right_sidebar_hidden')
+      if (v !== null) return v === '1'
       return localStorage.getItem('alfred_summary_sidebar_hidden') === '1'
     } catch {
       return false
@@ -61,10 +66,10 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const setSidebarHiddenPersisted = useCallback((hidden: boolean) => {
     setSidebarHidden(hidden)
     try {
-      localStorage.setItem('alfred_summary_sidebar_hidden', hidden ? '1' : '0')
+      localStorage.setItem('alfred_right_sidebar_hidden', hidden ? '1' : '0')
+      localStorage.removeItem('alfred_summary_sidebar_hidden') // migrate
     } catch {
-      // localStorage unavailable (private mode, etc.) — silently fall back
-      // to in-memory only
+      // localStorage unavailable
     }
   }, [])
 
@@ -192,20 +197,19 @@ export function WorkspacePage({ token, onLogout }: Props) {
               Exit Claude
             </button>
           )}
-          {/* Summary sidebar toggle — visible whenever the session is
-              eligible for the summary sidebar (chat session in Claude
-              UI mode with the summary-todo template). Mirrors the
-              right-edge handle but lives in the header so it's
-              discoverable. */}
-          {selected && ps && ps.mode === 'claude' && ps.templateId === 'summary-todo' && !isRecap && (
+          {selected && ps && !isRecap && (
             <button
               type="button"
-              className={`workspace__summary-btn ${sidebarHidden ? '' : 'is-active'}`}
+              className={`workspace__sidebar-icon-btn ${sidebarHidden ? '' : 'is-active'}`}
               onClick={() => setSidebarHiddenPersisted(!sidebarHidden)}
-              title={sidebarHidden ? 'Show summary sidebar' : 'Hide summary sidebar'}
+              title={sidebarHidden ? 'Show right sidebar' : 'Hide right sidebar'}
               aria-pressed={!sidebarHidden}
+              aria-label="Toggle right sidebar"
             >
-              Summary
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                <line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
             </button>
           )}
           {selected && ps && ps.mode !== 'claude' && (
