@@ -23,22 +23,6 @@
   font-weight: 600;
 }
 
-.summary-sidebar__close {
-  background: transparent;
-  border: none;
-  color: var(--fg-muted, #9aa3b2);
-  font-size: 18px;
-  line-height: 1;
-  padding: 4px 8px;
-  cursor: pointer;
-  border-radius: 4px;
-}
-
-.summary-sidebar__close:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--fg, #eaeaea);
-}
-
 .summary-sidebar__body {
   flex: 1;
   overflow-y: auto;

@@ -92,13 +92,6 @@ export function WorkspacePage({ token, onLogout }: Props) {
   // Resizable left + right widths. Persisted to localStorage independently
   // of the sidebar-hidden flag, so re-opening the summary sidebar restores
   // the last-set width.
-  const leftSidebar = useResizableWidth({
-    storageKey: 'alfred_left_sidebar_width',
-    initial: 260,
-    min: 180,
-    max: 480,
-    edge: 'right',
-  })
   const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem('alfred_left_sidebar_collapsed') === '1'
@@ -111,12 +104,23 @@ export function WorkspacePage({ token, onLogout }: Props) {
     try { localStorage.setItem('alfred_left_sidebar_collapsed', collapsed ? '1' : '0') } catch { /* ignore */ }
   }, [])
   const COLLAPSED_LEFT_WIDTH = 40
+  const leftSidebar = useResizableWidth({
+    storageKey: 'alfred_left_sidebar_width',
+    initial: 260,
+    min: 180,
+    max: 480,
+    edge: 'right',
+    archiveThreshold: 140,
+    onArchive: () => setLeftCollapsedPersisted(true),
+  })
   const rightSidebar = useResizableWidth({
     storageKey: 'alfred_right_sidebar_width',
     initial: 320,
     min: 220,
     max: 600,
     edge: 'left',
+    archiveThreshold: 180,
+    onArchive: () => setSidebarHiddenPersisted(true),
   })
 
   const leftWidthPx = leftCollapsed ? COLLAPSED_LEFT_WIDTH : leftSidebar.width
@@ -347,7 +351,6 @@ export function WorkspacePage({ token, onLogout }: Props) {
               key={selected.id}
               sessionID={selected.id}
               summaryFetchCounter={ps.summaryFetchCounter ?? 0}
-              onClose={() => setSidebarHiddenPersisted(true)}
             />
           )}
           {showRecapSidebar && selected && (

@@ -6,10 +6,9 @@ import './SummarySidebar.css'
 interface Props {
   sessionID: string
   summaryFetchCounter: number
-  onClose: () => void
 }
 
-export function SummarySidebar({ sessionID, summaryFetchCounter, onClose }: Props) {
+export function SummarySidebar({ sessionID, summaryFetchCounter }: Props) {
   const [summary, setSummary] = useState<string>('')
   const [summaryErr, setSummaryErr] = useState<string | null>(null)
   // Only show the loading spinner on the FIRST fetch per session — later
@@ -50,13 +49,6 @@ export function SummarySidebar({ sessionID, summaryFetchCounter, onClose }: Prop
     <aside className="summary-sidebar" aria-label="Task summary sidebar">
       <header className="summary-sidebar__header">
         <h2 className="summary-sidebar__title">Task Summary</h2>
-        <button
-          type="button"
-          className="summary-sidebar__close"
-          onClick={onClose}
-          aria-label="Hide summary sidebar"
-          title="Hide sidebar"
-        >×</button>
       </header>
       <div className="summary-sidebar__body">
         <SummaryView
