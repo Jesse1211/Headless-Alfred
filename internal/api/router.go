@@ -70,6 +70,10 @@ func NewRouter(d Deps) http.Handler {
 		// Summary.
 		r.Get("/api/sessions/{sid}/summary", GetSummaryHandler(d.Manager.DataDir()).ServeHTTP)
 
+		// Notes.
+		r.Get("/api/sessions/{sid}/note", GetNoteHandler(d.Manager.DataDir()).ServeHTTP)
+		r.Put("/api/sessions/{sid}/note", PutNoteHandler(d.Manager.DataDir()).ServeHTTP)
+
 		// Claude UI chat history (rebuilt from CLI jsonl).
 		r.Get("/api/sessions/{sid}/claude-history",
 			GetClaudeHistoryHandler(d.Manager, claudehistory.NewLocator()).ServeHTTP)

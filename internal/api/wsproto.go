@@ -115,6 +115,12 @@ type OutMsg struct {
 // GET /api/sessions/{sid}/summary.
 const TypeSummaryUpdated = "summary_updated"
 
+// TypeNoteUpdated is the WS frame Type pushed by alfred-server
+// when the on-disk note file for a session is written. The
+// frame carries no body — the frontend re-fetches via
+// GET /api/sessions/{sid}/note.
+const TypeNoteUpdated = "note_updated"
+
 // TypeRecapUpdated is the WS frame Type pushed by alfred-server when
 // a recap file (<dataDir>/recaps/<date>.md) is written. The frame
 // carries the Date field so the frontend knows which recap changed

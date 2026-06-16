@@ -15,6 +15,7 @@ import (
 
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/notes"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -197,6 +198,19 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 		defer sw.Stop()
 	}
 
+	noteUpdates := make(chan string, 4)
+	noteWatcher, noteErr := notes.StartWatcher(m.DataDir(), func(sid string) {
+		select {
+		case noteUpdates <- sid:
+		case <-stop:
+		}
+	})
+	if noteErr != nil {
+		slog.Warn("notes watcher startup failed; notes UI will be stale", "err", noteErr)
+	} else {
+		defer noteWatcher.Stop()
+	}
+
 	// Per-connection subscription to the process-wide recap broadcaster.
 	// Receives a date string each time a recap file is written.
 	recapSub, recapUnsub := broadcaster.subscribe()
@@ -306,6 +320,14 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 				continue
 			}
 			_ = write(OutMsg{Type: TypeSummaryUpdated, SessionID: sid})
+		case sid, ok := <-noteUpdates:
+			if !ok {
+				continue
+			}
+			if _, err := m.Get(sid); err != nil {
+				continue
+			}
+			_ = write(OutMsg{Type: TypeNoteUpdated, SessionID: sid})
 		case date, ok := <-recapSub:
 			if !ok {
 				return
