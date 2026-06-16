@@ -1,0 +1,41 @@
+.notes-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+}
+
+.notes-panel__textarea {
+  flex: 1;
+  min-height: 120px;
+  resize: none;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  color: var(--text, #eaeaea);
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  outline: none;
+}
+
+.notes-panel__textarea:focus {
+  border-color: rgba(122, 162, 247, 0.4);
+}
+
+.notes-panel__footer {
+  padding: 6px 2px 0;
+  font-size: 11px;
+  color: var(--text-muted, #9aa3b2);
+  min-height: 14px;
+}
+
+.notes-panel__saved {
+  color: #7ed492;
+}
+
+.notes-panel__error {
+  color: #e88c8c;
+}
