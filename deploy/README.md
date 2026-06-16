@@ -172,7 +172,6 @@ deploy/
     ├── values-oracle.yaml          oracle overlay (traefik ingressClass, alfred.local host)
     └── templates/
         ├── _helpers.tpl
-        ├── namespace.yaml
         ├── deployment.yaml         single replica, Recreate strategy, /healthz + /readyz probes
         ├── service.yaml            ClusterIP :80 → pod :8080
         ├── ingress.yaml            traefik, host alfred.local, TLS optional via tls.enabled
