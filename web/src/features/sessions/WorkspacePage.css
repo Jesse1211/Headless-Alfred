@@ -4,7 +4,14 @@
      can react to drag in real time. Default for the fallback case
      (no inline style yet) is the original 260 + 1fr layout. */
   grid-template-columns: 260px 1fr;
+  /* Lock the row track to viewport height too. Without an explicit
+     grid-template-rows, the row becomes 'auto' (= max of all items'
+     intrinsic heights). A long chat then makes .workspace__main
+     grow past 100vh and the page scrolls. Pinning to 100vh keeps
+     every grid item clipped to viewport. */
+  grid-template-rows: 100vh;
   height: 100vh;
+  overflow: hidden;
   background: var(--bg);
 }
 
