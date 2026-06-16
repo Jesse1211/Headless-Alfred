@@ -224,21 +224,56 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
 }
 
 function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
+  const [expanded, setExpanded] = useState(false)
   const status = toolStatus(tool)
+  const preview = toolPreview(tool)
+  const hasDetails = tool.input != null || (tool.result != null && tool.result !== '')
   return (
-    <div className={`claude-tool claude-tool--${status} ${tool.isError ? 'is-error' : ''}`}>
-      <div className="claude-tool__header">
+    <div className={`claude-tool claude-tool--${status} ${tool.isError ? 'is-error' : ''} ${expanded ? 'is-expanded' : ''}`}>
+      <button
+        type="button"
+        className="claude-tool__row"
+        onClick={() => hasDetails && setExpanded((v) => !v)}
+        title={hasDetails ? (expanded ? 'Collapse' : 'Expand') : ''}
+        aria-expanded={expanded}
+      >
+        <span className="claude-tool__chev">{hasDetails ? (expanded ? '▾' : '▸') : '·'}</span>
         <code className="claude-tool__name">{tool.name}</code>
+        {preview && <span className="claude-tool__preview">({preview})</span>}
         <span className="claude-tool__status">{status}</span>
-      </div>
-      {tool.input != null && (
-        <pre className="claude-tool__input">{formatJSON(tool.input)}</pre>
-      )}
-      {tool.result != null && tool.result !== '' && (
-        <pre className="claude-tool__result">{tool.result}</pre>
+      </button>
+      {expanded && hasDetails && (
+        <div className="claude-tool__body">
+          {tool.input != null && (
+            <pre className="claude-tool__input">{formatJSON(tool.input)}</pre>
+          )}
+          {tool.result != null && tool.result !== '' && (
+            <pre className="claude-tool__result">{tool.result}</pre>
+          )}
+        </div>
       )}
     </div>
   )
+}
+
+// toolPreview returns a short, human-readable summary of the tool's
+// principal argument for the collapsed row.
+function toolPreview(tool: ClaudeToolCall): string {
+  const inp = tool.input as Record<string, unknown> | null
+  if (!inp || typeof inp !== 'object') return ''
+  const pick = (key: string): string | null => {
+    const v = inp[key]
+    return typeof v === 'string' ? v : null
+  }
+  const candidates = ['command', 'file_path', 'path', 'pattern', 'query', 'url']
+  for (const k of candidates) {
+    const v = pick(k)
+    if (v) return v.length > 80 ? v.slice(0, 77) + '…' : v
+  }
+  for (const v of Object.values(inp)) {
+    if (typeof v === 'string' && v) return v.length > 80 ? v.slice(0, 77) + '…' : v
+  }
+  return ''
 }
 
 function formatJSON(v: unknown): string {
