@@ -198,7 +198,17 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 		return
 	}
 	if m.GetMode(msg.SessionID) == store.ModeClaude {
-		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "already_in_claude", Message: "session is already in claude mode"})
+		// Idempotent: if the session is already in claude mode with the
+		// same renderer (e.g. the user clicked Recap a second time and
+		// the singleton recap session re-fires enter_claude), just
+		// re-emit claude_entered as a heads-up to the client. Mismatched
+		// renderer is still an error — switching renderers requires
+		// Exit Claude first.
+		if m.GetRenderer(msg.SessionID) == renderer {
+			_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID, Renderer: string(renderer)})
+			return
+		}
+		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "renderer_mismatch", Message: "session is already in claude mode with a different renderer"})
 		return
 	}
 	sh, err := m.Get(msg.SessionID)
