@@ -9,7 +9,6 @@ import { turnStatus } from './sessionStatus'
 const TURN_STATUS_LABEL: Record<ReturnType<typeof turnStatus>, string> = {
   idle: 'Your turn',
   busy: 'Waiting for reply',
-  needsAction: 'Needs your decision',
 }
 
 const CONN_STATE_LABEL: Record<string, string> = {
@@ -222,57 +221,61 @@ export function WorkspacePage({ token, onLogout }: Props) {
 
       <div className="workspace__main">
         <header className="workspace__header">
-          <div className="workspace__brand">{selected?.name ?? 'Headless Alfred'}</div>
-          <div className="workspace__status">
-            <span
-              className={`status-dot status-dot--${s.connState}`}
-              data-tooltip={CONN_STATE_LABEL[s.connState] ?? s.connState}
-              data-tooltip-side="left"
-            />
-            {selected && ps && (
+          <div className="workspace__header-left">
+            <div className="workspace__brand">{selected?.name ?? 'Headless Alfred'}</div>
+            <div className="workspace__status">
               <span
-                className={`turn-dot turn-dot--${turnStatus(ps)}`}
-                data-tooltip={TURN_STATUS_LABEL[turnStatus(ps)]}
-                data-tooltip-side="left"
+                className={`status-dot status-dot--${s.connState}`}
+                data-tooltip={CONN_STATE_LABEL[s.connState] ?? s.connState}
               />
+              {selected && ps && (
+                <span
+                  className={`turn-dot turn-dot--${turnStatus(ps)}`}
+                  data-tooltip={TURN_STATUS_LABEL[turnStatus(ps)]}
+                />
+              )}
+            </div>
+          </div>
+          <div className="workspace__header-center">
+            {selected && ps && ps.mode === 'claude' && (
+              <button
+                type="button"
+                className="workspace__claude-btn workspace__claude-btn--exit"
+                onClick={() => s.exitClaude(selected.id)}
+                data-tooltip="Send Ctrl+C and return to shell"
+              >
+                Exit Claude
+              </button>
+            )}
+            {selected && ps && ps.mode !== 'claude' && (
+              <button
+                type="button"
+                className="workspace__claude-btn"
+                onClick={() => setStartClaudeFor(selected.id)}
+                disabled={composerBusy}
+                data-tooltip="Start Claude in this session"
+              >
+                Claude
+              </button>
             )}
           </div>
-          {selected && ps && ps.mode === 'claude' && (
-            <button
-              type="button"
-              className="workspace__claude-btn workspace__claude-btn--exit"
-              onClick={() => s.exitClaude(selected.id)}
-              data-tooltip="Send Ctrl+C and return to shell"
-            >
-              Exit Claude
-            </button>
-          )}
-          {selected && ps && !isRecap && (
-            <button
-              type="button"
-              className={`workspace__sidebar-icon-btn ${sidebarHidden ? '' : 'is-active'}`}
-              onClick={() => setSidebarHiddenPersisted(!sidebarHidden)}
-              data-tooltip={sidebarHidden ? 'Show right sidebar' : 'Hide right sidebar'}
-              aria-pressed={!sidebarHidden}
-              aria-label="Toggle right sidebar"
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
-                <line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" strokeWidth="1.3" />
-              </svg>
-            </button>
-          )}
-          {selected && ps && ps.mode !== 'claude' && (
-            <button
-              type="button"
-              className="workspace__claude-btn"
-              onClick={() => setStartClaudeFor(selected.id)}
-              disabled={composerBusy}
-              data-tooltip="Start Claude in this session"
-            >
-              Claude
-            </button>
-          )}
+          <div className="workspace__header-right">
+            {selected && ps && !isRecap && (
+              <button
+                type="button"
+                className={`workspace__sidebar-icon-btn ${sidebarHidden ? '' : 'is-active'}`}
+                onClick={() => setSidebarHiddenPersisted(!sidebarHidden)}
+                data-tooltip={sidebarHidden ? 'Show right sidebar' : 'Hide right sidebar'}
+                aria-pressed={!sidebarHidden}
+                aria-label="Toggle right sidebar"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                  <line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" strokeWidth="1.3" />
+                </svg>
+              </button>
+            )}
+          </div>
         </header>
 
         {s.lastError && (

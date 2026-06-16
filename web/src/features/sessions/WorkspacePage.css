@@ -93,32 +93,50 @@
 }
 
 .workspace__header {
-  display: flex;
+  /* Three grid columns — left cluster (brand + status), center
+     (Claude button), right (sidebar toggle). We tried flex with two
+     margin-left:auto declarations before; flexbox splits remaining
+     space EQUALLY between the two autos, which lands both 'centered'
+     items in the middle rather than one center and one right. Grid
+     with 1fr auto 1fr pins each region geometrically. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 12px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
 }
 
+.workspace__header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.workspace__header-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
 .workspace__brand {
   font-weight: 600;
   font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace__status {
-  /* Sits to the right of the brand title, separated by margin-left.
-     We want the order brand → status (left cluster) → claude-btn
-     (center) → sidebar-toggle (right). The center button gets
-     'margin-left: auto' so it floats to the middle of the
-     remaining space; the right toggle gets 'margin-left: auto' too,
-     which together push status to the left, claude to the middle,
-     toggle to the right. */
-  margin-left: 18px;
   display: flex;
   align-items: center;
   /* Pull the two dots apart so they read as two distinct indicators
      instead of a single double-dot glyph. */
   gap: 12px;
+  flex-shrink: 0;
 }
 
 /* Collapsed-sidebar footer: stacks small icon buttons (Git/Claude
@@ -133,9 +151,6 @@
 }
 
 .workspace__claude-btn {
-  /* Center: pushed to the middle of the remaining header space by
-     the auto margin pair (this one + sidebar-icon-btn below). */
-  margin-left: auto;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -164,10 +179,6 @@
 }
 
 .workspace__sidebar-icon-btn {
-  /* Right: paired with the claude-btn's margin-left:auto, this
-     second auto margin pushes the toggle to the far right of the
-     header while the claude-btn lands in the middle. */
-  margin-left: auto;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;

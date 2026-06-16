@@ -7,7 +7,6 @@ import './SessionsSidebar.css'
 const TURN_STATUS_LABEL: Record<TurnStatus, string> = {
   idle: 'Your turn',
   busy: 'Waiting for reply',
-  needsAction: 'Needs your decision',
 }
 
 interface Props {

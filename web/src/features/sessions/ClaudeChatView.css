@@ -34,6 +34,49 @@
   text-align: center;
 }
 
+/* Empty state: hero block sits in the first row, composer in the
+   second. The first row gets a fixed 38% of viewport height as
+   padding-top so the (hero + composer) group lands roughly at the
+   visual third — pure 50% centering tends to look bottom-heavy. */
+.claude-chat--empty {
+  grid-template-rows: 38vh auto;
+}
+
+.claude-chat__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 20px;
+  min-height: 0;
+}
+
+.claude-chat__hero-title {
+  margin: 0 0 8px;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text, #ececec);
+}
+
+.claude-chat__hero-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-muted, #9aa3b2);
+}
+
+/* In empty state, narrow the composer and center it so it visually
+   matches the hero above it instead of stretching the full pane
+   width. Once turns appear, .claude-chat--empty drops and the
+   composer reverts to the full-width style below. */
+.claude-chat--empty .claude-chat__composer {
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  border-top: none;
+  background: transparent;
+}
+
 .claude-chat__error {
   background: rgba(220, 100, 100, 0.12);
   border: 1px solid rgba(220, 100, 100, 0.4);

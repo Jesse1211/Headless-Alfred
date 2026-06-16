@@ -41,38 +41,54 @@ export function ClaudeChatView({
     setDraft('')
   }
 
+  // Empty state: no turns yet, nothing in flight, no pending
+  // approvals / questions. Center the composer with a hero title
+  // above it (ChatGPT-style first-run). As soon as the first turn
+  // appears we switch to the normal scroll-above-composer layout
+  // and the composer pins to the bottom.
+  const isEmpty =
+    state.turns.length === 0 &&
+    !state.inFlight &&
+    state.pending.length === 0 &&
+    state.pendingQuestions.length === 0 &&
+    !state.lastError
+
   return (
-    <div className="claude-chat">
-      <div className="claude-chat__scroll" ref={scrollRef}>
-        {state.turns.length === 0 && !state.inFlight && (
-          <div className="claude-chat__empty">
-            Start a conversation with Claude. All tool use will ask before running.
-          </div>
-        )}
-        {state.turns.map((t) => (
-          <TurnView key={t.id} turn={t} />
-        ))}
-        {state.pending.map((req) => (
-          <ToolApprovalCard
-            key={req.toolUseId}
-            request={req}
-            onDecide={(d, reason) => onToolDecision(req.toolUseId, d, reason)}
-          />
-        ))}
-        {state.pendingQuestions.map((req) => (
-          <AskUserQuestionCard
-            key={req.toolUseId}
-            request={req}
-            onSubmit={onQuestionAnswer}
-            onCancel={(id) => onToolDecision(id, 'deny', 'User cancelled the question.')}
-          />
-        ))}
-        {state.lastError && (
-          <div className="claude-chat__error">
-            {state.lastError.message || state.lastError.code}
-          </div>
-        )}
-      </div>
+    <div className={`claude-chat ${isEmpty ? 'claude-chat--empty' : ''}`}>
+      {isEmpty ? (
+        <div className="claude-chat__hero">
+          <h1 className="claude-chat__hero-title">Headless Alfred</h1>
+          <p className="claude-chat__hero-subtitle">
+            What can I help with? Tools will ask before running.
+          </p>
+        </div>
+      ) : (
+        <div className="claude-chat__scroll" ref={scrollRef}>
+          {state.turns.map((t) => (
+            <TurnView key={t.id} turn={t} />
+          ))}
+          {state.pending.map((req) => (
+            <ToolApprovalCard
+              key={req.toolUseId}
+              request={req}
+              onDecide={(d, reason) => onToolDecision(req.toolUseId, d, reason)}
+            />
+          ))}
+          {state.pendingQuestions.map((req) => (
+            <AskUserQuestionCard
+              key={req.toolUseId}
+              request={req}
+              onSubmit={onQuestionAnswer}
+              onCancel={(id) => onToolDecision(id, 'deny', 'User cancelled the question.')}
+            />
+          ))}
+          {state.lastError && (
+            <div className="claude-chat__error">
+              {state.lastError.message || state.lastError.code}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="claude-chat__composer">
         {draft.startsWith('/') && (
