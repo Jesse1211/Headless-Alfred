@@ -21,6 +21,10 @@ interface Props {
   // Collapse the sidebar to its narrow strip. Optional so tests
   // can render the sidebar in isolation without supplying it.
   onCollapse?: () => void
+  // Per-row turn indicator: true = waiting for reply (red dot),
+  // false = idle / your turn (green dot). When undefined, no dot
+  // is rendered (tests don't have to wire this up).
+  busyForSession?: (sessionID: string) => boolean
 }
 
 export function SessionsSidebar({
@@ -36,6 +40,7 @@ export function SessionsSidebar({
   onOpenClaudeCredentials,
   onLogout,
   onCollapse,
+  busyForSession,
 }: Props) {
   const atLimit = sessions.length >= maxSessions
   const hasFooter = !!(onOpenGitCredentials || onOpenClaudeCredentials || onLogout)
@@ -78,6 +83,7 @@ export function SessionsSidebar({
             key={s.id}
             session={s}
             selected={s.id === selectedSessionID}
+            busy={busyForSession?.(s.id)}
             onSelect={onSelect}
             onRename={onRename}
             onClose={onClose}
@@ -125,12 +131,13 @@ export function SessionsSidebar({
 interface RowProps {
   session: Session
   selected: boolean
+  busy?: boolean
   onSelect: (id: string) => void
   onRename: (id: string, name: string) => void
   onClose: (id: string) => void
 }
 
-function SessionRow({ session, selected, onSelect, onRename, onClose }: RowProps) {
+function SessionRow({ session, selected, busy, onSelect, onRename, onClose }: RowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.name)
 
@@ -159,6 +166,13 @@ function SessionRow({ session, selected, onSelect, onRename, onClose }: RowProps
       className={`session-row ${selected ? 'is-selected' : ''}`}
       onClick={() => !editing && onSelect(session.id)}
     >
+      {busy !== undefined && (
+        <span
+          className={`turn-dot turn-dot--${busy ? 'busy' : 'idle'}`}
+          title={busy ? 'Waiting for reply' : 'Your turn'}
+          aria-label={busy ? 'Waiting for reply' : 'Your turn'}
+        />
+      )}
       {editing ? (
         <input
           autoFocus

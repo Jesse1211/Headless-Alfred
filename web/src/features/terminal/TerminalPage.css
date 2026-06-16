@@ -41,6 +41,22 @@
 .status-dot--reconnecting { background: var(--warn); }
 .status-dot--closed { background: var(--error); }
 
+/* Turn indicator — independent of connection. Green = your turn
+   (idle, ready to type), red = waiting for Claude / command running.
+   Same dot shape so it visually pairs with the connection dot when
+   both appear side-by-side. */
+.turn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.turn-dot--idle { background: var(--ok); }
+.turn-dot--busy { background: var(--error); }
+
 .terminal-page__logout {
   background: transparent;
   border: 1px solid var(--border);

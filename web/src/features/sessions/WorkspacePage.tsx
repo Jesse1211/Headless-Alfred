@@ -4,6 +4,7 @@ import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { useClaudeHistoryLoader } from './useClaudeHistoryLoader'
 import { useResizableWidth } from './useResizableWidth'
 import { SessionsSidebar } from './SessionsSidebar'
+import { isWaitingForReply } from './sessionStatus'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
@@ -196,6 +197,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
             onOpenClaudeCredentials={() => setClaudeCredsOpen(true)}
             onLogout={onLogout}
             onCollapse={() => setLeftCollapsedPersisted(true)}
+            busyForSession={(id) => isWaitingForReply(s.perSession.get(id))}
           />
           <div
             className="workspace__resizer workspace__resizer--right"
@@ -208,8 +210,16 @@ export function WorkspacePage({ token, onLogout }: Props) {
       <div className="workspace__main">
         <header className="workspace__header">
           <div className="workspace__brand">{selected?.name ?? 'Headless Alfred'}</div>
-          <div className="workspace__status" title={s.connState}>
+          <div
+            className="workspace__status"
+            title={`${s.connState} · ${selected && ps && isWaitingForReply(ps) ? 'waiting for reply' : "your turn"}`}
+          >
             <span className={`status-dot status-dot--${s.connState}`} />
+            {selected && ps && (
+              <span
+                className={`turn-dot turn-dot--${isWaitingForReply(ps) ? 'busy' : 'idle'}`}
+              />
+            )}
           </div>
           {selected && ps && ps.mode === 'claude' && (
             <button
