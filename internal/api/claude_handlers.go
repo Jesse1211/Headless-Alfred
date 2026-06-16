@@ -14,6 +14,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -351,10 +352,17 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 		dataDir := m.DataDir()
 		today := time.Now().Local().Format("2006-01-02")
 		// Cwd for the template body — recap sessions resolve to the
-		// recap dir below, so make it reflect that.
+		// recap dir below, so make it reflect that. Use the
+		// symlink-resolved form (CLI does the same), so paths inside
+		// the prompt match what `pwd` will report.
 		tplCwd := claudeInvocationCWD()
 		if isRecapKind(m, msg.SessionID) {
-			tplCwd = recap.Dir(dataDir)
+			rd := recap.Dir(dataDir)
+			if resolved, err := filepath.EvalSymlinks(rd); err == nil {
+				tplCwd = resolved
+			} else {
+				tplCwd = rd
+			}
 		}
 		msg.Text = template.Render(msg.RenderTemplate, template.RenderArgs{
 			SessionID:   msg.SessionID,
@@ -401,7 +409,17 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "recap_dir_failed", Message: err.Error()})
 			return
 		}
-		cwd = recapDir
+		// Resolve symlinks (macOS /tmp → /private/tmp) so the cwd
+		// matches what the Claude CLI sees when it computes the
+		// transcript directory hash. Without this, runner's
+		// transcriptExists picks the wrong path and we get
+		// "Session ID already in use" errors on every prompt past
+		// the first.
+		if resolved, err := filepath.EvalSymlinks(recapDir); err == nil {
+			cwd = resolved
+		} else {
+			cwd = recapDir
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	finalText := composePromptText(

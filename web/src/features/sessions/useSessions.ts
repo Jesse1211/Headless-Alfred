@@ -9,7 +9,6 @@ import {
   deleteSession as apiDeleteSession,
   stopCommand as apiStopCommand,
   createRecapSession as apiCreateRecapSession,
-  deleteRecapSession as apiDeleteRecapSession,
   getSession as apiGetSession,
 } from '../../lib/api'
 import {
@@ -385,20 +384,14 @@ export function useSessions(token: string) {
     }
   }, [socket, selectSession, setSessionMeta])
 
-  // Track the previously selected session's kind so we can detect a
-  // switch-away from a recap session and trigger backend cleanup.
-  const prevRecapIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    const sid = selectedSessionID
-    const meta = sid ? sessions.find((x) => x.id === sid) : undefined
-    const isRecap = meta?.kind === 'recap'
-    if (prevRecapIdRef.current && prevRecapIdRef.current !== sid) {
-      apiDeleteRecapSession().catch(() => {
-        // Idempotent; orphan-cleanup on next createOrEnter recovers if this fails.
-      })
-    }
-    prevRecapIdRef.current = isRecap ? sid : null
-  }, [selectedSessionID, sessions])
+  // Recap session is a singleton: once created, it lives in the
+  // backend until alfred-server restarts. Switching away does NOT
+  // kill it — we want the same tmux pane, the same Alfred sessionID,
+  // and especially the same ClaudeSessionID (=> same on-disk Claude
+  // transcript) so the next "Recap" click resumes the conversation
+  // with full context. The backend's CreateOrGetRecapSession returns
+  // the existing session if it's alive; that's the find-or-create
+  // path on subsequent clicks.
 
   return {
     connState, sessions, selectedSessionID, selectSession, perSession, setPerSession,

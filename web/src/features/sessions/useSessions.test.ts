@@ -204,19 +204,22 @@ describe('useSessions — recap', () => {
     )
   })
 
-  it('switch-away from recap session fires deleteRecapSession', async () => {
+  it('switch-away from recap session does NOT delete it (singleton)', async () => {
+    // Recap is a singleton that survives navigation so the next click
+    // resumes the same Claude conversation (same uuid → same on-disk
+    // transcript → full context preserved). Without this, the backend
+    // would re-allocate a fresh uuid and Claude would start over.
     const deleteSpy = vi.spyOn(api, 'deleteRecapSession')
     const { result } = renderHook(() => useSessions('TOK'))
     await waitFor(() => expect(result.current.sessions.length).toBe(2))
-    // Enter recap session
     await act(async () => {
       await result.current.createOrEnterRecap()
     })
     expect(result.current.selectedSessionID).toBe('sess-RECAP')
     deleteSpy.mockClear()
-    // Switch away to a chat session
     act(() => result.current.selectSession('sess-A'))
-    // The auto-delete effect fires after the selectedSessionID change
-    await waitFor(() => expect(deleteSpy).toHaveBeenCalled())
+    // Give any pending effects a tick to run, then assert it was NOT called.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(deleteSpy).not.toHaveBeenCalled()
   })
 })
