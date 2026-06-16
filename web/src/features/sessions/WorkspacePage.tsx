@@ -258,7 +258,6 @@ export function WorkspacePage({ token, onLogout }: Props) {
         <SummarySidebar
           key={selected.id}
           sessionID={selected.id}
-          templateId={ps.templateId!}
           summaryFetchCounter={ps.summaryFetchCounter ?? 0}
           onClose={() => setSidebarHiddenPersisted(true)}
         />
