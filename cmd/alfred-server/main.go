@@ -122,6 +122,10 @@ func main() {
 	var bridge *claude.Bridge
 	bridge = claude.NewBridge(dispatcher.OnAsk(
 		mgr.FindByClaudeConvoID,
+		func(alfredSID string) bool {
+			meta, ok := mgr.FindByID(alfredSID)
+			return ok && meta.Kind == store.KindRecap
+		},
 		func(toolUseID string) {
 			bridge.Resolve(toolUseID, claude.Decision{Permission: "allow"})
 		},

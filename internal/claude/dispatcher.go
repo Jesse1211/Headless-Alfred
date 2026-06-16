@@ -84,6 +84,7 @@ func (d *Dispatcher) SubscribeAsks(sessionID string) (<-chan PendingRequest, fun
 // the fast-path (used by tests that exercise the normal flow).
 func (d *Dispatcher) OnAsk(
 	lookup func(claudeConvoID string) string,
+	isRecapSession func(alfredSID string) bool,
 	autoAllow func(toolUseID string),
 	autoDeny func(toolUseID string, reason string),
 	dataDir string,
@@ -93,6 +94,17 @@ func (d *Dispatcher) OnAsk(
 		if alfredSID == "" {
 			// Foreign claude session. Let it through.
 			slog.Debug("dispatcher: not an Alfred session, auto-allow", "claudeConvoID", req.SessionID, "tool", req.ToolName)
+			autoAllow(req.ToolUseID)
+			return
+		}
+		// Recap sessions opt out of the ask-before-each contract: the
+		// recap-daily template fires git, claude-mem, and Write tools
+		// in rapid succession with no user input between them. The
+		// session is ephemeral and constrained by the template, so
+		// surfacing approval cards would just train the user to mash
+		// Allow. Same reason --dangerously-skip-permissions is on.
+		if isRecapSession != nil && isRecapSession(alfredSID) {
+			slog.Debug("dispatcher: recap session, auto-allow", "session", alfredSID, "tool", req.ToolName)
 			autoAllow(req.ToolUseID)
 			return
 		}

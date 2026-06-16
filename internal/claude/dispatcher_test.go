@@ -25,7 +25,7 @@ func TestDispatcher_RoutesToSubscriber(t *testing.T) {
 			return "alfred-A"
 		}
 		return ""
-	}, autoAllow, autoDeny, "")
+	}, nil, autoAllow, autoDeny, "")
 
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "claude-1", ToolName: "Bash"})
 
@@ -54,7 +54,7 @@ func TestDispatcher_NoSubscriber_AutoDeny(t *testing.T) {
 		denied = append(denied, id+":"+reason)
 		mu.Unlock()
 	}
-	onAsk := d.OnAsk(func(string) string { return "alfred-X" }, noAllow, autoDeny, "")
+	onAsk := d.OnAsk(func(string) string { return "alfred-X" }, nil, noAllow, autoDeny, "")
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "claude-1"})
 
 	mu.Lock()
@@ -78,7 +78,7 @@ func TestDispatcher_UnknownClaudeConvo_AutoAllow(t *testing.T) {
 	var denied int
 	autoAllow := func(string) { allowed++ }
 	autoDeny := func(string, string) { denied++ }
-	onAsk := d.OnAsk(func(string) string { return "" }, autoAllow, autoDeny, "")
+	onAsk := d.OnAsk(func(string) string { return "" }, nil, autoAllow, autoDeny, "")
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "unknown"})
 	if allowed != 1 {
 		t.Errorf("allowed=%d, want 1", allowed)
@@ -104,7 +104,7 @@ func TestDispatcher_ResubscribeClosesPrior(t *testing.T) {
 		t.Error("old channel never closed")
 	}
 
-	onAsk := d.OnAsk(func(string) string { return "A" }, noAllow, noDeny, "")
+	onAsk := d.OnAsk(func(string) string { return "A" }, nil, noAllow, noDeny, "")
 	onAsk(PendingRequest{ToolUseID: "tu", SessionID: "C"})
 	select {
 	case got := <-chNew:
@@ -122,7 +122,7 @@ func TestDispatcher_FullBuffer_AutoDeny(t *testing.T) {
 	defer unsub()
 	var denied int
 	autoDeny := func(string, string) { denied++ }
-	onAsk := d.OnAsk(func(string) string { return "A" }, noAllow, autoDeny, "")
+	onAsk := d.OnAsk(func(string) string { return "A" }, nil, noAllow, autoDeny, "")
 
 	// Fill the 4-deep buffer; the 5th call should auto-deny.
 	for i := 0; i < 5; i++ {
@@ -149,6 +149,7 @@ func TestDispatcher_SummaryWrite_AutoAllows(t *testing.T) {
 			}
 			return ""
 		},
+		nil,
 		autoAllow,
 		autoDeny,
 		"/data", // new dataDir argument
@@ -169,6 +170,42 @@ func TestDispatcher_SummaryWrite_AutoAllows(t *testing.T) {
 	select {
 	case got := <-ch:
 		t.Errorf("summary write must NOT push to subscriber channel; got %+v", got)
+	default:
+	}
+}
+
+func TestDispatcher_RecapSession_AutoAllowsAnyTool(t *testing.T) {
+	d := NewDispatcher()
+	ch, unsub := d.SubscribeAsks("alfred-recap")
+	defer unsub()
+
+	var allowed int
+	autoAllow := func(string) { allowed++ }
+	autoDeny := func(string, string) {}
+
+	onAsk := d.OnAsk(
+		func(s string) string { return "alfred-recap" },
+		func(alfredSID string) bool { return alfredSID == "alfred-recap" },
+		autoAllow,
+		autoDeny,
+		"/data",
+	)
+
+	// Bash tool on a recap session should auto-allow without ever
+	// touching the WS subscriber channel.
+	onAsk(PendingRequest{
+		ToolUseID: "tu-bash",
+		SessionID: "claude-recap",
+		ToolName:  "Bash",
+		ToolInput: []byte(`{"command":"git log"}`),
+	})
+
+	if allowed != 1 {
+		t.Errorf("allowed=%d, want 1 (recap session must auto-allow)", allowed)
+	}
+	select {
+	case got := <-ch:
+		t.Errorf("recap session tool must NOT push to subscriber; got %+v", got)
 	default:
 	}
 }

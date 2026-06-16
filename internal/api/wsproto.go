@@ -21,6 +21,13 @@ type InMsg struct {
 	TemplateID         string `json:"templateId,omitempty"`         // enter_claude: which template to attach to the session
 	BypassPermissions  *bool  `json:"bypassPermissions,omitempty"`  // enter_claude: pass --dangerously-skip-permissions to claude -p. Pointer so absent ≠ false.
 	Text               string `json:"text,omitempty"`               // claude_prompt body
+	// RenderTemplate, if set on a claude_prompt, replaces Text with the
+	// server-side render of template.Builtins[<value>] using args the
+	// server controls (recap_path from <DATA_DIR>/recaps, cwd from
+	// claudeInvocationCWD, etc.). Lets the client trigger templated
+	// prompts (e.g. "Generate today's recap") without owning placeholder
+	// resolution. Ignored if Text is non-empty too — explicit text wins.
+	RenderTemplate     string `json:"renderTemplate,omitempty"`
 	ToolUseID          string `json:"toolUseId,omitempty"`          // tool_decision target
 	Decision           string `json:"decision,omitempty"`           // "allow" | "deny" on tool_decision
 	Reason             string `json:"reason,omitempty"`             // optional deny reason

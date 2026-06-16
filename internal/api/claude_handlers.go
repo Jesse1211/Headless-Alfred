@@ -16,8 +16,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/recap"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/store"
 	"github.com/jesseliu/headless-alfred/internal/summary"
@@ -340,6 +342,24 @@ func handleStdin(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, out chan<- claudeEventEnvelope, runStates *claudeRunStateMap, write func(OutMsg) error) {
 	if !requireSessionID(msg, "claude_prompt", write) {
 		return
+	}
+	// If RenderTemplate is set and Text is empty, render the named
+	// template server-side and use it as the prompt. This is how the
+	// RecapSidebar "Generate" button fires the recap-daily prompt
+	// without owning placeholder resolution.
+	if strings.TrimSpace(msg.Text) == "" && msg.RenderTemplate != "" {
+		dataDir := m.DataDir()
+		today := time.Now().Local().Format("2006-01-02")
+		msg.Text = template.Render(msg.RenderTemplate, template.RenderArgs{
+			SessionID:   msg.SessionID,
+			SummaryPath: summary.Path(dataDir, msg.SessionID),
+			Date:        today,
+			Cwd:         claudeInvocationCWD(),
+			RecapPath:   recap.Path(dataDir, today),
+		})
+		// The template body itself becomes the user prompt; no template
+		// injection on top of it.
+		_ = m.SetTemplateID(msg.SessionID, "")
 	}
 	if strings.TrimSpace(msg.Text) == "" {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "bad_request", Message: "prompt text required"})

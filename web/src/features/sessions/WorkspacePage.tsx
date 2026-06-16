@@ -12,7 +12,6 @@ import { SummarySidebar } from './SummarySidebar'
 import { RecapSidebar } from './RecapSidebar'
 import { ClaudeChatView } from './ClaudeChatView'
 import { StartClaudeDialog } from './StartClaudeDialog'
-import { getTemplate } from '../../lib/api'
 import ChatStream from '../terminal/ChatStream'
 import CommandInput from '../terminal/CommandInput'
 import { emptyClaudeState, emptyPerSessionState } from './types'
@@ -357,15 +356,16 @@ export function WorkspacePage({ token, onLogout }: Props) {
             <RecapSidebar
               recapFetchCounter={s.recapFetchCounter}
               generating={!!ps?.claude?.inFlight}
-              onGenerate={async () => {
-                const tpl = await getTemplate('recap-daily')
-                const date = new Date().toLocaleDateString('en-CA')
-                const recapPath = `recaps/${date}.md`
-                const text = tpl
-                  .replaceAll('<date>', date)
-                  .replaceAll('<cwd>', '$(pwd)')
-                  .replaceAll('<recap_path>', recapPath)
-                s.claudePrompt(selected.id, text)
+              onGenerate={() => {
+                // Empty text + renderTemplate makes the server render the
+                // recap-daily prompt with server-resolved placeholders
+                // (date, cwd, absolute recap_path). The client owns NO
+                // placeholder logic — the file path uses ALFRED_DATA_DIR,
+                // which the frontend doesn't know.
+                s.claudePrompt(selected.id, '', {
+                  renderTemplate: 'recap-daily',
+                  optimisticLabel: "Generate today's recap",
+                })
               }}
             />
           )}
