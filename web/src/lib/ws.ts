@@ -45,6 +45,7 @@ export type ServerMsg =
   | { type: 'claude_run_ended'; sessionID: string; message?: string }
   | { type: 'summary_updated'; sessionID: string }
   | { type: 'recap_updated'; date: string }
+  | { type: 'user_prompt'; sessionID: string; text: string }
   | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
 

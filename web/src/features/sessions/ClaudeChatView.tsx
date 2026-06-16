@@ -124,13 +124,47 @@ export function ClaudeChatView({
   )
 }
 
+// UserPromptBubble shows the user's prompt with an optional "Show
+// full prompt" toggle. When the server injected a template body
+// (summary-todo wrapping, recap-daily contents, etc.) the visible
+// prompt and the expanded prompt diverge; the toggle exposes the
+// expanded one so the user can audit exactly what their tokens paid
+// for. Same component handles non-injected turns too — if there's
+// nothing extra to reveal, the toggle is hidden.
+function UserPromptBubble({ turn }: { turn: ClaudeTurn }) {
+  const [expanded, setExpanded] = useState(false)
+  const full = turn.expandedPrompt
+  const hasExtra = !!full && full.trim() !== turn.prompt.trim()
+  return (
+    <div className="claude-turn__user">
+      <div className="claude-turn__label">You</div>
+      <div className="claude-turn__user-text">{turn.prompt}</div>
+      {hasExtra && (
+        <>
+          <button
+            type="button"
+            className="claude-turn__expand-btn"
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? 'Hide full prompt' : 'Show the full prompt sent to Claude (incl. template body)'}
+          >
+            {expanded ? '▾ Hide full prompt' : '▸ Show full prompt sent to Claude'}
+            <span className="claude-turn__expand-meta">
+              {' '}({(full!.length).toLocaleString()} chars)
+            </span>
+          </button>
+          {expanded && (
+            <pre className="claude-turn__user-expanded">{full}</pre>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 function TurnView({ turn }: { turn: ClaudeTurn }) {
   return (
     <div className="claude-turn">
-      <div className="claude-turn__user">
-        <div className="claude-turn__label">You</div>
-        <div className="claude-turn__user-text">{turn.prompt}</div>
-      </div>
+      <UserPromptBubble turn={turn} />
       <div className={`claude-turn__assistant ${turn.isError ? 'is-error' : ''}`}>
         <div className="claude-turn__label">Claude</div>
         {turn.text && (

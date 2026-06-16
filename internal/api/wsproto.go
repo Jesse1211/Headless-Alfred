@@ -99,6 +99,14 @@ type OutMsg struct {
 	// page reload — without this, perSession.templateId would always
 	// initialize to undefined on cold start.
 	TemplateID string `json:"templateId,omitempty"`
+
+	// Text carries the full composed prompt body on a "user_prompt"
+	// frame — emitted by the server right after composePromptText
+	// runs so the client can show what was actually sent to Claude
+	// (template body, summary instructions, recap-daily contents,
+	// etc.). UserPromptBubble surfaces this under a "Show full
+	// prompt" toggle.
+	Text string `json:"text,omitempty"`
 }
 
 // TypeSummaryUpdated is the WS frame Type pushed by alfred-server

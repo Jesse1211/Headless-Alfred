@@ -366,3 +366,44 @@
 .claude-chat__btn--stop:hover {
   background: rgba(220, 100, 100, 0.25);
 }
+
+.claude-turn__expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: var(--text-muted, #9aa3b2);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.claude-turn__expand-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text, #eaeaea);
+}
+
+.claude-turn__expand-meta {
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+}
+
+.claude-turn__user-expanded {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text, #eaeaea);
+  max-height: 480px;
+  overflow-y: auto;
+}

@@ -25,7 +25,18 @@ export type ClaudeRenderer = 'tui' | 'ui' | ''
 // results, etc.) until the next result event.
 export interface ClaudeTurn {
   id: string // client-side UUID, used as React key
+  // prompt is the user-visible label for the bubble — what the user
+  // actually typed (or an optimistic placeholder like "Generate
+  // today's recap" for template-fired prompts).
   prompt: string
+  // expandedPrompt is the FULL text the server piped into `claude -p`
+  // stdin — includes the rendered template body, appended summary
+  // instructions, etc. Backed by the `user_prompt` WS frame the server
+  // emits right after composing the final text. Same as `prompt` when
+  // nothing was injected. UserPromptBubble exposes a toggle that shows
+  // this when it differs from `prompt`, so the user can see exactly
+  // what they paid tokens for.
+  expandedPrompt?: string
   startedAt: string
   // Accumulated assistant text deltas in order.
   text: string

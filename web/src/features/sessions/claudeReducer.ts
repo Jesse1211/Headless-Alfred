@@ -126,9 +126,27 @@ export function reduceClaudeMsg(
       next.set(m.sessionID, { ...cur, claude: finalizeInFlightTurn(cur.claude, m.message) })
       return next
     }
+    case 'user_prompt':
+      // Server emits this right after composing the final prompt body
+      // (template-injected, summary-suffixed, etc.). Stash on the
+      // most-recent turn so UserPromptBubble can offer a "show full
+      // prompt" toggle.
+      return mutateClaude(prev, m.sessionID, (c) => attachExpandedPromptToLastTurn(c, m.text))
     default:
       return null
   }
+}
+
+// attachExpandedPromptToLastTurn writes the fully composed prompt
+// body onto the most recent turn. Called from the user_prompt frame
+// handler. If there is no current turn (shouldn't happen — the
+// optimistic beginClaudeTurn always runs first), this is a no-op.
+function attachExpandedPromptToLastTurn(prev: ClaudeState, text: string): ClaudeState {
+  const turns = [...prev.turns]
+  const lastIdx = turns.length - 1
+  if (lastIdx < 0) return prev
+  turns[lastIdx] = { ...turns[lastIdx], expandedPrompt: text }
+  return { ...prev, turns }
 }
 
 // applyClaudeEvent folds one parsed stream-json event into the

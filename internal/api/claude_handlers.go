@@ -438,6 +438,12 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 		msg.SessionID,
 		summary.Path(m.DataDir(), msg.SessionID),
 	)
+	// Echo the FULL composed prompt back to the client so the user can
+	// see exactly what was sent to Claude (including server-injected
+	// template bodies). The frontend stashes this on the in-flight
+	// turn and UserPromptBubble renders it under a "Show full prompt"
+	// toggle — transparency for the token bill.
+	_ = write(OutMsg{Type: "user_prompt", SessionID: msg.SessionID, Text: finalText})
 	pr, err := runner.Prompt(ctx, claude.PromptOptions{
 		SessionUUID:       convoID,
 		CWD:               cwd,
