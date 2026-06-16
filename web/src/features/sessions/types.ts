@@ -132,6 +132,10 @@ export interface PerSessionState {
   // summary sidebar's fetch effect depends on this counter, so any
   // bump triggers a re-fetch of the summary file content.
   summaryFetchCounter?: number
+  // Bumped on every WS note_updated frame for this session. Mirrors
+  // summaryFetchCounter; the NotesPanel's read effect depends on it
+  // so any push triggers a re-fetch.
+  noteFetchCounter?: number
   claude?: ClaudeState
 }
 

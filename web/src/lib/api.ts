@@ -245,3 +245,25 @@ export async function getRecap(date: string): Promise<string> {
   const res = await request(`/api/recaps/${encodeURIComponent(date)}`)
   return res.text()
 }
+
+// getNote fetches the notes body for the session. Returns '' for
+// 404 (file never created) — the empty state in the UI.
+export async function getNote(sessionID: string): Promise<string> {
+  try {
+    const res = await request(`/api/sessions/${encodeURIComponent(sessionID)}/note`)
+    return await res.text()
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return ''
+    throw e
+  }
+}
+
+// putNote writes (atomically server-side) the body to the session's
+// notes file. Capped at 64KB by the server.
+export async function putNote(sessionID: string, body: string): Promise<void> {
+  await request(`/api/sessions/${encodeURIComponent(sessionID)}/note`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/markdown' },
+    body,
+  })
+}

@@ -178,6 +178,16 @@ export function reducePerSession(
       })
       return { perSession: next }
     }
+    case 'note_updated': {
+      const cur = prev.get(m.sessionID)
+      if (!cur) return { perSession: prev }
+      const next = new Map(prev)
+      next.set(m.sessionID, {
+        ...cur,
+        noteFetchCounter: (cur.noteFetchCounter ?? 0) + 1,
+      })
+      return { perSession: next }
+    }
     case 'recap_updated': {
       // Recap files are global (not per-session); the counter that
       // triggers refetch lives on useSessions top-level state, NOT
