@@ -1,24 +1,29 @@
 .claude-chat {
-  display: flex;
-  flex-direction: column;
-  /* Lives inside .workspace__main (a grid with row track '1fr').
-     Grid items default to min-height: auto, which means they refuse
-     to shrink below their content's natural height — so without
-     min-height: 0 here, a long chat history pushes this element
-     past the 1fr row's available space, forcing the whole main
-     column to grow taller than the viewport. The composer then
-     ends up below the viewport bottom and the whole page becomes
-     scrollable in a way it shouldn't be.
-     min-height: 0 + overflow: hidden lets the 1fr row clip us at
-     its allotted height so the inner __scroll can actually scroll. */
-  min-height: 0;
+  /* Grid with a 1fr scroll row and an auto composer row. Grid's 1fr
+     is more reliable than flex:1 + a chain of min-height:0 hacks
+     across multiple ancestors — those kept breaking because grid
+     items default to min-height:auto, which refuses to shrink
+     below content height.
+
+     The 1fr scroll row needs min-height:0 too (same grid-item rule)
+     so that the chat content can be clipped and scrolled internally
+     rather than bursting the row.
+
+     height:100% pins us to .workspace__main's allotted row. */
+  display: grid;
+  grid-template-rows: 1fr auto;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
   background: var(--bg, #0f1116);
 }
 
 .claude-chat__scroll {
-  flex: 1;
+  /* Lives in the 1fr grid row above. min-height:0 is required
+     because grid items default to min-height:auto and would
+     otherwise refuse to shrink below content height — which is
+     exactly the bug that kept making this element 1151px tall. */
+  min-height: 0;
   overflow-y: auto;
   padding: 18px 18px 8px 18px;
   display: flex;
