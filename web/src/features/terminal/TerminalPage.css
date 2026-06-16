@@ -29,33 +29,29 @@
   align-items: center;
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-faint);
-}
-
-.status-dot--open { background: var(--ok); }
-.status-dot--connecting,
-.status-dot--reconnecting { background: var(--warn); }
-.status-dot--closed { background: var(--error); }
-
-/* Turn indicator — independent of connection. Green = your turn
-   (idle, ready to type), red = waiting for Claude / command running.
-   Same dot shape so it visually pairs with the connection dot when
-   both appear side-by-side. */
-.turn-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-faint);
+/* Single combined connection + turn indicator. Idle and busy render
+   as colored dots; disconnected renders as a warning triangle (the
+   <span> wraps an inline SVG, so it's slightly larger to host the
+   glyph). */
+.session-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
 }
 
-.turn-dot--idle { background: var(--ok); }
-.turn-dot--busy { background: var(--error); }
+.session-indicator--idle,
+.session-indicator--busy {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.session-indicator--idle { background: var(--ok); }
+.session-indicator--busy { background: var(--error); }
+.session-indicator--disconnected { color: var(--warn); }
 
 .terminal-page__logout {
   background: transparent;

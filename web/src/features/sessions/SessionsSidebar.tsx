@@ -1,13 +1,9 @@
 import { useState, KeyboardEvent } from 'react'
 import { Session } from '../../lib/api'
 import { isSubmitKey } from '../../lib/keyboard'
-import { TurnStatus } from './sessionStatus'
+import { SessionIndicator } from './sessionStatus'
+import { SessionIndicatorDot } from './SessionIndicatorDot'
 import './SessionsSidebar.css'
-
-const TURN_STATUS_LABEL: Record<TurnStatus, string> = {
-  idle: 'Your turn',
-  busy: 'Waiting for reply',
-}
 
 interface Props {
   sessions: Session[]
@@ -27,10 +23,10 @@ interface Props {
   // Collapse the sidebar to its narrow strip. Optional so tests
   // can render the sidebar in isolation without supplying it.
   onCollapse?: () => void
-  // Per-row turn indicator: 'idle' (green) / 'busy' (red) /
-  // 'needsAction' (yellow). When undefined, no dot is rendered
-  // (tests don't have to wire this up).
-  statusForSession?: (sessionID: string) => TurnStatus
+  // Per-row indicator: 'idle' (green) / 'busy' (red) /
+  // 'disconnected' (warning glyph). When undefined, no dot is
+  // rendered (tests don't have to wire this up).
+  statusForSession?: (sessionID: string) => SessionIndicator
 }
 
 export function SessionsSidebar({
@@ -137,7 +133,7 @@ export function SessionsSidebar({
 interface RowProps {
   session: Session
   selected: boolean
-  status?: TurnStatus
+  status?: SessionIndicator
   onSelect: (id: string) => void
   onRename: (id: string, name: string) => void
   onClose: (id: string) => void
@@ -173,11 +169,7 @@ function SessionRow({ session, selected, status, onSelect, onRename, onClose }: 
       onClick={() => !editing && onSelect(session.id)}
     >
       {status !== undefined && (
-        <span
-          className={`turn-dot turn-dot--${status}`}
-          title={TURN_STATUS_LABEL[status]}
-          aria-label={TURN_STATUS_LABEL[status]}
-        />
+        <SessionIndicatorDot status={status} />
       )}
       {editing ? (
         <input

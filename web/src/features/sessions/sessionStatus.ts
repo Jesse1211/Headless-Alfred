@@ -1,18 +1,30 @@
 import { PerSessionState } from './types'
+import type { ConnState } from '../../lib/ws'
 
-// turnStatus: whose turn is it?
+// SessionIndicator is the single combined status badge shown in the
+// header and in each sidebar row. Priorities:
 //
-//   - 'busy' (red): Claude or a shell command is running. User waits.
-//   - 'idle' (green): nothing in flight — your turn to type.
+//   - 'disconnected' (⚠️ icon): WebSocket isn't open. Overrides
+//     everything else — without a connection neither idle nor busy
+//     is meaningful (we don't actually know what Claude is doing).
 //
-// Pending tool approvals / AskUserQuestion cards live in the chat
-// stream as their own UI; we don't surface them on the indicator
-// (they ride along with inFlight=true so the dot stays red until
-// the user resolves them, which is the same red 'don't go away'
-// signal).
-export type TurnStatus = 'idle' | 'busy'
+//   - 'busy' (red dot): connected AND Claude in-flight / shell
+//     command running. User waits.
+//
+//   - 'idle' (green dot): connected AND nothing in flight. Your
+//     turn to type.
+//
+// Pending tool approvals / AskUserQuestion cards aren't surfaced
+// here — they ride along with inFlight=true so the dot stays red
+// until the user resolves them, and the approval card itself in
+// the chat stream is the actionable UI.
+export type SessionIndicator = 'idle' | 'busy' | 'disconnected'
 
-export function turnStatus(ps: PerSessionState | undefined): TurnStatus {
+export function sessionIndicator(
+  connState: ConnState,
+  ps: PerSessionState | undefined | null,
+): SessionIndicator {
+  if (connState !== 'open') return 'disconnected'
   if (!ps) return 'idle'
   if (ps.mode === 'claude') {
     return ps.claude?.inFlight ? 'busy' : 'idle'

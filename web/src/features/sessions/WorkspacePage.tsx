@@ -4,19 +4,8 @@ import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { useClaudeHistoryLoader } from './useClaudeHistoryLoader'
 import { useResizableWidth } from './useResizableWidth'
 import { SessionsSidebar } from './SessionsSidebar'
-import { turnStatus } from './sessionStatus'
-
-const TURN_STATUS_LABEL: Record<ReturnType<typeof turnStatus>, string> = {
-  idle: 'Your turn',
-  busy: 'Waiting for reply',
-}
-
-const CONN_STATE_LABEL: Record<string, string> = {
-  open: 'Connected',
-  connecting: 'Connecting…',
-  reconnecting: 'Reconnecting…',
-  closed: 'Disconnected',
-}
+import { sessionIndicator } from './sessionStatus'
+import { SessionIndicatorDot } from './SessionIndicatorDot'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
@@ -209,7 +198,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
             onOpenClaudeCredentials={() => setClaudeCredsOpen(true)}
             onLogout={onLogout}
             onCollapse={() => setLeftCollapsedPersisted(true)}
-            statusForSession={(id) => turnStatus(s.perSession.get(id))}
+            statusForSession={(id) => sessionIndicator(s.connState, s.perSession.get(id))}
           />
           <div
             className="workspace__resizer workspace__resizer--right"
@@ -224,16 +213,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
           <div className="workspace__header-left">
             <div className="workspace__brand">{selected?.name ?? 'Headless Alfred'}</div>
             <div className="workspace__status">
-              <span
-                className={`status-dot status-dot--${s.connState}`}
-                data-tooltip={CONN_STATE_LABEL[s.connState] ?? s.connState}
-              />
-              {selected && ps && (
-                <span
-                  className={`turn-dot turn-dot--${turnStatus(ps)}`}
-                  data-tooltip={TURN_STATUS_LABEL[turnStatus(ps)]}
-                />
-              )}
+              <SessionIndicatorDot status={sessionIndicator(s.connState, ps)} />
             </div>
           </div>
           <div className="workspace__header-center">
