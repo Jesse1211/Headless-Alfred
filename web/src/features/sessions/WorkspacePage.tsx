@@ -87,10 +87,6 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const showRecapSidebar = !!(selected && isRecap)
   // has-sidebar: any of the right-column sidebars is rendering.
   const sidebarShown = (showSummarySidebar && !sidebarHidden) || showRecapSidebar
-  // The re-open handle is shown whenever the user is in a Chat UI Claude
-  // session — even sessions without a template — so a deliberate hide
-  // gesture can always be undone. Excluded for recap (which has its own intrinsic sidebar).
-  const showSidebarHandle = !!(selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && sidebarHidden && !isRecap)
 
   return (
     <div className={`workspace ${sidebarShown ? 'has-sidebar' : ''}`}>
@@ -122,6 +118,22 @@ export function WorkspacePage({ token, onLogout }: Props) {
               title="Send Ctrl+C to Claude and return to shell view"
             >
               Exit Claude
+            </button>
+          )}
+          {/* Summary sidebar toggle — visible whenever the session is
+              eligible for the summary sidebar (chat session in Claude
+              UI mode with the summary-todo template). Mirrors the
+              right-edge handle but lives in the header so it's
+              discoverable. */}
+          {selected && ps && ps.mode === 'claude' && ps.templateId === 'summary-todo' && !isRecap && (
+            <button
+              type="button"
+              className={`workspace__summary-btn ${sidebarHidden ? '' : 'is-active'}`}
+              onClick={() => setSidebarHiddenPersisted(!sidebarHidden)}
+              title={sidebarHidden ? 'Show summary sidebar' : 'Hide summary sidebar'}
+              aria-pressed={!sidebarHidden}
+            >
+              Summary
             </button>
           )}
           {selected && ps && ps.mode !== 'claude' && (
@@ -278,18 +290,6 @@ export function WorkspacePage({ token, onLogout }: Props) {
             s.claudePrompt(selected.id, text)
           }}
         />
-      )}
-
-      {showSidebarHandle && (
-        <button
-          type="button"
-          className="workspace__sidebar-handle"
-          onClick={() => setSidebarHiddenPersisted(false)}
-          title="Show summary sidebar"
-          aria-label="Show summary sidebar"
-        >
-          Summary
-        </button>
       )}
 
       {gitCredsOpen && (
