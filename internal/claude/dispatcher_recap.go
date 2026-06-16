@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"regexp"
 
@@ -23,37 +22,11 @@ var recapBasename = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$`)
 // expected recap dir.
 func isRecapIO(req PendingRequest, dataDir string) bool {
 	wantDir := filepath.Clean(recap.Dir(dataDir))
-	check := func(p string) bool {
+	return isCanonicalIO(req, maxRecapWriteBytes, func(p string) bool {
 		clean := filepath.Clean(p)
 		if filepath.Dir(clean) != wantDir {
 			return false
 		}
 		return recapBasename.MatchString(filepath.Base(clean))
-	}
-	switch req.ToolName {
-	case "Read":
-		var in struct {
-			FilePath string `json:"file_path"`
-		}
-		if err := json.Unmarshal(req.ToolInput, &in); err != nil {
-			return false
-		}
-		return check(in.FilePath)
-	case "Write":
-		var in struct {
-			FilePath string `json:"file_path"`
-			Content  string `json:"content"`
-		}
-		if err := json.Unmarshal(req.ToolInput, &in); err != nil {
-			return false
-		}
-		if !check(in.FilePath) {
-			return false
-		}
-		if len(in.Content) > maxRecapWriteBytes {
-			return false
-		}
-		return true
-	}
-	return false
+	})
 }
