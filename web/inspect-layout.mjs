@@ -21,6 +21,43 @@ await page.evaluate((sid) => {
   }
 }, SESSION_ID)
 await page.waitForTimeout(2500)
+// First snapshot — BEFORE any scroll
+const before = await page.evaluate(() => {
+  // Find ANY element whose bounding rect extends past the viewport,
+  // anywhere in the DOM.
+  const overflowing = []
+  document.querySelectorAll('*').forEach((e) => {
+    const r = e.getBoundingClientRect()
+    if (r.bottom > 1000 || r.right > 1500) {
+      overflowing.push({
+        tag: e.tagName,
+        cls: typeof e.className === 'string' ? e.className : '?',
+        top: Math.round(r.top),
+        left: Math.round(r.left),
+        bottom: Math.round(r.bottom),
+        right: Math.round(r.right),
+        h: Math.round(r.height),
+        w: Math.round(r.width),
+      })
+    }
+  })
+  return {
+    htmlScrollH: document.documentElement.scrollHeight,
+    overflowing: overflowing.slice(0, 20),
+  }
+})
+console.error('BEFORE-SCROLL:', JSON.stringify(before))
+// Scroll the chat scroll area to the bottom (where the user says the bug shows up).
+await page.evaluate(() => {
+  const s = document.querySelector('.claude-chat__scroll')
+  if (s) s.scrollTop = s.scrollHeight
+})
+await page.waitForTimeout(400)
+// Also scroll the WINDOW down in case page itself overflows.
+await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+await page.waitForTimeout(200)
+// And screenshot for visual confirmation
+await page.screenshot({ path: '/tmp/alfred-shot.png', fullPage: false })
 
 // Walk the layout chain
 const result = await page.evaluate(() => {
@@ -33,6 +70,7 @@ const result = await page.evaluate(() => {
       sel,
       h: Math.round(r.height),
       w: Math.round(r.width),
+      scrollH: el.scrollHeight,
       display: cs.display,
       gridRows: cs.gridTemplateRows,
       minHeight: cs.minHeight,
@@ -40,9 +78,19 @@ const result = await page.evaluate(() => {
       heightProp: cs.height,
     }
   }
+  // Also probe the immediate children of claude-chat to see what
+  // is actually in there — maybe an extra wrapper crept in.
+  const chat = document.querySelector('.claude-chat')
+  const chatChildren = chat ? Array.from(chat.children).map((c) => ({
+    tag: c.tagName,
+    cls: c.className,
+    h: Math.round(c.getBoundingClientRect().height),
+    scrollH: c.scrollHeight,
+  })) : []
   return {
     viewport: { h: window.innerHeight, w: window.innerWidth },
     bodyScrollH: document.body.scrollHeight,
+    cssLink: document.querySelector('link[rel=stylesheet]')?.href,
     chain: [
       info('html'),
       info('body'),
@@ -54,6 +102,36 @@ const result = await page.evaluate(() => {
       info('.claude-chat__scroll'),
       info('.claude-chat__composer'),
     ],
+    chatChildren,
+    htmlNonStandard: Array.from(document.documentElement.querySelectorAll('*')).filter((e) => {
+      const tag = e.tagName.toLowerCase()
+      return tag.includes('-') || tag === 'iframe'
+    }).slice(0, 10).map((e) => {
+      const r = e.getBoundingClientRect()
+      return { tag: e.tagName, h: Math.round(r.height), top: Math.round(r.top), bottom: Math.round(r.bottom) }
+    }),
+    htmlChildren: Array.from(document.documentElement.children).map((c) => {
+      const r = c.getBoundingClientRect()
+      return {
+        tag: c.tagName,
+        id: c.id || null,
+        cls: typeof c.className === 'string' ? c.className : '(non-string)',
+        top: Math.round(r.top),
+        h: Math.round(r.height),
+        scrollH: c.scrollHeight,
+      }
+    }),
+    bodyChildren: Array.from(document.body.children).map((c) => {
+      const r = c.getBoundingClientRect()
+      return {
+        tag: c.tagName,
+        id: c.id || null,
+        cls: typeof c.className === 'string' ? c.className : '(non-string)',
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        h: Math.round(r.height),
+      }
+    }),
   }
 })
 

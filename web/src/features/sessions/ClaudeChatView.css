@@ -74,15 +74,30 @@
 }
 
 /* Labels removed visually — position now distinguishes who's talking.
-   Keep them in the DOM for screen readers. */
+   Keep them in the DOM for screen readers.
+
+   Important: NO position:absolute here. The old visually-hidden
+   recipe used position:absolute + 1x1px + clip, but with no
+   positioned ancestor that ends up offset against <html> at the
+   element's normal-flow Y position. For a long chat that means
+   labels at y=1500, 2000, 2700+ — which made <html> scrollHeight
+   grow to ~2700px, with most of it invisible (just empty space
+   below the bottom of body). Result: page itself scrolled, chat
+   appeared "pushed up" with a huge black band below.
+
+   Use clip-path inset(50%) instead — same a11y guarantee
+   (focusable: false, screen reader still sees text), zero impact
+   on layout. */
 .claude-turn__label {
-  position: absolute;
-  width: 1px; height: 1px;
-  padding: 0; margin: -1px;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
   overflow: hidden;
-  clip: rect(0,0,0,0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+  display: inline-block;
 }
 
 .claude-turn__user-text {
