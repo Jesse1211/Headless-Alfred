@@ -8,7 +8,10 @@ interface Props {
   summaryFetchCounter: number
 }
 
-export function SummarySidebar({ sessionID, summaryFetchCounter }: Props) {
+// SummarySection is the content of the summary section in the right
+// rail. RightRail owns the outer wrapper + accordion header; this
+// component just renders the markdown body (or loading/error/empty).
+export function SummarySection({ sessionID, summaryFetchCounter }: Props) {
   const [summary, setSummary] = useState<string>('')
   const [summaryErr, setSummaryErr] = useState<string | null>(null)
   // Only show the loading spinner on the FIRST fetch per session — later
@@ -46,18 +49,11 @@ export function SummarySidebar({ sessionID, summaryFetchCounter }: Props) {
   }, [sessionID, summaryFetchCounter])
 
   return (
-    <aside className="summary-sidebar" aria-label="Task summary sidebar">
-      <header className="summary-sidebar__header">
-        <h2 className="summary-sidebar__title">Task Summary</h2>
-      </header>
-      <div className="summary-sidebar__body">
-        <SummaryView
-          text={summary}
-          loading={summaryLoading}
-          error={summaryErr}
-        />
-      </div>
-    </aside>
+    <SummaryView
+      text={summary}
+      loading={summaryLoading}
+      error={summaryErr}
+    />
   )
 }
 
