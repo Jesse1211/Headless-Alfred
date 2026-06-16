@@ -209,3 +209,43 @@ func TestDispatcher_RecapSession_AutoAllowsAnyTool(t *testing.T) {
 	default:
 	}
 }
+
+func TestDispatcher_RecapSession_AskUserQuestion_GoesToSubscriber(t *testing.T) {
+	d := NewDispatcher()
+	ch, unsub := d.SubscribeAsks("alfred-recap")
+	defer unsub()
+
+	var allowed int
+	autoAllow := func(string) { allowed++ }
+	autoDeny := func(string, string) {}
+
+	onAsk := d.OnAsk(
+		func(s string) string { return "alfred-recap" },
+		func(alfredSID string) bool { return alfredSID == "alfred-recap" },
+		autoAllow,
+		autoDeny,
+		"/data",
+	)
+
+	// AskUserQuestion must NOT be auto-allowed even on a recap session —
+	// it's a question for the user, not a tool call. Route to the WS
+	// subscriber so AskUserQuestionCard can render.
+	onAsk(PendingRequest{
+		ToolUseID: "tu-q",
+		SessionID: "claude-recap",
+		ToolName:  "AskUserQuestion",
+		ToolInput: []byte(`{"questions":[]}`),
+	})
+
+	if allowed != 0 {
+		t.Errorf("allowed=%d, want 0 (AskUserQuestion must not auto-allow)", allowed)
+	}
+	select {
+	case got := <-ch:
+		if got.ToolName != "AskUserQuestion" {
+			t.Errorf("subscriber got %q, want AskUserQuestion", got.ToolName)
+		}
+	case <-time.After(time.Second):
+		t.Error("subscriber never received AskUserQuestion request")
+	}
+}

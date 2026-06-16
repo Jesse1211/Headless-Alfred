@@ -103,7 +103,13 @@ func (d *Dispatcher) OnAsk(
 		// session is ephemeral and constrained by the template, so
 		// surfacing approval cards would just train the user to mash
 		// Allow. Same reason --dangerously-skip-permissions is on.
-		if isRecapSession != nil && isRecapSession(alfredSID) {
+		//
+		// EXCEPTION: AskUserQuestion is not really a tool call — it's
+		// the model asking the human a question. Auto-allowing it
+		// would silently strand the question with no answer path. We
+		// route it through the WS subscriber like any other session
+		// so the AskUserQuestionCard renders in the chat.
+		if isRecapSession != nil && isRecapSession(alfredSID) && req.ToolName != "AskUserQuestion" {
 			slog.Debug("dispatcher: recap session, auto-allow", "session", alfredSID, "tool", req.ToolName)
 			autoAllow(req.ToolUseID)
 			return
