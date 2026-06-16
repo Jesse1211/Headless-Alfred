@@ -541,15 +541,15 @@ test.describe('ClaudeChatView: history restores after page reload', () => {
   })
 })
 
-test.describe('Recap: + 复盘 opens recap session with RecapSidebar', () => {
+test.describe('Recap: Recap button opens recap session with RecapSidebar', () => {
   test('button click → recap session, sidebar visible, generate button shown', async ({ page }) => {
     test.setTimeout(30_000)
 
     const tok = await login(page)
     await loginUI(page, tok)
 
-    // Click + 复盘.
-    await page.locator('text=+ 复盘').click()
+    // Click Recap.
+    await page.locator('.sessions-sidebar__create-recap').click()
 
     // Wait for RecapSidebar to appear.
     await expect(page.locator('.recap-sidebar')).toBeVisible({ timeout: 10_000 })

@@ -42,7 +42,7 @@ export function SessionsSidebar({
         onClick={() => onCreateRecap()}
         title="Open today's recap"
       >
-        + 复盘
+        Recap
       </button>
       <div className="sessions-sidebar__header">ACTIVE SESSIONS</div>
       <ul className="sessions-sidebar__list">

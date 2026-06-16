@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { useSessions } from './useSessions'
 import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { useClaudeHistoryLoader } from './useClaudeHistoryLoader'
+import { useResizableWidth } from './useResizableWidth'
 import { SessionsSidebar } from './SessionsSidebar'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
@@ -88,21 +89,89 @@ export function WorkspacePage({ token, onLogout }: Props) {
   // has-sidebar: any of the right-column sidebars is rendering.
   const sidebarShown = (showSummarySidebar && !sidebarHidden) || showRecapSidebar
 
+  // Resizable left + right widths. Persisted to localStorage independently
+  // of the sidebar-hidden flag, so re-opening the summary sidebar restores
+  // the last-set width.
+  const leftSidebar = useResizableWidth({
+    storageKey: 'alfred_left_sidebar_width',
+    initial: 260,
+    min: 180,
+    max: 480,
+    edge: 'right',
+  })
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('alfred_left_sidebar_collapsed') === '1'
+    } catch {
+      return false
+    }
+  })
+  const setLeftCollapsedPersisted = useCallback((collapsed: boolean) => {
+    setLeftCollapsed(collapsed)
+    try { localStorage.setItem('alfred_left_sidebar_collapsed', collapsed ? '1' : '0') } catch { /* ignore */ }
+  }, [])
+  const COLLAPSED_LEFT_WIDTH = 40
+  const rightSidebar = useResizableWidth({
+    storageKey: 'alfred_right_sidebar_width',
+    initial: 320,
+    min: 220,
+    max: 600,
+    edge: 'left',
+  })
+
+  const leftWidthPx = leftCollapsed ? COLLAPSED_LEFT_WIDTH : leftSidebar.width
+  const gridTemplateColumns = sidebarShown
+    ? `${leftWidthPx}px 1fr ${rightSidebar.width}px`
+    : `${leftWidthPx}px 1fr`
+
   return (
-    <div className={`workspace ${sidebarShown ? 'has-sidebar' : ''}`}>
-      <SessionsSidebar
-        // Recap sessions are seeded into useSessions.sessions via
-        // setSessionMeta so the rest of the hook can find them, but
-        // they should NOT appear in the chat-only sidebar list.
-        sessions={s.sessions.filter((sess) => sess.kind !== 'recap')}
-        selectedSessionID={s.selectedSessionID}
-        maxSessions={MAX_SESSIONS}
-        onCreate={() => s.createSession()}
-        onCreateRecap={() => s.createOrEnterRecap()}
-        onSelect={s.selectSession}
-        onRename={(id, name) => s.renameSession(id, name)}
-        onClose={(id) => setPendingClose(id)}
-      />
+    <div
+      className={`workspace ${sidebarShown ? 'has-sidebar' : ''}`}
+      style={{ gridTemplateColumns }}
+    >
+      {leftCollapsed ? (
+        <div className="workspace__left-pane workspace__left-pane--collapsed">
+          <button
+            type="button"
+            className="workspace__left-expand"
+            onClick={() => setLeftCollapsedPersisted(false)}
+            aria-label="Expand sessions sidebar"
+            title="Expand sidebar"
+          >
+            »
+          </button>
+        </div>
+      ) : (
+        <div className="workspace__left-pane">
+          <button
+            type="button"
+            className="workspace__left-collapse"
+            onClick={() => setLeftCollapsedPersisted(true)}
+            aria-label="Collapse sessions sidebar"
+            title="Collapse sidebar"
+          >
+            «
+          </button>
+          <SessionsSidebar
+            // Recap sessions are seeded into useSessions.sessions via
+            // setSessionMeta so the rest of the hook can find them, but
+            // they should NOT appear in the chat-only sidebar list.
+            sessions={s.sessions.filter((sess) => sess.kind !== 'recap')}
+            selectedSessionID={s.selectedSessionID}
+            maxSessions={MAX_SESSIONS}
+            onCreate={() => s.createSession()}
+            onCreateRecap={() => s.createOrEnterRecap()}
+            onSelect={s.selectSession}
+            onRename={(id, name) => s.renameSession(id, name)}
+            onClose={(id) => setPendingClose(id)}
+          />
+          <div
+            className="workspace__resizer workspace__resizer--right"
+            {...leftSidebar.dividerProps}
+            aria-label="Resize sessions sidebar"
+          />
+        </div>
+      )}
 
       <div className="workspace__main">
         <header className="workspace__header">
@@ -266,30 +335,38 @@ export function WorkspacePage({ token, onLogout }: Props) {
         )}
       </div>
 
-      {showSummarySidebar && !sidebarHidden && selected && ps && (
-        <SummarySidebar
-          key={selected.id}
-          sessionID={selected.id}
-          summaryFetchCounter={ps.summaryFetchCounter ?? 0}
-          onClose={() => setSidebarHiddenPersisted(true)}
-        />
-      )}
-
-      {showRecapSidebar && selected && (
-        <RecapSidebar
-          recapFetchCounter={s.recapFetchCounter}
-          generating={!!ps?.claude?.inFlight}
-          onGenerate={async () => {
-            const tpl = await getTemplate('recap-daily')
-            const date = new Date().toLocaleDateString('en-CA')
-            const recapPath = `recaps/${date}.md`
-            const text = tpl
-              .replaceAll('<date>', date)
-              .replaceAll('<cwd>', '$(pwd)')
-              .replaceAll('<recap_path>', recapPath)
-            s.claudePrompt(selected.id, text)
-          }}
-        />
+      {sidebarShown && (
+        <div className="workspace__right-pane">
+          <div
+            className="workspace__resizer workspace__resizer--left"
+            {...rightSidebar.dividerProps}
+            aria-label="Resize right sidebar"
+          />
+          {showSummarySidebar && !sidebarHidden && selected && ps && (
+            <SummarySidebar
+              key={selected.id}
+              sessionID={selected.id}
+              summaryFetchCounter={ps.summaryFetchCounter ?? 0}
+              onClose={() => setSidebarHiddenPersisted(true)}
+            />
+          )}
+          {showRecapSidebar && selected && (
+            <RecapSidebar
+              recapFetchCounter={s.recapFetchCounter}
+              generating={!!ps?.claude?.inFlight}
+              onGenerate={async () => {
+                const tpl = await getTemplate('recap-daily')
+                const date = new Date().toLocaleDateString('en-CA')
+                const recapPath = `recaps/${date}.md`
+                const text = tpl
+                  .replaceAll('<date>', date)
+                  .replaceAll('<cwd>', '$(pwd)')
+                  .replaceAll('<recap_path>', recapPath)
+                s.claudePrompt(selected.id, text)
+              }}
+            />
+          )}
+        </div>
       )}
 
       {gitCredsOpen && (

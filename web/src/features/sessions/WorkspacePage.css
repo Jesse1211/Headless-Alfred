@@ -1,8 +1,87 @@
 .workspace {
   display: grid;
+  /* grid-template-columns is set inline from useResizableWidth so it
+     can react to drag in real time. Default for the fallback case
+     (no inline style yet) is the original 260 + 1fr layout. */
   grid-template-columns: 260px 1fr;
   height: 100vh;
   background: var(--bg);
+}
+
+/* The left pane houses SessionsSidebar + its right-edge resizer; the
+   right pane houses the left-edge resizer + Summary/Recap sidebar.
+   Both panes are `position: relative` anchors for the absolutely
+   positioned resizer strips. */
+.workspace__left-pane,
+.workspace__right-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.workspace__resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 20;
+  transition: background 0.12s ease;
+}
+
+.workspace__resizer:hover,
+.workspace__resizer:focus-visible {
+  background: rgba(122, 162, 247, 0.25);
+  outline: none;
+}
+
+.workspace__resizer--right { right: 0; }
+.workspace__resizer--left  { left:  0; }
+
+/* When the left sidebar is collapsed, the pane shrinks to ~40px and shows
+   only an expand button centered vertically. */
+.workspace__left-pane--collapsed {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  align-items: center;
+  padding: 12px 0;
+}
+
+.workspace__left-expand,
+.workspace__left-collapse {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted, #9aa3b2);
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+.workspace__left-expand:hover,
+.workspace__left-collapse:hover {
+  color: var(--text, #eaeaea);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* In expanded mode the collapse button sits at the very top of the pane,
+   above the SessionsSidebar content. Use flex order so it doesn't fight
+   with sidebar padding. */
+.workspace__left-pane .workspace__left-collapse {
+  align-self: flex-end;
+  margin: 8px 8px 0;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
 }
 
 .workspace__main {
@@ -181,9 +260,5 @@
 .workspace__composer-inner {
   max-width: 768px;
   margin: 0 auto;
-}
-
-.workspace.has-sidebar {
-  grid-template-columns: 260px 1fr 320px;
 }
 
