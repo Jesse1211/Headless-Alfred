@@ -1,0 +1,43 @@
+.path-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.02);
+  min-width: 0;
+}
+
+.path-strip__path {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted, #9aa3b2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.path-strip__copy {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--text-muted, #9aa3b2);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.path-strip__copy:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text, #eaeaea);
+}
+
+.path-strip__copy:active {
+  background: rgba(255, 255, 255, 0.1);
+}

@@ -47,6 +47,9 @@ func TestGetSummary_FileExists_Returns200(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
 		t.Errorf("Content-Type=%q, want text/markdown", ct)
 	}
+	if got, want := w.Header().Get("X-File-Path"), summary.Path(dir, "S1"); got != want {
+		t.Errorf("X-File-Path=%q, want %q", got, want)
+	}
 }
 
 func TestGetSummary_FileMissing_Returns404(t *testing.T) {
@@ -56,6 +59,11 @@ func TestGetSummary_FileMissing_Returns404(t *testing.T) {
 	mountSummaryRouter(t, dir).ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status=%d, want 404", w.Code)
+	}
+	// X-File-Path is emitted even on the not-exist 404 so the UI
+	// can show the canonical path while the file doesn't exist yet.
+	if got, want := w.Header().Get("X-File-Path"), summary.Path(dir, "NOPE"); got != want {
+		t.Errorf("X-File-Path=%q, want %q", got, want)
 	}
 }
 
@@ -90,6 +98,11 @@ func TestGetSummary_PathTraversal_Returns404(t *testing.T) {
 	mountSummaryRouter(t, dir).ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status=%d, want 404 for traversal attempt", w.Code)
+	}
+	// CRITICAL: traversal rejection MUST NOT leak the resolved path,
+	// or we'd be confirming the location of files outside root.
+	if got := w.Header().Get("X-File-Path"); got != "" {
+		t.Errorf("X-File-Path=%q, must be empty on traversal rejection", got)
 	}
 }
 

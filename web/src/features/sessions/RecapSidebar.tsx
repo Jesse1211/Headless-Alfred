@@ -56,7 +56,10 @@ export function RecapSidebar({ recapFetchCounter, onGenerate, generating }: Prop
   }, [recapFetchCounter])
 
   // Content fetch — refetch on selectedDate change AND on counter
-  // bump (the just-updated date may be the selected one).
+  // bump (the just-updated date may be the selected one). Spinner
+  // shows on EVERY refetch (not just first) because changing dates
+  // would otherwise briefly show stale content. Not a useDocumentSync
+  // fit for that reason.
   useEffect(() => {
     let alive = true
     setContentLoading(true)

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getNote, putNote } from '../../lib/api'
+import { getNote, MarkdownDoc, putNote } from '../../lib/api'
 import { useDocumentSync } from '../../lib/useDocumentSync'
+import { PathStrip } from './PathStrip'
 import './NotesPanel.css'
 
 interface Props {
@@ -24,7 +25,7 @@ export function NotesPanel({ sessionID, noteFetchCounter }: Props) {
   const lastPushedRef = useRef<string>('')
 
   const fetcher = useCallback(() => getNote(sessionID), [sessionID])
-  const { data, error: fetchError, firstFetchPending } = useDocumentSync<string>(
+  const { data, error: fetchError, firstFetchPending } = useDocumentSync<MarkdownDoc>(
     fetcher,
     [sessionID, noteFetchCounter],
     {
@@ -38,8 +39,8 @@ export function NotesPanel({ sessionID, noteFetchCounter }: Props) {
   // any accepted refetch (skipIf gated those during typing).
   useEffect(() => {
     if (data === undefined) return
-    setText(data)
-    lastPushedRef.current = data
+    setText(data.text)
+    lastPushedRef.current = data.text
   }, [data])
 
   const loaded = !firstFetchPending
@@ -70,6 +71,7 @@ export function NotesPanel({ sessionID, noteFetchCounter }: Props) {
 
   return (
     <div className="notes-panel">
+      <PathStrip path={data?.path ?? null} />
       <textarea
         ref={taRef}
         className="notes-panel__textarea"

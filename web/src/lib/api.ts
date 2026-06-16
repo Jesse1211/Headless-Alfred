@@ -165,17 +165,53 @@ export async function saveAnthropicCredentials(credentialsJson: string): Promise
   })
 }
 
-// getSummary fetches the current text of <DATA_DIR>/summaries/<sid>.md.
-// Returns '' for both 404 (file never created) and 200-with-empty-body
-// (file exists but empty) — both are the "no summary yet" empty state.
-export async function getSummary(sessionID: string): Promise<string> {
-  try {
-    const res = await request(`/api/sessions/${encodeURIComponent(sessionID)}/summary`)
-    return await res.text()
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 404) return ''
-    throw e
+// MarkdownDoc bundles the body + the canonical on-disk path the
+// server resolved for it. The path is shown in the UI as a copyable
+// strip even when the file doesn't exist yet (404 still returns
+// X-File-Path — see internal/api/markdownfs.go). path is null only
+// when the response carried no X-File-Path header (server older
+// than the header rollout, or a non-2xx/non-404 failure).
+export interface MarkdownDoc {
+  text: string
+  path: string | null
+}
+
+// fetchMarkdownDoc is the shared helper for the summary + notes
+// GETs. Both endpoints emit X-File-Path on 200 AND on the not-exist
+// 404, and both treat 404 as the empty state rather than an error.
+// We bypass the standard `request` helper because it throws on 404
+// before we can read the headers.
+async function fetchMarkdownDoc(url: string): Promise<MarkdownDoc> {
+  const headers = new Headers()
+  const t = token()
+  if (t) headers.set('Authorization', `Bearer ${t}`)
+  const res = await fetch(url, { headers })
+  if (res.status === 401) {
+    on401?.()
   }
+  const path = res.headers.get('X-File-Path')
+  if (res.status === 404) {
+    return { text: '', path }
+  }
+  if (!res.ok) {
+    let code = 'error'
+    let msg = res.statusText
+    try {
+      const j = await res.clone().json()
+      code = (j as { code?: string }).code ?? code
+      msg = (j as { message?: string }).message ?? msg
+    } catch { /* not JSON */ }
+    throw new ApiError(res.status, code, msg)
+  }
+  return { text: await res.text(), path }
+}
+
+// getSummary fetches the current text of <DATA_DIR>/summaries/<sid>.md
+// plus the resolved on-disk path. Returns '' for both 404 (file never
+// created) and 200-with-empty-body — both are the "no summary yet"
+// empty state. path is set in both cases so the UI can show it.
+export async function getSummary(sessionID: string): Promise<MarkdownDoc> {
+  return fetchMarkdownDoc(`/api/sessions/${encodeURIComponent(sessionID)}/summary`)
 }
 
 // getTemplate fetches the raw text of a built-in template by id (e.g.
@@ -246,16 +282,11 @@ export async function getRecap(date: string): Promise<string> {
   return res.text()
 }
 
-// getNote fetches the notes body for the session. Returns '' for
-// 404 (file never created) — the empty state in the UI.
-export async function getNote(sessionID: string): Promise<string> {
-  try {
-    const res = await request(`/api/sessions/${encodeURIComponent(sessionID)}/note`)
-    return await res.text()
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 404) return ''
-    throw e
-  }
+// getNote fetches the notes body for the session plus the resolved
+// on-disk path. Returns '' for 404 (file never created) — the empty
+// state in the UI — and the path is still set so the UI can show it.
+export async function getNote(sessionID: string): Promise<MarkdownDoc> {
+  return fetchMarkdownDoc(`/api/sessions/${encodeURIComponent(sessionID)}/note`)
 }
 
 // putNote writes (atomically server-side) the body to the session's
