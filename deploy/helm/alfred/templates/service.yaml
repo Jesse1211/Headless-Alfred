@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: alfred
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "alfred.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: alfred
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP

@@ -37,14 +37,22 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # because the shell package spawns bash inside the container.
 FROM debian:bookworm-slim AS runtime
 
+# Claude CLI version. Locked so the image is reproducible — bumping
+# means changing this one line (or passing --build-arg) and re-building.
+ARG CLAUDE_CLI_VERSION=2.1.142
+
 # Three groups of packages:
 #   (1) Core: shell + signals + tmux multiplexer + git + ca-certs
 #   (2) Developer toolkit so the pod feels like a real workstation —
 #       network probes, editors, JSON/archive utilities. Asked for
 #       repeatedly in spec §8 of the claude-mode design.
-#   (3) Node 22 LTS (from NodeSource) so we can `npm install -g
-#       @anthropic-ai/claude-code`. The `claude` CLI is required by
-#       the claude-mode feature.
+#   (3) Node 22 LTS (from NodeSource) so we can install @anthropic-ai/
+#       claude-code at the version pinned above. Lockfile-free: we
+#       deliberately pin a known-good version rather than `latest` so
+#       a rebuild months later doesn't silently pick up a CLI version
+#       that broke our hook protocol or transcript layout (we've been
+#       bitten by both — see internal/claude/bridge.go and
+#       internal/claude/runner.go comments).
 #
 # We do everything in one RUN to keep the runtime image as small as
 # possible (each apt-get layer would otherwise pin its own caches).
@@ -56,7 +64,7 @@ RUN apt-get update \
       vim-tiny nano less jq unzip xz-utils \
  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
- && npm install -g @anthropic-ai/claude-code \
+ && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.npm \
  && useradd -m -u 1000 -s /bin/bash alfred \

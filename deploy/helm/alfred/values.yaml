@@ -1,0 +1,77 @@
+# Defaults. Override in values-<env>.yaml (we only ship values-oracle
+# right now). See deploy/README.md for the deployment recipe.
+
+global:
+  namespace: alfred
+
+image:
+  # Built on the oracle box via scripts/build-on-oracle.sh into the
+  # k3s containerd k8s.io namespace; the chart references it as
+  # `alfred/headless-alfred:local` and uses pullPolicy: Never so
+  # kubelet never reaches out to a registry.
+  registry: alfred
+  repo: headless-alfred
+  tag: local
+  pullPolicy: Never
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+
+persistence:
+  # PVC size for /data (sessions.json + per-session pty.stream/offset +
+  # commands/outputs + summaries/notes/recaps). 5Gi is generous —
+  # everything we write is small-text, dominated by command output
+  # capped at 10MB head per command.
+  size: 5Gi
+  # Empty = use the cluster default StorageClass. k3s ships local-path
+  # as default; set explicitly here if you want a different SC.
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+
+ingress:
+  enabled: true
+  # k3s ships Traefik as the default IngressController; NYSM uses the
+  # same here so we keep one ingress class on the box.
+  className: traefik
+  # Private only — see deploy/README.md for the /etc/hosts + ssh -L
+  # access pattern. Set tls.enabled: true and add cert-manager
+  # annotations if you ever expose this to the public internet.
+  tls:
+    enabled: false
+  # The hostname clients reach us on. With no public DNS, this only
+  # needs to resolve on the client side (via /etc/hosts pointing at
+  # 127.0.0.1 + the ssh -L tunnel to the oracle box).
+  host: alfred.local
+
+# Static credentials for the single-user auth (spec §8). Override at
+# helm-install time with --set auth.* (or pass through env in the
+# deploy script). DO NOT commit real values here.
+auth:
+  user: "REPLACE_ME"
+  password: "REPLACE_ME"
+  # Long-random bearer token the React client uses after login. If
+  # empty, the deploy script will refuse to install — fail loud
+  # rather than ship a placeholder.
+  token: "REPLACE_ME"
+
+# /healthz is the cheap "process alive" probe. /readyz is the same
+# right now (no startup work to gate on) but kept separate so future
+# work can split them without changing the chart.
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 1
+    periodSeconds: 5
+    timeoutSeconds: 2

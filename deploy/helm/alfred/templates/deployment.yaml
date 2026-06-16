@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alfred
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "alfred.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy:
+    # Recreate, NOT RollingUpdate. The PVC is ReadWriteOnce and the
+    # tmux server inside the pod owns a unix socket on /data; rolling
+    # two pods would race the PVC mount and corrupt session state.
+    # See CONTEXT.md invariant #1 (bash lifecycle != WS lifecycle).
+    type: Recreate
+  selector:
+    matchLabels:
+      app: alfred
+  template:
+    metadata:
+      labels:
+        app: alfred
+        {{- include "alfred.labels" . | nindent 8 }}
+      annotations:
+        # Force rollout when the auth Secret changes — alfred-server
+        # reads ALFRED_USER/PASSWORD/TOKEN once at startup, so a
+        # Secret-only edit wouldn't propagate without this checksum.
+        checksum/auth: {{ include (print $.Template.BasePath "/secret-auth.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: alfred
+        image: {{ include "alfred.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: ALFRED_ADDR
+          value: ":8080"
+        - name: ALFRED_DATA_DIR
+          value: "/data"
+        - name: ALFRED_USER
+          valueFrom:
+            secretKeyRef:
+              name: alfred-auth
+              key: ALFRED_USER
+        - name: ALFRED_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: alfred-auth
+              key: ALFRED_PASSWORD
+        - name: ALFRED_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: alfred-auth
+              key: ALFRED_TOKEN
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.probes.readiness.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.probes.liveness.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          # alfred-server writes ~/.claude/settings.json and other
+          # ~/.claude/* state from inside the container at runtime,
+          # plus tmux drops sockets in /tmp. Read-only root would
+          # break both. The PVC mount at /data carries the actual
+          # persistent state, and the rest is ephemeral.
+          readOnlyRootFilesystem: false
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: alfred-data

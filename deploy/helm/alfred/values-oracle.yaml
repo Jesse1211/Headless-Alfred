@@ -1,0 +1,24 @@
+# Oracle k3s overlay. Most fields inherit from values.yaml.
+#
+# Auth: real credentials are injected at deploy time via --set
+# (scripts/deploy-oracle.sh reads ALFRED_USER / ALFRED_PASSWORD /
+# ALFRED_TOKEN env vars sourced from GitHub Actions secrets in CI,
+# or from your shell for manual `bash scripts/deploy-oracle.sh`).
+# The REPLACE_ME defaults in values.yaml will fail the deploy
+# script's required-env check before they ever reach the cluster.
+
+ingress:
+  className: traefik
+  tls:
+    enabled: false
+  # Resolved on the CLIENT side via /etc/hosts pointing at 127.0.0.1
+  # + an ssh -L tunnel from the client to oracle:80. The Pod itself
+  # has no public DNS or TLS cert. See deploy/README.md.
+  host: alfred.local
+
+# Oracle's local-path provisioner is the cluster default — leaving
+# storageClassName empty here is correct. If you ever move the
+# Alfred deployment to a different k3s cluster, override this.
+persistence:
+  size: 5Gi
+  storageClassName: ""

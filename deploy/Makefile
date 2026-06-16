@@ -1,68 +1,64 @@
-# Operator targets for building, pushing, and applying Headless Alfred.
+# Convenience targets that wrap helm + kubectl for the Alfred deploy.
 # Run from repo root via:  make -C deploy <target>
 #
-# Common overrides:
-#   REGISTRY=ghcr.io/<you>          (default: ghcr.io/jesseliu)
-#   TAG=v1.0.0                      (default: short git SHA)
+# These mirror what scripts/deploy-oracle.sh + the GH workflow do, but
+# small enough to use ad-hoc from a checkout.
 
-REGISTRY ?= ghcr.io/jesseliu
-IMAGE    := $(REGISTRY)/headless-alfred
-TAG      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
-FULL     := $(IMAGE):$(TAG)
-NS       := alfred
+NS      ?= alfred
+RELEASE ?= alfred
+CHART   := ../deploy/helm/alfred
 
-.PHONY: image push apply rollout-restart set-image logs pods status diff teardown
+.PHONY: help lint template upgrade restart logs status rollback teardown
 
-image:
-	../scripts/build-image.sh -r $(REGISTRY) -t $(TAG)
+help:
+	@echo "Targets:"
+	@echo "  lint       helm lint the chart against the oracle values"
+	@echo "  template   render the chart (does NOT touch the cluster)"
+	@echo "  upgrade    helm upgrade --install (requires ALFRED_USER/PASSWORD/TOKEN env)"
+	@echo "  restart    kubectl rollout restart deploy/alfred"
+	@echo "  logs       tail pod logs"
+	@echo "  status     pod / svc / ingress / pvc summary"
+	@echo "  rollback   helm rollback (REV=N override; defaults to previous)"
+	@echo "  teardown   uninstall release + drop pvc + drop namespace (DESTRUCTIVE)"
 
-push:
-	../scripts/build-image.sh -r $(REGISTRY) -t $(TAG) --push
+lint:
+	helm lint $(CHART) -f $(CHART)/values.yaml -f $(CHART)/values-oracle.yaml
 
-apply:
-	kubectl apply -f manifests/namespace.yaml
-	@echo "Reminder: 'kubectl -n $(NS) get secret alfred-secret' must exist before the Pod can start."
-	@echo "         Create it with the one-liner in deploy/README.md."
-	kubectl apply -f manifests/pvc.yaml
-	kubectl apply -f manifests/service.yaml
-	kubectl apply -f manifests/deployment.yaml
-	kubectl apply -f manifests/ingress.yaml
+template:
+	helm template $(RELEASE) $(CHART) \
+		-f $(CHART)/values.yaml -f $(CHART)/values-oracle.yaml \
+		--set auth.user=preview --set auth.password=preview --set auth.token=preview
 
-# Bump the running deployment to a new image tag without editing YAML.
-# Usage: make -C deploy set-image TAG=v1.2.3
-set-image:
-	kubectl -n $(NS) set image deployment/alfred alfred=$(FULL)
-	kubectl -n $(NS) rollout status deployment/alfred
+upgrade:
+	@bash ../scripts/deploy-oracle.sh
 
-rollout-restart:
-	kubectl -n $(NS) rollout restart deployment/alfred
-	kubectl -n $(NS) rollout status deployment/alfred
+restart:
+	kubectl -n $(NS) rollout restart deploy/$(RELEASE)
+	kubectl -n $(NS) rollout status deploy/$(RELEASE) --timeout=90s
 
 logs:
-	kubectl -n $(NS) logs -f deployment/alfred
-
-pods:
-	kubectl -n $(NS) get pods -o wide
+	kubectl -n $(NS) logs -f deploy/$(RELEASE)
 
 status:
+	@echo "== pods =="
+	@kubectl -n $(NS) get pods -o wide
 	@echo "== deployment =="
-	@kubectl -n $(NS) get deployment alfred
-	@echo "== pvc =="
-	@kubectl -n $(NS) get pvc alfred-data
-	@echo "== certificate =="
-	@kubectl -n $(NS) get certificate alfred-tls 2>/dev/null || echo "(no certificate yet)"
-	@echo "== ingress =="
-	@kubectl -n $(NS) get ingress alfred
+	@kubectl -n $(NS) get deploy/$(RELEASE)
+	@echo "== service / ingress / pvc =="
+	@kubectl -n $(NS) get svc,ingress,pvc
 
-# Show pending differences without applying.
-diff:
-	@for f in manifests/*.yaml; do echo "== $$f =="; kubectl diff -f $$f || true; done
+REV ?=
+rollback:
+	@if [ -z "$(REV)" ]; then \
+		echo "Rolling back to previous revision"; \
+		helm -n $(NS) rollback $(RELEASE); \
+	else \
+		echo "Rolling back to revision $(REV)"; \
+		helm -n $(NS) rollback $(RELEASE) $(REV); \
+	fi
 
-# WARNING: removes everything in the alfred namespace. Does NOT touch the
-# PVC's PV (storage survives) so history isn't lost.
+# DESTRUCTIVE — drops the release AND the PVC. /data is gone after this.
 teardown:
-	kubectl delete -f manifests/ingress.yaml --ignore-not-found
-	kubectl delete -f manifests/deployment.yaml --ignore-not-found
-	kubectl delete -f manifests/service.yaml --ignore-not-found
-	kubectl -n $(NS) delete secret alfred-secret --ignore-not-found
-	@echo "PVC and Namespace preserved. Delete manually if you really want to drop history."
+	helm -n $(NS) uninstall $(RELEASE) || true
+	kubectl -n $(NS) delete pvc alfred-data --ignore-not-found
+	kubectl delete namespace $(NS) --ignore-not-found

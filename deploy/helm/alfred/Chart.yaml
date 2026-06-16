@@ -1,0 +1,15 @@
+apiVersion: v2
+name: alfred
+description: |
+  Headless Alfred — single-pod web shell + Claude UI.
+  One environment for now (oracle k3s, private only, no TLS), per
+  values-oracle.yaml. See deploy/README.md.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+home: https://github.com/Jesse1211/Headless-Alfred
+sources:
+  - https://github.com/Jesse1211/Headless-Alfred
+maintainers:
+  - name: Jesse Liu
+    email: zl942@cornell.edu

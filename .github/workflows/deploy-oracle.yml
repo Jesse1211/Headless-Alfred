@@ -1,0 +1,147 @@
+name: Deploy to Oracle k3s
+
+# Continuous deploy to the single-node oracle k3s on push to main.
+# Build happens on the oracle box itself (native ARM, nerdctl into
+# k3s containerd) so the GHA runner never needs cross-arch buildx,
+# GHCR PAT, or registry-push permissions. The runner only does:
+# checkout, rsync over SSH, then ssh into oracle to run the existing
+# deploy scripts.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   ORACLE_SSH_KEY        Private SSH key, full file contents (matches
+#                         oracle:/root/.ssh/authorized_keys). Reused
+#                         from the NYSM deploy if it already exists.
+#   ORACLE_KNOWN_HOSTS    Output of `ssh-keyscan -t ed25519,rsa <host>`
+#                         from a trusted machine. Pins the host key so
+#                         a compromised DNS can't MITM the SSH session.
+#   ORACLE_HOST           Oracle public IP or hostname.
+#   ORACLE_USER           SSH user (root).
+#   ALFRED_USER           Login username for the single-user auth.
+#   ALFRED_PASSWORD       Login password.
+#   ALFRED_TOKEN          Long-random bearer token (frontend Authorization).
+#
+# Deploy failure → automatic helm rollback. See "Rollback" step below.
+# Manual override:
+#   gh workflow run "Deploy to Oracle k3s" --ref main
+#
+# Pause the pipeline (e.g. during incident response):
+#   GitHub → Actions tab → this workflow → "..." → Disable workflow.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.gitignore'
+      - 'README.md'
+  workflow_dispatch:
+
+concurrency:
+  # One deploy at a time; cancel any in-flight push if a newer one lands.
+  group: deploy-oracle-alfred
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        # webfactory/ssh-agent loads ORACLE_SSH_KEY in-memory only
+        # (never written to disk on the runner) and adds it to ssh-agent
+        # so subsequent ssh/rsync commands use it.
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ORACLE_SSH_KEY }}
+
+      - name: Pin oracle host key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ORACLE_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Rsync repo to oracle
+        run: |
+          rsync -av --delete \
+            --exclude='.git/' \
+            --exclude='node_modules/' \
+            --exclude='web/dist/' \
+            --exclude='internal/static/dist/' \
+            --exclude='.claude/' \
+            --exclude='memory/' \
+            ./ ${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}:/root/headless-alfred/
+
+      - name: Build image on oracle
+        # nerdctl build directly into the k3s containerd k8s.io
+        # namespace. ~3-6 min with BuildKit cache warm (npm install +
+        # apt install of the developer toolkit are the slow parts).
+        run: |
+          ssh ${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }} \
+            'cd /root/headless-alfred && bash scripts/build-on-oracle.sh'
+
+      - name: Snapshot current helm revision (for rollback)
+        id: snapshot
+        run: |
+          PREV_REV=$(ssh ${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }} \
+            'KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm -n alfred list -o json 2>/dev/null || echo "[]"' \
+            | jq -r '.[] | select(.name=="alfred") | .revision')
+          echo "Previous revision: ${PREV_REV:-none}"
+          echo "prev_rev=${PREV_REV:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Helm upgrade --install
+        id: deploy
+        run: |
+          ssh ${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }} bash <<EOF
+            set -euo pipefail
+            cd /root/headless-alfred
+            export ALFRED_USER='${{ secrets.ALFRED_USER }}'
+            export ALFRED_PASSWORD='${{ secrets.ALFRED_PASSWORD }}'
+            export ALFRED_TOKEN='${{ secrets.ALFRED_TOKEN }}'
+            bash scripts/deploy-oracle.sh
+          EOF
+
+      - name: Force rollout for :local image sha changes
+        # Chart uses image.tag=local (no sha in tag), so a freshly built
+        # image with new contents has the same Deployment spec → k8s
+        # doesn't automatically reschedule. Force it.
+        run: |
+          ssh ${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }} bash <<'EOF'
+            set -euo pipefail
+            export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+            kubectl -n alfred rollout restart deployment/alfred
+          EOF
+
+      - name: Post-deploy smoke
+        # Hit /healthz from inside the pod via kubectl exec. If the
+        # rollout doesn't reach ready within 90s, fail so rollback kicks in.
+        run: |
+          ssh ${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }} bash <<'EOF'
+            set -euo pipefail
+            export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+            kubectl -n alfred rollout status deploy/alfred --timeout=90s
+            kubectl -n alfred exec deploy/alfred -- wget -qO- http://localhost:8080/healthz >/dev/null
+          EOF
+
+      - name: Rollback on failure
+        # Runs only if any previous step failed AND there was a previous
+        # revision to roll back to (fresh install has nothing).
+        if: failure() && steps.snapshot.outputs.prev_rev != ''
+        run: |
+          echo "Deploy failed. Rolling back to revision ${{ steps.snapshot.outputs.prev_rev }}."
+          ssh ${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }} \
+            "KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm -n alfred rollback alfred ${{ steps.snapshot.outputs.prev_rev }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy → oracle k3s (alfred)"
+            echo "- Sha: \`${{ github.sha }}\`"
+            echo "- Previous revision: \`${{ steps.snapshot.outputs.prev_rev || 'fresh' }}\`"
+            echo "- Result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
