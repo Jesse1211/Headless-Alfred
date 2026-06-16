@@ -4,7 +4,9 @@
 
 **Goal:** Three independent UX improvements bundled in one plan: (A) collapsible tool-call display in Claude chat, (B) header Summary toggle becomes an icon, (C) per-session Notes panel added alongside Summary in the right sidebar (Notes is user-only — never sent to Claude).
 
-**Architecture:** A and B are pure frontend. C mirrors the existing `internal/summary` package as `internal/notes` (path + watcher + handler), plus 4 new HTTP endpoints (GET/PUT note + GET list isn't needed), one new WS frame `note_updated`, one new `NotesPanel` React component, and a small refactor of `SummarySidebar` into a generic right-rail container that accordion-stacks Summary + Notes when both are eligible.
+**Architecture:** A and B are pure frontend. C mirrors the existing `internal/summary` package as `internal/notes` (path + watcher + handler), plus **2** new HTTP endpoints (GET + PUT note), one new WS frame `note_updated`, one new `NotesPanel` React component, and a small refactor of `SummarySidebar` into a generic right-rail container that accordion-stacks Summary + Notes when both are eligible. Recap sessions intentionally keep their dedicated `RecapSidebar` and do NOT get a Notes panel — recap sessions are ephemeral by design, scribbling personal notes there has no good destination on disk.
+
+**Sidebar visibility key migration:** The toggle's localStorage key is renamed from `alfred_summary_sidebar_hidden` to `alfred_right_sidebar_hidden` because the right rail is no longer summary-only. On read, the new code checks the new key first and falls back to the old key (one-time migration) so a returning user keeps their hidden/shown preference.
 
 **Tech Stack:** Go 1.25, fsnotify v1.7.0, TypeScript, React 18, Vitest, Playwright (existing).
 
@@ -223,7 +225,9 @@ Expected: TS clean, all existing tests still pass.
 
 - [ ] **Step 4: Manual visual smoke**
 
-Open a Claude UI session in the browser, send a prompt that triggers a Bash tool (e.g. `run "git status" via bash`). Confirm:
+Open a Claude UI session in the browser and send a prompt that triggers a tool. Quickest path is to pick a session that already has past turns with tools — the jsonl-restore loader populates them on reload and you see the new compact rows immediately, no need to wait for a fresh Claude run (which takes 30-60s on a real API call).
+
+Confirm:
 - Tool row shows `▸ Bash (git status) done` on one line
 - Click the row → it expands, showing the input JSON + result pre blocks
 - Click again → collapses
@@ -268,7 +272,7 @@ Find the existing block in `WorkspacePage.tsx` (currently around line 200):
 Replace with the same wrapper + an SVG sidebar icon (no text):
 
 ```tsx
-{selected && ps && ps.mode === 'claude' && !isRecap && (
+{selected && ps && !isRecap && (
   <button
     type="button"
     className={`workspace__sidebar-icon-btn ${sidebarHidden ? '' : 'is-active'}`}
@@ -287,9 +291,47 @@ Replace with the same wrapper + an SVG sidebar icon (no text):
 )}
 ```
 
-Two notes on the predicate change:
-- The visibility check is now `ps.mode === 'claude' && !isRecap` (drops the `templateId === 'summary-todo'` requirement). This is intentional — Part C will make the right sidebar useful even without a summary template, because Notes always show up. The button becomes the universal "toggle right sidebar" affordance.
+Predicate notes:
+- The visibility check is `!isRecap` (drops both the `mode === 'claude'` requirement AND the `templateId === 'summary-todo'` requirement). Part C makes the right rail useful in every non-recap session, including shell mode, because Notes always shows up. **The icon predicate MUST match `showRightRail` in Part C exactly** — if shell sessions can show the rail but not the icon, the user has no way to re-open the rail after hiding it.
+- Recap sessions still get the RecapSidebar (a separate component), so the icon is correctly hidden there.
 - The CSS class name changes from `workspace__summary-btn` to `workspace__sidebar-icon-btn` to reflect the broader role.
+
+Also rename the localStorage key (one-time migration: read new key first, fall back to old):
+
+Find the existing definition in `WorkspacePage.tsx` (search for `alfred_summary_sidebar_hidden`):
+
+```tsx
+const [sidebarHidden, setSidebarHidden] = useState<boolean>(() => {
+  try { return localStorage.getItem('alfred_summary_sidebar_hidden') === '1' } catch { return false }
+})
+```
+
+Replace with:
+
+```tsx
+const [sidebarHidden, setSidebarHidden] = useState<boolean>(() => {
+  try {
+    // Prefer the new key. Fall back to the old summary-only key
+    // for a one-time migration so returning users keep their
+    // hide preference.
+    const v = localStorage.getItem('alfred_right_sidebar_hidden')
+    if (v !== null) return v === '1'
+    return localStorage.getItem('alfred_summary_sidebar_hidden') === '1'
+  } catch { return false }
+})
+```
+
+And in `setSidebarHiddenPersisted`:
+
+```tsx
+const setSidebarHiddenPersisted = useCallback((hidden: boolean) => {
+  setSidebarHidden(hidden)
+  try {
+    localStorage.setItem('alfred_right_sidebar_hidden', hidden ? '1' : '0')
+    localStorage.removeItem('alfred_summary_sidebar_hidden') // migrate
+  } catch { /* localStorage unavailable */ }
+}, [])
+```
 
 - [ ] **Step 2: Restyle in CSS**
 
@@ -1129,16 +1171,24 @@ export function NotesPanel({ sessionID, noteFetchCounter }: Props) {
   const lastPushedRef = useRef<string>('')
 
   // Initial fetch + WS-driven refetch.
+  //
+  // Deps deliberately exclude `loaded` — including it would trigger a
+  // second fetch the moment setLoaded(true) runs. The first fetch is
+  // unconditional (loaded starts as false; we WANT it to override the
+  // empty textarea). Subsequent fetches are gated by the focus check
+  // so a server echo doesn't clobber the user's in-flight typing.
   useEffect(() => {
     let alive = true
+    const isFirstFetch = !loaded
     getNote(sessionID)
       .then((body) => {
         if (!alive) return
-        // Don't clobber the in-flight typing buffer with a remote
-        // value when the user has focus. Defensive — applies to
-        // every refetch, including the initial one if focus race
-        // happens to be possible.
-        if (document.activeElement === taRef.current && loaded) return
+        if (!isFirstFetch && document.activeElement === taRef.current) {
+          // User is typing right now — skip the refetch. The local
+          // text is more current; the next debounced PUT will catch
+          // server up.
+          return
+        }
         setText(body)
         lastPushedRef.current = body
         setError(null)
@@ -1149,10 +1199,11 @@ export function NotesPanel({ sessionID, noteFetchCounter }: Props) {
       })
       .finally(() => {
         if (!alive) return
-        setLoaded(true)
+        if (!loaded) setLoaded(true)
       })
     return () => { alive = false }
-  }, [sessionID, noteFetchCounter, loaded])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionID, noteFetchCounter])
 
   // Debounced save.
   useEffect(() => {
@@ -1383,7 +1434,12 @@ export function RightRail({ sessionID, showSummary, summaryFetchCounter, noteFet
         </button>
         {!notesCollapsed && (
           <div className="right-rail__body right-rail__body--notes">
-            <NotesPanel sessionID={sessionID} noteFetchCounter={noteFetchCounter} />
+            {/* key={sessionID} forces a fresh NotesPanel mount per
+                session. Without it, the panel's lastPushedRef and
+                text state would carry over when the user switches
+                sessions, and the trailing debounced PUT would write
+                the OLD text to the NEW session's file. */}
+            <NotesPanel key={sessionID} sessionID={sessionID} noteFetchCounter={noteFetchCounter} />
           </div>
         )}
       </section>
@@ -1471,13 +1527,22 @@ export function RightRail({ sessionID, showSummary, summaryFetchCounter, noteFet
 }
 ```
 
-- [ ] **Step 5: TS + tests**
+- [ ] **Step 5: TS + tests + Recap sanity**
 
 ```bash
 cd /Users/jesseliu/Desktop/Chore/Headless-Alfred/web && npx tsc --noEmit && npm test -- --run 2>&1 | tail -4
 ```
 
 Expected: clean + green. SummarySidebar's previous test (if any references it) — check whether anything imports `SummarySidebar` by old name. If so, those tests need the import renamed to `SummarySection`.
+
+ALSO check that the refactor didn't break the Recap path. Open the rendered RecapSidebar (still mounted unchanged) and confirm:
+
+```bash
+grep -n "MarkdownView" web/src/features/sessions/RecapSidebar.tsx
+grep -n "SummarySidebar\|SummarySection" web/src/features/sessions/RecapSidebar.tsx
+```
+
+Expected: RecapSidebar still imports `MarkdownView` (shared component); it does NOT import `SummarySidebar` / `SummarySection`. If by accident it does, fix that import — RecapSidebar should remain entirely independent.
 
 - [ ] **Step 6: Commit**
 
