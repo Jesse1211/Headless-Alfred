@@ -24,11 +24,17 @@ RUN rm -rf internal/static/dist && mkdir -p internal/static/dist
 COPY --from=web-builder /web/dist/ internal/static/dist/
 # Make sure go:embed has at least one file (it does — the dist contents).
 ARG VERSION=dev
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# TARGETOS/TARGETARCH come from buildkit's --platform negotiation
+# (or fall back to the host's GOOS/GOARCH for native builds). DO NOT
+# default these to amd64 — the oracle box is arm64 and a wrong-arch
+# binary fails at runtime with "Exec format error" inside the
+# container, which is hell to debug because the build itself
+# succeeds and the image looks fine.
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/root/go/pkg/mod \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-$(go env GOARCH)} \
     go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /out/alfred-server ./cmd/alfred-server
 
