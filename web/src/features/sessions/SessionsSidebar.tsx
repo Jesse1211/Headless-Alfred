@@ -1,7 +1,14 @@
 import { useState, KeyboardEvent } from 'react'
 import { Session } from '../../lib/api'
 import { isSubmitKey } from '../../lib/keyboard'
+import { TurnStatus } from './sessionStatus'
 import './SessionsSidebar.css'
+
+const TURN_STATUS_LABEL: Record<TurnStatus, string> = {
+  idle: 'Your turn',
+  busy: 'Waiting for reply',
+  needsAction: 'Needs your decision',
+}
 
 interface Props {
   sessions: Session[]
@@ -21,10 +28,10 @@ interface Props {
   // Collapse the sidebar to its narrow strip. Optional so tests
   // can render the sidebar in isolation without supplying it.
   onCollapse?: () => void
-  // Per-row turn indicator: true = waiting for reply (red dot),
-  // false = idle / your turn (green dot). When undefined, no dot
-  // is rendered (tests don't have to wire this up).
-  busyForSession?: (sessionID: string) => boolean
+  // Per-row turn indicator: 'idle' (green) / 'busy' (red) /
+  // 'needsAction' (yellow). When undefined, no dot is rendered
+  // (tests don't have to wire this up).
+  statusForSession?: (sessionID: string) => TurnStatus
 }
 
 export function SessionsSidebar({
@@ -40,7 +47,7 @@ export function SessionsSidebar({
   onOpenClaudeCredentials,
   onLogout,
   onCollapse,
-  busyForSession,
+  statusForSession,
 }: Props) {
   const atLimit = sessions.length >= maxSessions
   const hasFooter = !!(onOpenGitCredentials || onOpenClaudeCredentials || onLogout)
@@ -83,7 +90,7 @@ export function SessionsSidebar({
             key={s.id}
             session={s}
             selected={s.id === selectedSessionID}
-            busy={busyForSession?.(s.id)}
+            status={statusForSession?.(s.id)}
             onSelect={onSelect}
             onRename={onRename}
             onClose={onClose}
@@ -131,13 +138,13 @@ export function SessionsSidebar({
 interface RowProps {
   session: Session
   selected: boolean
-  busy?: boolean
+  status?: TurnStatus
   onSelect: (id: string) => void
   onRename: (id: string, name: string) => void
   onClose: (id: string) => void
 }
 
-function SessionRow({ session, selected, busy, onSelect, onRename, onClose }: RowProps) {
+function SessionRow({ session, selected, status, onSelect, onRename, onClose }: RowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.name)
 
@@ -166,11 +173,11 @@ function SessionRow({ session, selected, busy, onSelect, onRename, onClose }: Ro
       className={`session-row ${selected ? 'is-selected' : ''}`}
       onClick={() => !editing && onSelect(session.id)}
     >
-      {busy !== undefined && (
+      {status !== undefined && (
         <span
-          className={`turn-dot turn-dot--${busy ? 'busy' : 'idle'}`}
-          title={busy ? 'Waiting for reply' : 'Your turn'}
-          aria-label={busy ? 'Waiting for reply' : 'Your turn'}
+          className={`turn-dot turn-dot--${status}`}
+          title={TURN_STATUS_LABEL[status]}
+          aria-label={TURN_STATUS_LABEL[status]}
         />
       )}
       {editing ? (

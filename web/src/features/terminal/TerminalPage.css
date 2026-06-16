@@ -56,6 +56,11 @@
 
 .turn-dot--idle { background: var(--ok); }
 .turn-dot--busy { background: var(--error); }
+/* needsAction: a pending tool approval / question card is waiting
+   on the user. Priority over busy because Claude can't make progress
+   without the user's input. Yellow uses --warn (same family as the
+   connection 'connecting' state) so the palette stays consistent. */
+.turn-dot--needsAction { background: var(--warn); }
 
 .terminal-page__logout {
   background: transparent;

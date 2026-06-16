@@ -4,7 +4,13 @@ import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { useClaudeHistoryLoader } from './useClaudeHistoryLoader'
 import { useResizableWidth } from './useResizableWidth'
 import { SessionsSidebar } from './SessionsSidebar'
-import { isWaitingForReply } from './sessionStatus'
+import { turnStatus } from './sessionStatus'
+
+const TURN_STATUS_LABEL: Record<ReturnType<typeof turnStatus>, string> = {
+  idle: 'your turn',
+  busy: 'waiting for reply',
+  needsAction: 'needs your decision',
+}
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
@@ -197,7 +203,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
             onOpenClaudeCredentials={() => setClaudeCredsOpen(true)}
             onLogout={onLogout}
             onCollapse={() => setLeftCollapsedPersisted(true)}
-            busyForSession={(id) => isWaitingForReply(s.perSession.get(id))}
+            statusForSession={(id) => turnStatus(s.perSession.get(id))}
           />
           <div
             className="workspace__resizer workspace__resizer--right"
@@ -212,13 +218,11 @@ export function WorkspacePage({ token, onLogout }: Props) {
           <div className="workspace__brand">{selected?.name ?? 'Headless Alfred'}</div>
           <div
             className="workspace__status"
-            title={`${s.connState} · ${selected && ps && isWaitingForReply(ps) ? 'waiting for reply' : "your turn"}`}
+            title={`${s.connState}${selected && ps ? ` · ${TURN_STATUS_LABEL[turnStatus(ps)]}` : ''}`}
           >
             <span className={`status-dot status-dot--${s.connState}`} />
             {selected && ps && (
-              <span
-                className={`turn-dot turn-dot--${isWaitingForReply(ps) ? 'busy' : 'idle'}`}
-              />
+              <span className={`turn-dot turn-dot--${turnStatus(ps)}`} />
             )}
           </div>
           {selected && ps && ps.mode === 'claude' && (

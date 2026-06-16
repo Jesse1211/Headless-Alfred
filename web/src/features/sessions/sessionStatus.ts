@@ -1,20 +1,33 @@
 import { PerSessionState } from './types'
 
-// isWaitingForReply: true iff the session is mid-turn from the user's
-// perspective — they sent something, the system is working, they
-// should wait. Maps to the red turn-indicator.
+// turnStatus distinguishes three things the user might need to know:
 //
-//   - claude mode: Claude has an in-flight turn (streaming, running a
-//     tool, awaiting tool decision, etc.)
-//   - shell mode: a command is running
-//   - no ps yet (hasn't subscribed / first frame not in): treat as
-//     idle (green) because there's no signal otherwise
+//   - 'needsAction': Claude is waiting on the user to make a decision
+//     — a PreToolUse Allow/Deny card is pending, or an AskUserQuestion
+//     card needs answers. Most urgent: user has to do something or
+//     Claude sits forever. Yellow dot.
 //
-// Conversely false means "your turn" — green.
-export function isWaitingForReply(ps: PerSessionState | undefined): boolean {
-  if (!ps) return false
+//   - 'busy': Claude / a shell command is currently working on the
+//     user's request. User can sit back; the next thing on screen is
+//     a reply. Red dot.
+//
+//   - 'idle': Nothing in flight, no pending approvals — your turn to
+//     type. Green dot.
+//
+// Priority is needsAction > busy > idle: if a tool approval came in
+// mid-turn (inFlight is still true while pending sits there), the
+// user's action is what unblocks Claude, so the indicator surfaces
+// that rather than the in-flight state.
+export type TurnStatus = 'idle' | 'busy' | 'needsAction'
+
+export function turnStatus(ps: PerSessionState | undefined): TurnStatus {
+  if (!ps) return 'idle'
   if (ps.mode === 'claude') {
-    return !!ps.claude?.inFlight
+    const c = ps.claude
+    if (c && (c.pending.length > 0 || c.pendingQuestions.length > 0)) {
+      return 'needsAction'
+    }
+    return c?.inFlight ? 'busy' : 'idle'
   }
-  return ps.running != null
+  return ps.running != null ? 'busy' : 'idle'
 }
