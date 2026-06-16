@@ -180,15 +180,6 @@ export function WorkspacePage({ token, onLogout }: Props) {
         </div>
       ) : (
         <div className="workspace__left-pane">
-          <button
-            type="button"
-            className="workspace__left-collapse"
-            onClick={() => setLeftCollapsedPersisted(true)}
-            aria-label="Collapse sessions sidebar"
-            title="Collapse sidebar"
-          >
-            «
-          </button>
           <SessionsSidebar
             // Recap sessions are seeded into useSessions.sessions via
             // setSessionMeta so the rest of the hook can find them, but
@@ -204,6 +195,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
             onOpenGitCredentials={() => setGitCredsOpen(true)}
             onOpenClaudeCredentials={() => setClaudeCredsOpen(true)}
             onLogout={onLogout}
+            onCollapse={() => setLeftCollapsedPersisted(true)}
           />
           <div
             className="workspace__resizer workspace__resizer--right"

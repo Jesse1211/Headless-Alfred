@@ -16,7 +16,35 @@
   min-height: 0;
 }
 
+.sessions-sidebar__top-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  /* Inherit sidebar background — no separate surface so the
+     collapse button sits in the SAME visual block as + New chat
+     instead of looking like a floating chip on the pane behind. */
+}
+
+.sessions-sidebar__collapse {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted, #9aa3b2);
+  padding: 0 10px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sessions-sidebar__collapse:hover {
+  background: var(--bubble);
+  color: var(--text);
+}
+
 .sessions-sidebar__new {
+  /* Flex-fills the top row alongside the optional collapse button. */
+  flex: 1;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;

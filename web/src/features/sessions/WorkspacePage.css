@@ -57,8 +57,7 @@
   padding: 12px 0;
 }
 
-.workspace__left-expand,
-.workspace__left-collapse {
+.workspace__left-expand {
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -73,22 +72,10 @@
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
 }
 
-.workspace__left-expand:hover,
-.workspace__left-collapse:hover {
+.workspace__left-expand:hover {
   color: var(--text, #eaeaea);
   background: rgba(255, 255, 255, 0.04);
   border-color: rgba(255, 255, 255, 0.18);
-}
-
-/* In expanded mode the collapse button sits at the very top of the pane,
-   above the SessionsSidebar content. Use flex order so it doesn't fight
-   with sidebar padding. */
-.workspace__left-pane .workspace__left-collapse {
-  align-self: flex-end;
-  margin: 8px 8px 0;
-  width: 24px;
-  height: 24px;
-  font-size: 12px;
 }
 
 .workspace__main {

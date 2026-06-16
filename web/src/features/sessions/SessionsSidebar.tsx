@@ -18,6 +18,9 @@ interface Props {
   onOpenGitCredentials?: () => void
   onOpenClaudeCredentials?: () => void
   onLogout?: () => void
+  // Collapse the sidebar to its narrow strip. Optional so tests
+  // can render the sidebar in isolation without supplying it.
+  onCollapse?: () => void
 }
 
 export function SessionsSidebar({
@@ -32,20 +35,34 @@ export function SessionsSidebar({
   onOpenGitCredentials,
   onOpenClaudeCredentials,
   onLogout,
+  onCollapse,
 }: Props) {
   const atLimit = sessions.length >= maxSessions
   const hasFooter = !!(onOpenGitCredentials || onOpenClaudeCredentials || onLogout)
   return (
     <aside className="sessions-sidebar">
-      <button
-        type="button"
-        className="sessions-sidebar__new"
-        onClick={onCreate}
-        disabled={atLimit}
-        title={atLimit ? 'Close one first' : 'New chat'}
-      >
-        + New chat
-      </button>
+      <div className="sessions-sidebar__top-row">
+        {onCollapse && (
+          <button
+            type="button"
+            className="sessions-sidebar__collapse"
+            onClick={onCollapse}
+            aria-label="Collapse sessions sidebar"
+            title="Collapse sidebar"
+          >
+            «
+          </button>
+        )}
+        <button
+          type="button"
+          className="sessions-sidebar__new"
+          onClick={onCreate}
+          disabled={atLimit}
+          title={atLimit ? 'Close one first' : 'New chat'}
+        >
+          + New chat
+        </button>
+      </div>
       <button
         type="button"
         className="sessions-sidebar__create-recap"
