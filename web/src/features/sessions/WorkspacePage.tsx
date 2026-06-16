@@ -8,7 +8,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
 import { ClaudeTerminal } from '../claude/ClaudeTerminal'
-import { SummarySidebar } from './SummarySidebar'
+import { RightRail } from './RightRail'
 import { RecapSidebar } from './RecapSidebar'
 import { ClaudeChatView } from './ClaudeChatView'
 import { StartClaudeDialog } from './StartClaudeDialog'
@@ -83,15 +83,16 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const composerBusy = !!ps?.running
 
   const isRecap = selected?.kind === 'recap'
-  // The summary sidebar's *content* is mountable only for chat sessions in
-  // Claude UI mode with the summary template opted in. Recap sessions
-  // get RecapSidebar instead (mutually exclusive).
-  const showSummarySidebar = !!(selected && ps && ps.mode === 'claude' && ps.templateId === 'summary-todo' && !isRecap)
+  // RightRail (Summary + Notes accordion) is eligible for any non-recap
+  // session. Notes always renders; Summary nested inside only when
+  // claude+ui+template.
+  const showRightRail = !!(selected && ps && !isRecap)
+  const showSummarySection = !!(selected && ps && ps.mode === 'claude' && ps.templateId === 'summary-todo' && !isRecap)
   // RecapSidebar is the sidebar for recap-kind sessions. Always shown
   // when the user is on a recap session.
   const showRecapSidebar = !!(selected && isRecap)
   // has-sidebar: any of the right-column sidebars is rendering.
-  const sidebarShown = (showSummarySidebar && !sidebarHidden) || showRecapSidebar
+  const sidebarShown = (showRightRail && !sidebarHidden) || showRecapSidebar
 
   // Resizable left + right widths. Persisted to localStorage independently
   // of the sidebar-hidden flag, so re-opening the summary sidebar restores
@@ -349,11 +350,13 @@ export function WorkspacePage({ token, onLogout }: Props) {
             {...rightSidebar.dividerProps}
             aria-label="Resize right sidebar"
           />
-          {showSummarySidebar && !sidebarHidden && selected && ps && (
-            <SummarySidebar
+          {showRightRail && !sidebarHidden && selected && ps && (
+            <RightRail
               key={selected.id}
               sessionID={selected.id}
+              showSummary={showSummarySection}
               summaryFetchCounter={ps.summaryFetchCounter ?? 0}
+              noteFetchCounter={ps.noteFetchCounter ?? 0}
             />
           )}
           {showRecapSidebar && selected && (
