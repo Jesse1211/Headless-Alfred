@@ -12,6 +12,12 @@ interface Props {
   onSelect: (id: string) => void
   onRename: (id: string, name: string) => void
   onClose: (id: string) => void
+  // Footer actions. Optional so existing tests (which render the
+  // sidebar in isolation) don't need to pass them. In the live app
+  // they're always provided by WorkspacePage.
+  onOpenGitCredentials?: () => void
+  onOpenClaudeCredentials?: () => void
+  onLogout?: () => void
 }
 
 export function SessionsSidebar({
@@ -23,8 +29,12 @@ export function SessionsSidebar({
   onSelect,
   onRename,
   onClose,
+  onOpenGitCredentials,
+  onOpenClaudeCredentials,
+  onLogout,
 }: Props) {
   const atLimit = sessions.length >= maxSessions
+  const hasFooter = !!(onOpenGitCredentials || onOpenClaudeCredentials || onLogout)
   return (
     <aside className="sessions-sidebar">
       <button
@@ -60,6 +70,37 @@ export function SessionsSidebar({
           <li className="sessions-sidebar__empty">No sessions yet.</li>
         )}
       </ul>
+      {hasFooter && (
+        <div className="sessions-sidebar__footer">
+          {onOpenGitCredentials && (
+            <button
+              type="button"
+              className="sessions-sidebar__footer-btn"
+              onClick={onOpenGitCredentials}
+            >
+              Git credentials
+            </button>
+          )}
+          {onOpenClaudeCredentials && (
+            <button
+              type="button"
+              className="sessions-sidebar__footer-btn"
+              onClick={onOpenClaudeCredentials}
+            >
+              Claude credentials
+            </button>
+          )}
+          {onLogout && (
+            <button
+              type="button"
+              className="sessions-sidebar__footer-btn sessions-sidebar__footer-btn--signout"
+              onClick={onLogout}
+            >
+              Sign out
+            </button>
+          )}
+        </div>
+      )}
     </aside>
   )
 }

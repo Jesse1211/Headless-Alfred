@@ -9,7 +9,11 @@
   flex-direction: column;
   padding: 12px 8px;
   gap: 12px;
-  overflow-y: auto;
+  /* No overflow at this level — the session list scrolls internally
+     so the footer (Git/Claude creds + Sign out) stays pinned at the
+     bottom of the visible area regardless of how many sessions exist. */
+  overflow: hidden;
+  min-height: 0;
 }
 
 .sessions-sidebar__new {
@@ -47,6 +51,13 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Grow to fill the remaining space so the footer below sits at
+     the bottom of the sidebar even when there are few sessions.
+     min-height: 0 lets the flex item shrink below its content size
+     so the inner overflow can kick in. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .sessions-sidebar__empty {
@@ -124,4 +135,46 @@
   color: var(--text, #eaeaea);
   border-color: rgba(255, 255, 255, 0.24);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.sessions-sidebar__footer {
+  /* Pinned to the bottom of the sidebar. The list above grows to
+     fill remaining space, so this stays at the bottom of the
+     visible pane regardless of session count. */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sessions-sidebar__footer-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-muted, #9aa3b2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sessions-sidebar__footer-btn:hover {
+  background: var(--bubble);
+  color: var(--text);
+}
+
+.sessions-sidebar__footer-btn--signout {
+  /* Distinguish destructive-ish action visually. Subtle — we don't
+     want it to look like a "danger" CTA, just a hint that it's a
+     different kind of action. */
+  color: var(--text-faint, #6b7280);
+}
+
+.sessions-sidebar__footer-btn--signout:hover {
+  color: var(--text);
+  background: var(--bubble);
 }

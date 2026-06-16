@@ -42,7 +42,6 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const [pendingClose, setPendingClose] = useState<string | null>(null)
   const [gitCredsOpen, setGitCredsOpen] = useState(false)
   const [claudeCredsOpen, setClaudeCredsOpen] = useState(false)
-  const [credsMenuOpen, setCredsMenuOpen] = useState(false)
   // Session ID for which the "Start Claude" renderer-pick dialog is open.
   const [startClaudeFor, setStartClaudeFor] = useState<string | null>(null)
 
@@ -149,6 +148,35 @@ export function WorkspacePage({ token, onLogout }: Props) {
           >
             »
           </button>
+          <div className="workspace__left-collapsed-footer">
+            <button
+              type="button"
+              className="workspace__left-expand"
+              onClick={() => setGitCredsOpen(true)}
+              aria-label="Git credentials"
+              title="Git credentials"
+            >
+              G
+            </button>
+            <button
+              type="button"
+              className="workspace__left-expand"
+              onClick={() => setClaudeCredsOpen(true)}
+              aria-label="Claude credentials"
+              title="Claude credentials"
+            >
+              C
+            </button>
+            <button
+              type="button"
+              className="workspace__left-expand"
+              onClick={onLogout}
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              ⎋
+            </button>
+          </div>
         </div>
       ) : (
         <div className="workspace__left-pane">
@@ -173,6 +201,9 @@ export function WorkspacePage({ token, onLogout }: Props) {
             onSelect={s.selectSession}
             onRename={(id, name) => s.renameSession(id, name)}
             onClose={(id) => setPendingClose(id)}
+            onOpenGitCredentials={() => setGitCredsOpen(true)}
+            onOpenClaudeCredentials={() => setClaudeCredsOpen(true)}
+            onLogout={onLogout}
           />
           <div
             className="workspace__resizer workspace__resizer--right"
@@ -224,49 +255,6 @@ export function WorkspacePage({ token, onLogout }: Props) {
               Claude
             </button>
           )}
-          <div className="workspace__creds-menu">
-            <button
-              type="button"
-              className="workspace__icon-btn"
-              aria-label="Credentials"
-              aria-haspopup="menu"
-              aria-expanded={credsMenuOpen}
-              title="Credentials"
-              onClick={() => setCredsMenuOpen((v) => !v)}
-              onBlur={() => {
-                // Defer so the menu item click handler runs first.
-                setTimeout(() => setCredsMenuOpen(false), 150)
-              }}
-            >
-              {/* Lightweight gear glyph; no svg dep */}
-              ⚙
-            </button>
-            {credsMenuOpen && (
-              <div className="workspace__creds-menu-popup" role="menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setCredsMenuOpen(false)
-                    setGitCredsOpen(true)
-                  }}
-                >
-                  Git credentials
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setCredsMenuOpen(false)
-                    setClaudeCredsOpen(true)
-                  }}
-                >
-                  Claude credentials
-                </button>
-              </div>
-            )}
-          </div>
-          <button className="workspace__logout" onClick={onLogout}>Sign out</button>
         </header>
 
         {s.lastError && (
