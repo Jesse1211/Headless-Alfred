@@ -106,9 +106,19 @@
 }
 
 .workspace__status {
-  margin-left: auto;
+  /* Sits to the right of the brand title, separated by margin-left.
+     We want the order brand → status (left cluster) → claude-btn
+     (center) → sidebar-toggle (right). The center button gets
+     'margin-left: auto' so it floats to the middle of the
+     remaining space; the right toggle gets 'margin-left: auto' too,
+     which together push status to the left, claude to the middle,
+     toggle to the right. */
+  margin-left: 18px;
   display: flex;
   align-items: center;
+  /* Pull the two dots apart so they read as two distinct indicators
+     instead of a single double-dot glyph. */
+  gap: 12px;
 }
 
 /* Collapsed-sidebar footer: stacks small icon buttons (Git/Claude
@@ -123,6 +133,9 @@
 }
 
 .workspace__claude-btn {
+  /* Center: pushed to the middle of the remaining header space by
+     the auto margin pair (this one + sidebar-icon-btn below). */
+  margin-left: auto;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -151,6 +164,10 @@
 }
 
 .workspace__sidebar-icon-btn {
+  /* Right: paired with the claude-btn's margin-left:auto, this
+     second auto margin pushes the toggle to the far right of the
+     header while the claude-btn lands in the middle. */
+  margin-left: auto;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;

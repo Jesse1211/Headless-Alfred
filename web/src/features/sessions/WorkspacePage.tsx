@@ -7,9 +7,16 @@ import { SessionsSidebar } from './SessionsSidebar'
 import { turnStatus } from './sessionStatus'
 
 const TURN_STATUS_LABEL: Record<ReturnType<typeof turnStatus>, string> = {
-  idle: 'your turn',
-  busy: 'waiting for reply',
-  needsAction: 'needs your decision',
+  idle: 'Your turn',
+  busy: 'Waiting for reply',
+  needsAction: 'Needs your decision',
+}
+
+const CONN_STATE_LABEL: Record<string, string> = {
+  open: 'Connected',
+  connecting: 'Connecting…',
+  reconnecting: 'Reconnecting…',
+  closed: 'Disconnected',
 }
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
@@ -216,13 +223,18 @@ export function WorkspacePage({ token, onLogout }: Props) {
       <div className="workspace__main">
         <header className="workspace__header">
           <div className="workspace__brand">{selected?.name ?? 'Headless Alfred'}</div>
-          <div
-            className="workspace__status"
-            title={`${s.connState}${selected && ps ? ` · ${TURN_STATUS_LABEL[turnStatus(ps)]}` : ''}`}
-          >
-            <span className={`status-dot status-dot--${s.connState}`} />
+          <div className="workspace__status">
+            <span
+              className={`status-dot status-dot--${s.connState}`}
+              data-tooltip={CONN_STATE_LABEL[s.connState] ?? s.connState}
+              data-tooltip-side="left"
+            />
             {selected && ps && (
-              <span className={`turn-dot turn-dot--${turnStatus(ps)}`} />
+              <span
+                className={`turn-dot turn-dot--${turnStatus(ps)}`}
+                data-tooltip={TURN_STATUS_LABEL[turnStatus(ps)]}
+                data-tooltip-side="left"
+              />
             )}
           </div>
           {selected && ps && ps.mode === 'claude' && (
@@ -230,7 +242,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
               type="button"
               className="workspace__claude-btn workspace__claude-btn--exit"
               onClick={() => s.exitClaude(selected.id)}
-              title="Send Ctrl+C to Claude and return to shell view"
+              data-tooltip="Send Ctrl+C and return to shell"
             >
               Exit Claude
             </button>
@@ -240,7 +252,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
               type="button"
               className={`workspace__sidebar-icon-btn ${sidebarHidden ? '' : 'is-active'}`}
               onClick={() => setSidebarHiddenPersisted(!sidebarHidden)}
-              title={sidebarHidden ? 'Show right sidebar' : 'Hide right sidebar'}
+              data-tooltip={sidebarHidden ? 'Show right sidebar' : 'Hide right sidebar'}
               aria-pressed={!sidebarHidden}
               aria-label="Toggle right sidebar"
             >
@@ -256,7 +268,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
               className="workspace__claude-btn"
               onClick={() => setStartClaudeFor(selected.id)}
               disabled={composerBusy}
-              title="Start Claude in this session"
+              data-tooltip="Start Claude in this session"
             >
               Claude
             </button>
