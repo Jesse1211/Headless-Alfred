@@ -54,10 +54,13 @@ func TestRender_RecapDailySubstitutes(t *testing.T) {
 	if strings.Contains(got, "<date>") || strings.Contains(got, "<cwd>") || strings.Contains(got, "<recap_path>") {
 		t.Errorf("Render left placeholder unsubstituted: %s", got)
 	}
-	if !strings.Contains(got, "git log") {
-		t.Errorf("git lookup missing")
+	if !strings.Contains(got, "ls -la") {
+		t.Errorf("history-listing instruction missing")
 	}
 	if !strings.Contains(got, "claude-mem") {
 		t.Errorf("claude-mem mention missing")
+	}
+	if !strings.Contains(got, "past recap") {
+		t.Errorf("missing hint that cwd contains past recaps")
 	}
 }

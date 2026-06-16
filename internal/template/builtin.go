@@ -72,22 +72,25 @@ Session id: <sid>.
 		Name: "Daily recap",
 		Content: `Generate today's daily recap for the user. Today is <date>.
 
+You're running inside the user's recap directory (<cwd>). All past
+recaps live here as <YYYY-MM-DD>.md files — use ls + Read to bring
+the most recent ones into context if you need continuity.
+
 Steps:
 
 1. Before doing anything, check whether any superpowers skills apply
    (e.g. a 'daily-recap' or 'summarize' skill). If one does, invoke
    it and follow its instructions instead of these steps.
 
-2. Otherwise, gather data IN PARALLEL (single response with multiple
-   tool calls):
-   - Bash: cd <cwd> && git log --since="<date> 00:00" --until="<date> 23:59" --all --pretty=format:"%h %s (%an)"
-     plus git diff --shortstat HEAD@{midnight}..HEAD
+2. Gather data IN PARALLEL (single response with multiple tool calls):
+   - Bash: ls -la <cwd>   # see what recap history exists
+   - Read the 1-2 most recent recap files for continuity (if any).
    - If a claude-mem timeline tool is available, call it for today's slice.
    - If a claude-mem memory_search tool is available, query "today's decisions".
 
    If the claude-mem tools are not available (the user hasn't
-   installed the plugin), skip those calls — git alone is enough to
-   produce a useful recap.
+   installed the plugin), skip those calls — past recap files alone
+   are enough to maintain narrative.
 
 3. Synthesize a markdown recap with this exact structure:
 
@@ -103,7 +106,7 @@ Steps:
    - <bullet of unresolved items the user should address tomorrow>
 
    ## Notes
-   - <anything else worth remembering>
+   - <anything else worth remembering, e.g. carried over from yesterday>
 
 4. Write the result to <recap_path> (overwriting any existing file).
    Use the Write tool; do NOT print the recap inline.

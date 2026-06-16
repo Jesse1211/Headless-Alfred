@@ -350,11 +350,17 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	if strings.TrimSpace(msg.Text) == "" && msg.RenderTemplate != "" {
 		dataDir := m.DataDir()
 		today := time.Now().Local().Format("2006-01-02")
+		// Cwd for the template body — recap sessions resolve to the
+		// recap dir below, so make it reflect that.
+		tplCwd := claudeInvocationCWD()
+		if isRecapKind(m, msg.SessionID) {
+			tplCwd = recap.Dir(dataDir)
+		}
 		msg.Text = template.Render(msg.RenderTemplate, template.RenderArgs{
 			SessionID:   msg.SessionID,
 			SummaryPath: summary.Path(dataDir, msg.SessionID),
 			Date:        today,
-			Cwd:         claudeInvocationCWD(),
+			Cwd:         tplCwd,
 			RecapPath:   recap.Path(dataDir, today),
 		})
 		// The template body itself becomes the user prompt; no template
@@ -384,7 +390,19 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	}
 	// claude --session-id keys its transcript on (cwd, uuid); see
 	// claudeInvocationCWD for the resolution + fallback policy.
+	// Recap sessions are pinned to <DATA_DIR>/recaps so Claude has
+	// `pwd`-readable access to past recaps as context, and its
+	// claude-mem / file-history scopes by this dir alone instead of
+	// the user's $HOME.
 	cwd := claudeInvocationCWD()
+	if isRecapKind(m, msg.SessionID) {
+		recapDir := recap.Dir(m.DataDir())
+		if err := os.MkdirAll(recapDir, 0o755); err != nil {
+			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "recap_dir_failed", Message: err.Error()})
+			return
+		}
+		cwd = recapDir
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	finalText := composePromptText(
 		msg.Text,
@@ -470,6 +488,13 @@ func handleToolDecision(msg InMsg, bridge *claude.Bridge, write func(OutMsg) err
 		Permission: msg.Decision,
 		Reason:     msg.Reason,
 	})
+}
+
+// isRecapKind reports whether the session is a recap session. Cheap
+// lock-protected lookup; safe to call from the prompt hot path.
+func isRecapKind(m *session.Manager, sessionID string) bool {
+	meta, ok := m.FindByID(sessionID)
+	return ok && meta.Kind == store.KindRecap
 }
 
 // claudeInvocationCWD returns the directory we run `claude -p` from.
