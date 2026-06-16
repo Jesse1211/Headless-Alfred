@@ -393,27 +393,10 @@ func (m *Manager) Rename(sessionID, newName string) error {
 	if cleaned == "" || len(cleaned) > MaxNameLength {
 		return ErrBadName
 	}
-	m.mu.Lock()
-	meta, ok := m.metas[sessionID]
-	if !ok {
-		m.mu.Unlock()
-		return ErrSessionNotFound
-	}
-	meta.Name = cleaned
-	m.metas[sessionID] = meta
-	// Snapshot the metas slice UNDER the lock so a concurrent Close that
-	// deletes the just-renamed entry can't race us into persisting a stale
-	// list (previously, persistMetas re-acquired the lock and could see
-	// post-Close state, silently dropping the rename from sessions.json).
-	list := make([]store.SessionMeta, 0, len(m.metas))
-	for _, mt := range m.metas {
-		list = append(list, mt)
-	}
-	sortByCreatedAtAsc(list)
-	m.mu.Unlock()
-
-	if err := m.cfg.SessionsFile.Save(list); err != nil {
-		return fmt.Errorf("persist: %w", err)
+	if err := m.mutateAndPersist(sessionID, func(meta *store.SessionMeta) {
+		meta.Name = cleaned
+	}); err != nil {
+		return err
 	}
 	m.onRename.Fire(renameEvent{SessionID: sessionID, NewName: cleaned})
 	return nil
@@ -433,28 +416,10 @@ func (m *Manager) GetMode(sessionID string) store.SessionMode {
 
 // SetMode atomically updates the in-memory mode and persists sessions.json.
 // Returns ErrSessionNotFound if sessionID is unknown.
-// Lock discipline mirrors Rename: mutate under m.mu, then persist outside.
 func (m *Manager) SetMode(sessionID string, mode store.SessionMode) error {
-	m.mu.Lock()
-	meta, ok := m.metas[sessionID]
-	if !ok {
-		m.mu.Unlock()
-		return ErrSessionNotFound
-	}
-	meta.Mode = mode
-	m.metas[sessionID] = meta
-	// Snapshot the list under the lock (same pattern as Rename).
-	list := make([]store.SessionMeta, 0, len(m.metas))
-	for _, mt := range m.metas {
-		list = append(list, mt)
-	}
-	sortByCreatedAtAsc(list)
-	m.mu.Unlock()
-
-	if err := m.cfg.SessionsFile.Save(list); err != nil {
-		return fmt.Errorf("persist: %w", err)
-	}
-	return nil
+	return m.mutateAndPersist(sessionID, func(meta *store.SessionMeta) {
+		meta.Mode = mode
+	})
 }
 
 // GetRenderer returns the per-session claude renderer ("tui", "ui",
@@ -599,11 +564,17 @@ func (m *Manager) FindByClaudeConvoID(convoID string) string {
 	return ""
 }
 
-// mutateAndPersist is a small refactoring helper: do an in-memory
-// mutation on a session's metadata under the lock, snapshot, then
-// persist outside the lock. Used by SetRenderer and
-// EnsureClaudeConvoID; could replace the body of SetMode too, but
-// we leave SetMode alone to minimize this diff.
+// mutateAndPersist is the standard "mutate a session's meta, then
+// persist sessions.json atomically" path. Used by every state-pair
+// setter on Manager (SetMode / SetRenderer / SetTemplateID /
+// SetClaudeBypass / EnsureClaudeConvoID / Rename — Rename also
+// fires the rename listener on success).
+//
+// Lock discipline matters: the snapshot happens UNDER m.mu so a
+// concurrent Close that deletes the just-mutated entry can't race
+// us into persisting a stale list (previously, persistMetas
+// re-acquired the lock and could see post-Close state, silently
+// dropping the mutation from sessions.json).
 func (m *Manager) mutateAndPersist(sessionID string, mut func(*store.SessionMeta)) error {
 	m.mu.Lock()
 	meta, ok := m.metas[sessionID]
