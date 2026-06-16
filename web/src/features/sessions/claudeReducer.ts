@@ -10,6 +10,7 @@
 // stream-json event into a ClaudeState; everything else delegates to
 // it.
 import { ServerMsg } from '../../lib/ws'
+import { randomId } from '../../lib/randomId'
 import {
   PerSessionState,
   emptyPerSessionState,
@@ -244,7 +245,7 @@ export function applyClaudeEvent(
 // prompt. Called from useSessions when claude_prompt is sent.
 export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState {
   const turn: ClaudeTurn = {
-    id: crypto.randomUUID(),
+    id: randomId(),
     prompt,
     startedAt: new Date().toISOString(),
     text: '',
