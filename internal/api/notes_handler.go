@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -28,23 +27,7 @@ func GetNoteHandler(dataDir string) http.Handler {
 			writeError(w, http.StatusNotFound, "not_found", "no such note")
 			return
 		}
-		path := notes.Path(dataDir, sid)
-		clean := filepath.Clean(path)
-		if !strings.HasPrefix(clean, filepath.Clean(root)+string(filepath.Separator)) {
-			writeError(w, http.StatusNotFound, "not_found", "no such note")
-			return
-		}
-		body, err := os.ReadFile(clean)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				writeError(w, http.StatusNotFound, "not_found", "no note file")
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "read_failed", err.Error())
-			return
-		}
-		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		_, _ = w.Write(body)
+		serveMarkdownFile(w, root, sid+".md", "no note file")
 	})
 }
 

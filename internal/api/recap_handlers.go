@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -66,30 +65,14 @@ func ListRecapsHandler(dataDir string) http.Handler {
 
 // GetRecapHandler — GET /api/recaps/{date}
 func GetRecapHandler(dataDir string) http.Handler {
+	root := recap.Dir(dataDir)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		date := chi.URLParam(r, "date")
 		if !recapDateParam.MatchString(date) {
 			writeError(w, http.StatusBadRequest, "bad_request", "invalid date")
 			return
 		}
-		path := recap.Path(dataDir, date)
-		clean := filepath.Clean(path)
-		root := recap.Dir(dataDir)
-		if !strings.HasPrefix(clean, filepath.Clean(root)+string(filepath.Separator)) {
-			writeError(w, http.StatusNotFound, "not_found", "no such recap")
-			return
-		}
-		body, err := os.ReadFile(clean)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				writeError(w, http.StatusNotFound, "not_found", "no recap for that date")
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "read_failed", err.Error())
-			return
-		}
-		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		_, _ = w.Write(body)
+		serveMarkdownFile(w, root, date+".md", "no recap for that date")
 	})
 }
 
