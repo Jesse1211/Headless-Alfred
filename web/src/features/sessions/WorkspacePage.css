@@ -87,7 +87,15 @@
 .workspace__main {
   display: grid;
   grid-template-rows: auto auto 1fr auto;
+  /* Without an explicit height, this grid item collapses to its
+     content's natural height: the inner 1fr row has no upper bound,
+     so the chat scroll stops growing and the composer ends up at
+     content-height rather than pinned at viewport bottom. Setting
+     height: 100% forces this column to fill the parent .workspace
+     grid row (which IS bounded — .workspace is height: 100vh). */
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .workspace__header {
