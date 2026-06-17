@@ -6,6 +6,7 @@ import { useResizableWidth } from './useResizableWidth'
 import { SessionsSidebar } from './SessionsSidebar'
 import { sessionIndicator } from './sessionStatus'
 import { SessionIndicatorDot } from './SessionIndicatorDot'
+import { DiskUsageBanner } from './DiskUsageBanner'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
@@ -257,6 +258,8 @@ export function WorkspacePage({ token, onLogout }: Props) {
             )}
           </div>
         </header>
+
+        <DiskUsageBanner usage={s.diskUsage} />
 
         {s.lastError && (
           <div className="workspace__banner is-error">

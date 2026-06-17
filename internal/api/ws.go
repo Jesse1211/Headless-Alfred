@@ -49,7 +49,7 @@ var upgrader = websocket.Upgrader{
 // don't use claude UI; callers that want claude UI must pass both.
 // broadcaster is nil-safe: pass newRecapBroadcaster(nil) or a real
 // broadcaster — the connection loop behaves correctly either way.
-func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *claude.Dispatcher, broadcaster *recapBroadcaster) http.Handler {
+func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *claude.Dispatcher, broadcaster *recapBroadcaster, disk *diskBroadcaster) http.Handler {
 	runner := claude.NewRunner()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := r.URL.Query().Get("token")
@@ -62,11 +62,11 @@ func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *cla
 			slog.Error("ws upgrade", "err", err)
 			return
 		}
-		runClientLoop(conn, m, bridge, disp, runner, broadcaster)
+		runClientLoop(conn, m, bridge, disp, runner, broadcaster, disk)
 	})
 }
 
-func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner, broadcaster *recapBroadcaster) {
+func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner, broadcaster *recapBroadcaster, disk *diskBroadcaster) {
 	defer conn.Close()
 	conn.SetReadLimit(maxInboundMessage)
 	_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
@@ -216,6 +216,17 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 	recapSub, recapUnsub := broadcaster.subscribe()
 	defer recapUnsub()
 
+	// Per-connection subscription to the disk-usage poller. Pushes
+	// the current snapshot immediately (so the UI banner state is
+	// correct without waiting one poll interval) and again whenever
+	// the alert threshold flips.
+	var diskSub <-chan DiskUsage
+	if disk != nil {
+		s, unsub := disk.subscribe()
+		diskSub = s
+		defer unsub()
+	}
+
 	// Subscribe each existing session to the bridge's ask dispatcher.
 	// Forwards to the per-WS asks channel.
 	if disp != nil {
@@ -333,6 +344,16 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 				return
 			}
 			_ = write(OutMsg{Type: TypeRecapUpdated, Date: date})
+		case du, ok := <-diskSub:
+			if !ok {
+				// Broadcaster closed our channel (Close called or
+				// resubscribed elsewhere). Drop ref so the select
+				// stops firing this case on every iteration.
+				diskSub = nil
+				continue
+			}
+			duCopy := du
+			_ = write(OutMsg{Type: TypeDiskUsage, DiskUsage: &duCopy})
 		case sid := <-closedCh:
 			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
