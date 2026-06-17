@@ -16,16 +16,19 @@ interface Props {
 // is to surface the problem when it matters.
 export function DiskUsageBanner({ usage }: Props) {
   if (!usage) return null
+  // totalBytes is 0 when the server can't read ALFRED_PVC_LIMIT
+  // (env var missing / unparseable). Without a quota we can't
+  // compute a meaningful percentage, so the threshold-based banner
+  // is suppressed — same as alertLevel('ok').
+  if (usage.totalBytes === 0) return null
   const level = alertLevel(usage.usedPercent)
   if (level === 'ok') return null
   return (
     <div className={`disk-banner disk-banner--${level}`} role="status">
-      <span className="disk-banner__icon" aria-hidden>
-        {level === 'critical' ? '⚠' : '⚠'}
-      </span>
+      <span className="disk-banner__icon" aria-hidden>⚠</span>
       <span className="disk-banner__text">
-        <strong>Disk {usage.usedPercent}% full</strong> —{' '}
-        {formatBytes(usage.usedBytes)} of {formatBytes(usage.usedBytes + usage.availableBytes)} used
+        <strong>PVC {usage.usedPercent}% full</strong> —{' '}
+        {formatBytes(usage.usedBytes)} of {formatBytes(usage.totalBytes)} used
         {level === 'critical'
           ? '. Writes are about to fail. Delete old sessions or grow the PVC.'
           : '. Consider cleaning up before it fills.'}

@@ -37,6 +37,13 @@ type Deps struct {
 	// every connected client. Nil-safe — broadcaster degrades to no-op
 	// when source is nil.
 	RecapUpdates <-chan string
+
+	// PVCLimitBytes is the configured PVC quota, parsed from the
+	// ALFRED_PVC_LIMIT env var (Helm sets it from
+	// .Values.persistence.size). 0 = unknown; the disk-pressure
+	// banner then shows "X.X GiB used (unknown limit)" instead of
+	// a percentage, and the threshold-based alert is suppressed.
+	PVCLimitBytes uint64
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -52,7 +59,7 @@ func NewRouter(d Deps) http.Handler {
 	// gauge meaningfully (a Claude jsonl growing, summaries being
 	// rewritten) accumulate slowly, and the alert thresholds are
 	// coarse (80% / 95%). Could be wired off via Deps later if needed.
-	disk := newDiskBroadcaster(d.Manager.DataDir(), 60*time.Second)
+	disk := newDiskBroadcaster(d.Manager.DataDir(), d.PVCLimitBytes, 60*time.Second)
 	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher, broadcaster, disk).ServeHTTP)
 
 	r.Group(func(r chi.Router) {
@@ -102,10 +109,12 @@ func NewRouter(d Deps) http.Handler {
 		// inside the chat UI).
 		r.Post("/api/anthropic-credentials", AnthropicCredentialsHandler().ServeHTTP)
 
-		// Disk usage of the PVC (both /data and /home/alfred are the
-		// same backing volume; we probe /data). Drives the frontend's
-		// "disk almost full" banner and is useful for ad-hoc debugging.
-		r.Get("/api/disk-usage", DiskUsageHandler(d.Manager.DataDir()).ServeHTTP)
+		// Disk usage of the PVC. Computed by walking /data + ~/ and
+		// comparing against the PVCLimitBytes from Helm; statfs would
+		// only see the underlying node disk (100GB on oracle), which
+		// gives a misleading reading vs the 5Gi quota writes actually
+		// fail against.
+		r.Get("/api/disk-usage", DiskUsageHandler(d.Manager.DataDir(), d.PVCLimitBytes).ServeHTTP)
 
 		// Claude CLI version probe + runtime upgrade. The upgrade
 		// endpoint streams npm output back as chunked text/plain so

@@ -32,6 +32,16 @@ func main() {
 
 	addr := envOr("ALFRED_ADDR", ":8080")
 	dataDir := envOr("ALFRED_DATA_DIR", "/data")
+	// PVC quota for the disk-pressure banner. Helm sets this from
+	// .Values.persistence.size (e.g. "5Gi"). Empty/unparseable → 0,
+	// which makes the banner show "unknown" and skip percentage
+	// alerts; the size is informational rather than load-bearing,
+	// so we don't fail boot on a bad value.
+	pvcLimitRaw := envOr("ALFRED_PVC_LIMIT", "")
+	pvcLimit := api.ParsePVCLimit(pvcLimitRaw)
+	if pvcLimitRaw != "" && pvcLimit == 0 {
+		logger.Warn("ALFRED_PVC_LIMIT could not be parsed; disk percent will read 0", "raw", pvcLimitRaw)
+	}
 
 	a, err := auth.FromEnv()
 	if err != nil {
@@ -173,13 +183,14 @@ func main() {
 	}
 
 	router := api.NewRouter(api.Deps{
-		Manager:      mgr,
-		Auth:         a,
-		RateLimiter:  rl,
-		Ready:        ready.Load,
-		Bridge:       bridge,
-		Dispatcher:   dispatcher,
-		RecapUpdates: recapUpdates,
+		Manager:       mgr,
+		Auth:          a,
+		RateLimiter:   rl,
+		Ready:         ready.Load,
+		Bridge:        bridge,
+		Dispatcher:    dispatcher,
+		RecapUpdates:  recapUpdates,
+		PVCLimitBytes: pvcLimit,
 	})
 
 	srv := &http.Server{
