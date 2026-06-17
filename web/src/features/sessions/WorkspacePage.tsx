@@ -216,6 +216,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
             onLogout={onLogout}
             onCollapse={() => setLeftCollapsedPersisted(true)}
             statusForSession={(id) => sessionIndicator(s.connState, s.perSession.get(id))}
+            claudeForSession={(id) => s.perSession.get(id)?.claude}
           />
           <div
             className="workspace__resizer workspace__resizer--right"

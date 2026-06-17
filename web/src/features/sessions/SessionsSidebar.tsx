@@ -3,6 +3,7 @@ import { Session } from '../../lib/api'
 import { isSubmitKey } from '../../lib/keyboard'
 import { SessionIndicator } from './sessionStatus'
 import { SessionIndicatorDot } from './SessionIndicatorDot'
+import type { ClaudeState } from './types'
 import './SessionsSidebar.css'
 
 interface Props {
@@ -28,6 +29,10 @@ interface Props {
   // 'disconnected' (warning glyph). When undefined, no dot is
   // rendered (tests don't have to wire this up).
   statusForSession?: (sessionID: string) => SessionIndicator
+  // Per-row Claude state lookup for the active-task pill. When
+  // undefined or returning undefined, the pill is hidden (tests
+  // don't need to wire this up).
+  claudeForSession?: (sessionID: string) => ClaudeState | undefined
 }
 
 export function SessionsSidebar({
@@ -45,6 +50,7 @@ export function SessionsSidebar({
   onLogout,
   onCollapse,
   statusForSession,
+  claudeForSession,
 }: Props) {
   const atLimit = sessions.length >= maxSessions
   const hasFooter = !!(onOpenGitCredentials || onOpenClaudeCredentials || onOpenClaudeVersion || onLogout)
@@ -88,6 +94,7 @@ export function SessionsSidebar({
             session={s}
             selected={s.id === selectedSessionID}
             status={statusForSession?.(s.id)}
+            claude={claudeForSession?.(s.id)}
             onSelect={onSelect}
             onRename={onRename}
             onClose={onClose}
@@ -145,14 +152,23 @@ interface RowProps {
   session: Session
   selected: boolean
   status?: SessionIndicator
+  claude?: ClaudeState
   onSelect: (id: string) => void
   onRename: (id: string, name: string) => void
   onClose: (id: string) => void
 }
 
-function SessionRow({ session, selected, status, onSelect, onRename, onClose }: RowProps) {
+function SessionRow({ session, selected, status, claude, onSelect, onRename, onClose }: RowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.name)
+
+  const activeBg = claude
+    ? Object.values(claude.bgTasks).filter((t) => t.status === 'in_progress').length
+    : 0
+  const activeSubagents = claude
+    ? Object.values(claude.subagents).filter((s) => !s.finishedAt).length
+    : 0
+  const activeCount = activeBg + activeSubagents
 
   function commit() {
     const trimmed = draft.trim()
@@ -201,6 +217,11 @@ function SessionRow({ session, selected, status, onSelect, onRename, onClose }: 
           }}
         >
           {session.name}
+        </span>
+      )}
+      {activeCount > 0 && (
+        <span className="session-pill" title={`${activeBg} Monitor task${activeBg === 1 ? '' : 's'}, ${activeSubagents} subagent${activeSubagents === 1 ? '' : 's'}`}>
+          ⏳ {activeCount}
         </span>
       )}
       <button
