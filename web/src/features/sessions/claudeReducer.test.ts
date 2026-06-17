@@ -115,3 +115,53 @@ describe('applyClaudeEvent: task lifecycle', () => {
     expect(s.bgTasks['task_xyz']).toBeDefined()
   })
 })
+
+describe('applyClaudeEvent: subagent lifecycle', () => {
+  it('hook_started for SubagentStart inserts subagent entry', () => {
+    let s = beginClaudeTurn(emptyClaudeState(), 'use agent')
+    s = applyClaudeEvent(s, 'hook_started', {
+      hook_id: 'h1',
+      hook_event: 'SubagentStart',
+      hook_name: 'SubagentStart',
+    })
+    expect(s.subagents['h1']).toBeDefined()
+    expect(s.subagents['h1'].finishedAt).toBeUndefined()
+  })
+
+  it('hook_response for SubagentStop patches finishedAt', () => {
+    let s = beginClaudeTurn(emptyClaudeState(), 'use agent')
+    s = applyClaudeEvent(s, 'hook_started', {
+      hook_id: 'h1',
+      hook_event: 'SubagentStart',
+      hook_name: 'SubagentStart',
+    })
+    // SubagentStop arrives later as its own hook_started/response pair.
+    // The pairing in production is via hook_id matching — SubagentStart
+    // and SubagentStop have DIFFERENT hook_ids; we treat the existence
+    // of ANY SubagentStop as evidence the *prior* SubagentStart's
+    // subagent has ended. For v0.4 we keep it simple: on SubagentStop's
+    // hook_response, mark the OLDEST in-progress subagent as finished.
+    s = applyClaudeEvent(s, 'hook_started', {
+      hook_id: 'h2',
+      hook_event: 'SubagentStop',
+      hook_name: 'SubagentStop',
+    })
+    s = applyClaudeEvent(s, 'hook_response', {
+      hook_id: 'h2',
+      hook_event: 'SubagentStop',
+      exit_code: 0,
+      outcome: 'success',
+    })
+    expect(s.subagents['h1'].finishedAt).toBeDefined()
+  })
+
+  it('hook_started for unrelated hook event is ignored', () => {
+    let s = beginClaudeTurn(emptyClaudeState(), 'do stuff')
+    s = applyClaudeEvent(s, 'hook_started', {
+      hook_id: 'h_pre',
+      hook_event: 'PreToolUse',
+      hook_name: 'PreToolUse:Bash',
+    })
+    expect(Object.keys(s.subagents)).toHaveLength(0)
+  })
+})

@@ -349,6 +349,36 @@ export function applyClaudeEvent(
       }
       return { ...prev, bgTasks }
     }
+    case 'hook_started': {
+      const p = asHookStarted(payload)
+      if (p.hookEvent !== 'SubagentStart' || !p.hookId) return prev
+      const subagents = {
+        ...prev.subagents,
+        [p.hookId]: {
+          hookId: p.hookId,
+          startedAt: new Date().toISOString(),
+        },
+      }
+      return { ...prev, subagents }
+    }
+    case 'hook_response': {
+      const p = asHookResponse(payload)
+      if (p.hookEvent !== 'SubagentStop') return prev
+      // SubagentStop hook_id != SubagentStart hook_id; we mark the
+      // OLDEST in-progress subagent as finished (FIFO pairing).
+      const entries = Object.entries(prev.subagents).filter(
+        ([, e]) => !e.finishedAt,
+      )
+      if (entries.length === 0) return prev
+      // Sort by startedAt ASC; pick the first.
+      entries.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt))
+      const [oldestId, oldest] = entries[0]
+      const subagents = {
+        ...prev.subagents,
+        [oldestId]: { ...oldest, finishedAt: new Date().toISOString() },
+      }
+      return { ...prev, subagents }
+    }
     default:
       return prev
   }
@@ -572,5 +602,37 @@ function asTaskUpdated(
     taskId: p?.task_id ?? '',
     status: p?.patch?.status ?? '',
     endTime: p?.patch?.end_time ?? 0,
+  }
+}
+
+function asHookStarted(
+  payload: unknown,
+): { hookId: string; hookEvent: string; hookName: string } {
+  const p = payload as {
+    hook_id?: string
+    hook_event?: string
+    hook_name?: string
+  } | null
+  return {
+    hookId: p?.hook_id ?? '',
+    hookEvent: p?.hook_event ?? '',
+    hookName: p?.hook_name ?? '',
+  }
+}
+
+function asHookResponse(
+  payload: unknown,
+): { hookId: string; hookEvent: string; exitCode: number; outcome: string } {
+  const p = payload as {
+    hook_id?: string
+    hook_event?: string
+    exit_code?: number
+    outcome?: string
+  } | null
+  return {
+    hookId: p?.hook_id ?? '',
+    hookEvent: p?.hook_event ?? '',
+    exitCode: p?.exit_code ?? 0,
+    outcome: p?.outcome ?? '',
   }
 }
