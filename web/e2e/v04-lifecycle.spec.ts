@@ -79,7 +79,32 @@ test.beforeAll(async ({ request }) => {
   }
 })
 
-// Cases land in Task 17 below.
-test('placeholder so the file is picked up by testMatch', async () => {
-  expect(true).toBe(true)
+test('monitor_task_lifecycle_completes', async ({ page }) => {
+  test.setTimeout(180_000)  // 3 min wall clock
+  const token = await login(page)
+  const sid = await freshSession(page, token, 'monitor-life')
+  await loginUI(page, token)
+  await page.locator(`[data-session-id="${sid}"], li:has-text("pw-v04-monitor-life")`).first().click()
+  await enterClaudeUI(page)
+
+  // Ask Claude to dispatch a Monitor with a known short polling
+  // command. The polling emits one line every 4s for 12s total.
+  await sendPrompt(page,
+    'Use the Monitor tool to run this exact bash: `for i in 1 2 3; do echo poll-$i; sleep 4; done`. ' +
+    'Description should be "test poll 12s". Just dispatch and respond "monitor dispatched".'
+  )
+
+  // Wait for the Monitor card to appear with a task id.
+  const monitorCard = page.locator('.claude-tool:has(.claude-tool__name:text-is("Monitor"))').last()
+  await expect(monitorCard).toBeVisible({ timeout: 60_000 })
+  await expect(monitorCard.locator('.claude-tool__bg code')).toBeVisible({ timeout: 60_000 })
+  const taskIdText = await monitorCard.locator('.claude-tool__bg code').first().textContent()
+  expect(taskIdText).toBeTruthy()
+  expect(taskIdText!.length).toBeGreaterThan(3)
+
+  // While the task runs, the notification-count number should rise above 0.
+  await expect(monitorCard.locator('.claude-tool__bg')).toContainText(/\d+ events/, { timeout: 30_000 })
+
+  // Eventually the check mark appears once task_updated.status=completed lands.
+  await expect(monitorCard.locator('.claude-tool__check')).toBeVisible({ timeout: 60_000 })
 })
