@@ -563,3 +563,79 @@
   max-height: 480px;
   overflow-y: auto;
 }
+
+/* TodoWrite progress card — Claude's own task tracker, rendered as
+   a checklist instead of as a folded JSON tool dump. Distinct from
+   the regular .claude-tool styling (no chevron, no expand state)
+   because it's not interactive. */
+.claude-todo {
+  margin: 6px 0;
+  border: 1px solid rgba(122, 162, 247, 0.25);
+  border-radius: 6px;
+  background: rgba(122, 162, 247, 0.05);
+  padding: 10px 12px;
+}
+
+.claude-todo__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.claude-todo__title {
+  font-weight: 600;
+  font-size: 12.5px;
+  color: rgba(122, 162, 247, 0.95);
+}
+
+.claude-todo__meta {
+  font-size: 11px;
+  color: var(--text-muted, #9aa3b2);
+  font-variant-numeric: tabular-nums;
+}
+
+.claude-todo__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.claude-todo__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.claude-todo__marker {
+  flex-shrink: 0;
+  width: 14px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-align: center;
+}
+
+.claude-todo__item--completed .claude-todo__marker { color: #7ed492; }
+.claude-todo__item--in_progress .claude-todo__marker { color: #e0c97a; }
+.claude-todo__item--pending .claude-todo__marker { color: var(--text-faint, #6b7280); }
+
+.claude-todo__text {
+  flex: 1;
+  color: var(--text, #eaeaea);
+}
+
+.claude-todo__item--completed .claude-todo__text {
+  color: var(--text-muted, #9aa3b2);
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 255, 255, 0.2);
+}
+
+.claude-todo__item--in_progress .claude-todo__text {
+  font-weight: 600;
+}

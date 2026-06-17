@@ -197,6 +197,22 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
               </div>
             )
           }
+          // TodoWrite gets a custom rendering — it's the model's
+          // own task tracker and reads much better as a checklist
+          // than as a folded JSON dump. Falls through to the generic
+          // ToolCallView if the input shape doesn't match.
+          if (block.tool.name === 'TodoWrite') {
+            const todos = parseTodoWriteInput(block.tool.input)
+            if (todos) {
+              return (
+                <TodoWriteCard
+                  key={block.tool.toolUseId}
+                  todos={todos}
+                  turn={turn}
+                />
+              )
+            }
+          }
           return <ToolCallView key={block.tool.toolUseId} tool={block.tool} />
         })}
         {!turn.done && turn.blocks.length === 0 && (
@@ -259,6 +275,95 @@ function AssistantMarkdown({ text }: { text: string }) {
 // the actual reply; expand to read Claude's reasoning, which renders
 // as full markdown (tables, code blocks, lists — same renderer as
 // the main assistant reply).
+// TodoItem mirrors the TodoWrite tool's input schema: each entry has
+// a content string and a status from a small enum. activeForm is the
+// CLI's "what's happening right now" phrasing for the in_progress
+// state; if present we prefer it over content for that single entry
+// so the card reads "Updating sessions reducer..." instead of
+// "Update sessions reducer" when work is mid-flight.
+interface TodoItem {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+  activeForm?: string
+}
+
+// parseTodoWriteInput narrows the tool's input JSON into a typed
+// list of TodoItems. Returns null when the input doesn't match the
+// expected shape (model emitted a weird payload, schema drift,
+// etc.) — caller falls back to the generic ToolCallView card.
+function parseTodoWriteInput(input: unknown): TodoItem[] | null {
+  const obj = input as { todos?: unknown } | null
+  if (!obj || !Array.isArray(obj.todos)) return null
+  const out: TodoItem[] = []
+  for (const raw of obj.todos) {
+    const t = raw as Partial<TodoItem> | null
+    if (!t || typeof t.content !== 'string') continue
+    const status = t.status
+    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') continue
+    out.push({
+      content: t.content,
+      status,
+      activeForm: typeof t.activeForm === 'string' ? t.activeForm : undefined,
+    })
+  }
+  return out.length > 0 ? out : null
+}
+
+// TodoWriteCard renders a parsed TodoWrite call as a checklist with
+// done / in-progress / pending markers, plus a header showing the
+// turn's elapsed time and cumulative token usage. Pure presentation
+// — no state, no re-fetch.
+function TodoWriteCard({ todos, turn }: { todos: TodoItem[]; turn: ClaudeTurn }) {
+  const elapsed = turnElapsed(turn)
+  const inTok = turn.usage?.inputTokens
+  const outTok = turn.usage?.outputTokens
+  const done = todos.filter((t) => t.status === 'completed').length
+  return (
+    <div className="claude-todo">
+      <div className="claude-todo__header">
+        <span className="claude-todo__title">Tasks ({done}/{todos.length})</span>
+        <span className="claude-todo__meta">
+          {elapsed}
+          {(inTok != null || outTok != null) && (
+            <> · {(inTok ?? 0).toLocaleString()} in → {(outTok ?? 0).toLocaleString()} out</>
+          )}
+        </span>
+      </div>
+      <ul className="claude-todo__list">
+        {todos.map((t, i) => (
+          <li key={i} className={`claude-todo__item claude-todo__item--${t.status}`}>
+            <span className="claude-todo__marker" aria-hidden>
+              {t.status === 'completed' ? '✔' : t.status === 'in_progress' ? '◼' : '◻'}
+            </span>
+            <span className="claude-todo__text">
+              {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+// turnElapsed returns a human-formatted duration since the turn
+// started, or up to when it finished if `done`. Used in the
+// TodoWrite card header. Live turns re-render frequently enough
+// (every stream event) that "now" stays approximately current
+// without a separate timer.
+function turnElapsed(turn: ClaudeTurn): string {
+  const start = Date.parse(turn.startedAt)
+  if (isNaN(start)) return ''
+  const ms = Date.now() - start
+  const sec = Math.max(0, Math.round(ms / 1000))
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  const rem = sec % 60
+  if (min < 60) return rem > 0 ? `${min}m ${rem}s` : `${min}m`
+  const hr = Math.floor(min / 60)
+  const minRem = min % 60
+  return minRem > 0 ? `${hr}h ${minRem}m` : `${hr}h`
+}
+
 function ThinkingBlockView({ body }: { body: string }) {
   const [expanded, setExpanded] = useState(false)
   return (
