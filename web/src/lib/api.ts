@@ -165,6 +165,59 @@ export async function saveAnthropicCredentials(credentialsJson: string): Promise
   })
 }
 
+// getClaudeCLIVersion probes the pod for the currently-installed
+// `claude --version` string. Used by the version dialog to show
+// "current".
+export async function getClaudeCLIVersion(): Promise<string> {
+  const res = await request('/api/claude-cli/version')
+  const { version } = (await res.json()) as { version: string }
+  return version
+}
+
+// upgradeClaudeCLI streams the output of `npm install -g
+// @anthropic-ai/claude-code@<version>` back from the pod. onChunk
+// is called for each chunk of text as it arrives so the dialog can
+// render a live log. Resolves when the stream ends; rejects on
+// network errors or non-2xx responses. The server itself signals
+// success/failure via the trailing "ok: ..." / "err: ..." line in
+// the stream — caller can pattern-match on that to decide whether
+// to refresh the version display.
+//
+// version must satisfy /^(latest|next|\d+\.\d+\.\d+)$/ — server
+// also validates and returns 400 on anything else.
+export async function upgradeClaudeCLI(
+  version: string,
+  onChunk: (text: string) => void,
+): Promise<void> {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  const t = token()
+  if (t) headers.set('Authorization', `Bearer ${t}`)
+  const res = await fetch('/api/claude-cli/upgrade', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ version }),
+  })
+  if (!res.ok) {
+    // Server rejected before streaming started (bad version, auth, ...).
+    let msg = res.statusText
+    try {
+      const j = await res.json() as { message?: string }
+      msg = j.message ?? msg
+    } catch { /* not JSON */ }
+    throw new ApiError(res.status, 'upgrade_failed', msg)
+  }
+  if (!res.body) {
+    throw new ApiError(0, 'no_body', 'response has no body to stream')
+  }
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return
+    onChunk(dec.decode(value, { stream: true }))
+  }
+}
+
 // MarkdownDoc bundles the body + the canonical on-disk path the
 // server resolved for it. The path is shown in the UI as a copyable
 // strip even when the file doesn't exist yet (404 still returns

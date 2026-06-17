@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -47,7 +48,12 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/readyz", ReadyzHandler(d.Ready).ServeHTTP)
 	r.Post("/api/login", LoginHandler(d.Auth, d.RateLimiter).ServeHTTP)
 	broadcaster := newRecapBroadcaster(d.RecapUpdates)
-	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher, broadcaster).ServeHTTP)
+	// Disk usage poller. 60s tick is plenty — writes that move the
+	// gauge meaningfully (a Claude jsonl growing, summaries being
+	// rewritten) accumulate slowly, and the alert thresholds are
+	// coarse (80% / 95%). Could be wired off via Deps later if needed.
+	disk := newDiskBroadcaster(d.Manager.DataDir(), 60*time.Second)
+	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher, broadcaster, disk).ServeHTTP)
 
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(d.Auth))
@@ -95,6 +101,17 @@ func NewRouter(d Deps) http.Handler {
 		// going through its own /login flow — which can't complete
 		// inside the chat UI).
 		r.Post("/api/anthropic-credentials", AnthropicCredentialsHandler().ServeHTTP)
+
+		// Disk usage of the PVC (both /data and /home/alfred are the
+		// same backing volume; we probe /data). Drives the frontend's
+		// "disk almost full" banner and is useful for ad-hoc debugging.
+		r.Get("/api/disk-usage", DiskUsageHandler(d.Manager.DataDir()).ServeHTTP)
+
+		// Claude CLI version probe + runtime upgrade. The upgrade
+		// endpoint streams npm output back as chunked text/plain so
+		// the user sees progress (npm runs can take 10s+).
+		r.Get("/api/claude-cli/version", ClaudeCLIVersionHandler().ServeHTTP)
+		r.Post("/api/claude-cli/upgrade", ClaudeCLIUpgradeHandler().ServeHTTP)
 	})
 
 	r.NotFound(static.Handler().ServeHTTP)

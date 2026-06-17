@@ -66,20 +66,31 @@ func TestWS_OnConnect_SendsIdleForEverySession(t *testing.T) {
 }
 
 func TestWS_RunWithUnknownSessionID_ReturnsError(t *testing.T) {
-	// No sessions exist, so server sends nothing on connect.
-	// Send run with unknown sessionID immediately and expect an error back.
+	// No sessions exist, so server sends nothing for sessions on
+	// connect. The diskBroadcaster does push the current snapshot on
+	// subscribe though, so we may see one "disk_usage" frame before
+	// our error reply — skip past unrelated frames until the error
+	// or the deadline.
 	url, _ := setupWSServerMulti(t)
 	conn := dialWS(t, url, "tok")
 	defer conn.Close()
 	_ = conn.WriteJSON(InMsg{Type: "run", SessionID: "nope", Command: "ls"})
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var msg OutMsg
-	if err := conn.ReadJSON(&msg); err != nil {
-		t.Fatalf("read: %v", err)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(deadline)
+		var msg OutMsg
+		if err := conn.ReadJSON(&msg); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if msg.Type == "error" && msg.Code == "unknown_session" {
+			return
+		}
+		if msg.Type == TypeDiskUsage {
+			continue
+		}
+		t.Fatalf("expected error/unknown_session (allowing disk_usage), got %+v", msg)
 	}
-	if msg.Type != "error" || msg.Code != "unknown_session" {
-		t.Fatalf("expected error/unknown_session, got %+v", msg)
-	}
+	t.Fatalf("deadline reached without unknown_session error")
 }
 
 func TestWS_SessionClosed_BroadcastsToConnectedClients(t *testing.T) {

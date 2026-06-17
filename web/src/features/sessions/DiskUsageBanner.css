@@ -1,0 +1,46 @@
+/* Thin strip across the workspace top. Sits between the header and
+   the main content, pushes everything else down slightly when it
+   appears. Hidden entirely when usage is below the warning
+   threshold (no DOM, no space taken). */
+.disk-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  border-bottom: 1px solid transparent;
+}
+
+.disk-banner--warning {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border-bottom-color: rgba(245, 158, 11, 0.3);
+}
+
+.disk-banner--critical {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  border-bottom-color: rgba(239, 68, 68, 0.45);
+  /* Subtle pulse on critical so the user can't miss it. */
+  animation: disk-banner-pulse 2s ease-in-out infinite;
+}
+
+.disk-banner__icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.disk-banner__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.disk-banner__text strong {
+  font-weight: 600;
+}
+
+@keyframes disk-banner-pulse {
+  0%, 100% { background: rgba(239, 68, 68, 0.18); }
+  50%      { background: rgba(239, 68, 68, 0.3); }
+}

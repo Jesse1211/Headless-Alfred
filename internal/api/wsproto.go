@@ -107,6 +107,13 @@ type OutMsg struct {
 	// etc.). UserPromptBubble surfaces this under a "Show full
 	// prompt" toggle.
 	Text string `json:"text,omitempty"`
+
+	// DiskUsage carries the PVC capacity snapshot on a "disk_usage"
+	// frame. Pushed when the alert level crosses a threshold
+	// (warning 80% or critical 95%) in either direction; also pushed
+	// on first WS connect so the banner state initialises without
+	// waiting up to one poll interval.
+	DiskUsage *DiskUsage `json:"diskUsage,omitempty"`
 }
 
 // TypeSummaryUpdated is the WS frame Type pushed by alfred-server
@@ -126,3 +133,9 @@ const TypeNoteUpdated = "note_updated"
 // carries the Date field so the frontend knows which recap changed
 // and can re-fetch via GET /api/recaps/{date}.
 const TypeRecapUpdated = "recap_updated"
+
+// TypeDiskUsage is the WS frame Type pushed by alfred-server's
+// diskBroadcaster when PVC usage crosses an alert threshold or
+// on first subscription. Carries a DiskUsage payload; the frontend
+// renders a banner whenever percent >= 80 (warning) / 95 (critical).
+const TypeDiskUsage = "disk_usage"

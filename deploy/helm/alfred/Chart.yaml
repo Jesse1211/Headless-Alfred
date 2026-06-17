@@ -9,7 +9,7 @@ type: application
 version: 0.1.0
 # App version — the Alfred release running in the pod. Bumped at
 # every release per RELEASE.md. Should match the matching git tag.
-appVersion: "v0.1"
+appVersion: "v0.2"
 home: https://github.com/Jesse1211/Headless-Alfred
 sources:
   - https://github.com/Jesse1211/Headless-Alfred

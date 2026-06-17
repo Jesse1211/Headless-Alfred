@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ShellSocket, ServerMsg, ConnState } from '../../lib/ws'
+import { ShellSocket, ServerMsg, ConnState, DiskUsage } from '../../lib/ws'
 import {
   Session,
   listSessions,
@@ -43,6 +43,11 @@ export function useSessions(token: string) {
   const [perSession, setPerSession] = useState<Map<string, PerSessionState>>(new Map())
   const [lastError, setLastError] = useState<{ code: string; message: string } | null>(null)
   const [recapFetchCounter, setRecapFetchCounter] = useState(0)
+  // Latest PVC capacity snapshot from the disk_usage WS frame.
+  // Null until the first frame arrives (backend pushes one
+  // immediately on subscribe, but pre-first-frame UI shouldn't
+  // render anything).
+  const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null)
 
   const tokenRef = useRef(token)
   tokenRef.current = token
@@ -149,6 +154,10 @@ export function useSessions(token: string) {
           }
           if (m.type === 'recap_updated') {
             setRecapFetchCounter((c) => c + 1)
+            return
+          }
+          if (m.type === 'disk_usage') {
+            setDiskUsage(m.diskUsage)
             return
           }
           if (m.type === 'error') {
@@ -400,6 +409,7 @@ export function useSessions(token: string) {
     claudePrompt, toolDecision, interruptClaude, submitQuestionAnswer,
     lastError, clearError,
     recapFetchCounter, createOrEnterRecap, setSessionMeta,
+    diskUsage,
   }
 }
 

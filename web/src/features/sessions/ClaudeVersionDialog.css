@@ -1,0 +1,44 @@
+/* Adds-on to the .git-creds dialog skeleton (we share the backdrop +
+   .git-creds frame styles). Only the bits specific to the version
+   view live here. */
+
+.claude-version {
+  /* Slightly wider than the credentials dialogs to fit the streaming
+     npm log without wrapping painfully. */
+  max-width: 640px;
+}
+
+.claude-version__current {
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--text, #eaeaea);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.claude-version__label {
+  color: var(--text-muted, #9aa3b2);
+  font-family: inherit;
+}
+
+.claude-version__log {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text, #eaeaea);
+  max-height: 280px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

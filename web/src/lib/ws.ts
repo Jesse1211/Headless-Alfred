@@ -23,6 +23,18 @@ export type ClaudeEventKind =
   | 'result'
   | 'unknown'
 
+// DiskUsage payload on the disk_usage WS frame (and the
+// GET /api/disk-usage response). Bytes from the backend; the
+// frontend formats with formatBytes for display.
+export interface DiskUsage {
+  path: string
+  totalBytes: number
+  usedBytes: number
+  availableBytes: number
+  // Used / (Used + Available) * 100, one-decimal rounded.
+  usedPercent: number
+}
+
 export type ServerMsg =
   | { type: 'reattach'; sessionID: string; cmdId: string; command: string; startedAt: string; outputSoFar: string; mode?: 'shell' | 'claude'; renderer?: ClaudeRenderer | ''; templateId?: string }
   | { type: 'idle'; sessionID: string; mode?: 'shell' | 'claude'; renderer?: ClaudeRenderer | ''; templateId?: string }
@@ -47,6 +59,7 @@ export type ServerMsg =
   | { type: 'summary_updated'; sessionID: string }
   | { type: 'note_updated'; sessionID: string }
   | { type: 'recap_updated'; date: string }
+  | { type: 'disk_usage'; diskUsage: DiskUsage }
   | { type: 'user_prompt'; sessionID: string; text: string }
   | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
