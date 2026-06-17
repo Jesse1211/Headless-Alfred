@@ -221,16 +221,33 @@ export function WorkspacePage({ token, onLogout }: Props) {
             </div>
           </div>
           <div className="workspace__header-center">
-            {selected && ps && ps.mode === 'claude' && (
-              <button
-                type="button"
-                className="workspace__claude-btn workspace__claude-btn--exit"
-                onClick={() => s.exitClaude(selected.id)}
-                data-tooltip="Send Ctrl+C and return to shell"
-              >
-                Exit Claude
-              </button>
-            )}
+            {selected && ps && ps.mode === 'claude' && (() => {
+              // UI mode: alfred-server forks `claude -p` per prompt;
+              // between prompts there's NO claude process. Exit just
+              // flips the mode flag — bash in the pane is untouched,
+              // so cwd / env / aliases / shell history all survive.
+              // Conversation continues next time you click Claude
+              // because `--resume <uuid>` rebuilds context from the
+              // jsonl on the PVC.
+              //
+              // TUI mode: a long-lived `claude` TUI owns the pane.
+              // Exit has to SIGKILL it (no clean way to find its
+              // pid through tmux), which kills the pane's bash too
+              // and forces a respawn — cwd / env get reset.
+              const isUI = ps.renderer === 'ui'
+              return (
+                <button
+                  type="button"
+                  className="workspace__claude-btn workspace__claude-btn--exit"
+                  onClick={() => s.exitClaude(selected.id)}
+                  data-tooltip={isUI
+                    ? 'Pause Claude — conversation saved, click Claude to resume'
+                    : 'Exit Claude — resets shell cwd / env / aliases'}
+                >
+                  {isUI ? 'Pause Claude' : 'Exit Claude'}
+                </button>
+              )
+            })()}
             {selected && ps && ps.mode !== 'claude' && (
               <button
                 type="button"
