@@ -82,6 +82,41 @@ export interface ClaudeToolCall {
   // Output from the tool, once it ran. May still be empty if denied.
   result?: string
   isError?: boolean
+  // v0.4 lifecycle: timestamps for the elapsed-timer UI. startedAt is
+  // recorded by the tool_use_start reducer (Date.now()); finishedAt by
+  // tool_result. Undefined when the block was restored from history
+  // without lifecycle events — the elapsed display short-circuits.
+  startedAt?: string
+  finishedAt?: string
+  // For Monitor: the CLI's background task id, set when a matching
+  // task_started event arrives. Links this tool block to bgTasks[bgTaskId].
+  bgTaskId?: string
+}
+
+// BgTask tracks one CLI-managed background task (today: Monitor's
+// detached bash process). Created from task_started, updated by
+// task_notification, terminated by task_updated.status=completed.
+export interface BgTask {
+  taskId: string
+  toolUseId: string
+  description: string
+  taskType: string
+  startedAt: string
+  finishedAt?: string
+  status: 'in_progress' | 'completed' | 'failed'
+  lastEventSummary?: string
+  notificationCount: number
+}
+
+// SubagentEntry tracks one in-flight subagent. Keyed by the CLI's
+// hookId (SubagentStart's hook_id pairs with SubagentStop's hook_id).
+// agentType is the subagent kind (e.g. "general-purpose"); we don't
+// always have it on Start, so it's optional.
+export interface SubagentEntry {
+  hookId: string
+  agentType?: string
+  startedAt: string
+  finishedAt?: string
 }
 
 // AssistantBlock is one item in a turn's reply timeline. The two
@@ -121,6 +156,10 @@ export interface ClaudeState {
   pendingQuestions: ClaudeQuestionRequest[]
   // Last error returned by the backend (e.g., claude not authenticated).
   lastError?: { code: string; message: string }
+  // v0.4: ground-truth lifecycle tracking. Keyed by taskId / hookId
+  // respectively. Both are session-scoped; cleared on claude_exited.
+  bgTasks: Record<string, BgTask>
+  subagents: Record<string, SubagentEntry>
 }
 
 export interface ClaudeToolApprovalRequest {
@@ -175,5 +214,5 @@ export function emptyPerSessionState(): PerSessionState {
 }
 
 export function emptyClaudeState(): ClaudeState {
-  return { turns: [], inFlight: false, pending: [], pendingQuestions: [] }
+  return { turns: [], inFlight: false, pending: [], pendingQuestions: [], bgTasks: {}, subagents: {} }
 }
