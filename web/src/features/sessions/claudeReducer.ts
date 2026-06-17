@@ -288,6 +288,67 @@ export function applyClaudeEvent(
       turns[lastIdx] = last
       return { ...prev, turns, inFlight: false }
     }
+    case 'task_started': {
+      const p = asTaskStarted(payload)
+      if (!p.taskId) return prev
+      const bgTasks = {
+        ...prev.bgTasks,
+        [p.taskId]: {
+          taskId: p.taskId,
+          toolUseId: p.toolUseId,
+          description: p.description,
+          taskType: p.taskType,
+          startedAt: new Date().toISOString(),
+          status: 'in_progress' as const,
+          notificationCount: 0,
+        },
+      }
+      // If a tool block exists with this tool_use_id, link it via
+      // bgTaskId so the Monitor card can render the task-aware UI.
+      const linkedTurns = prev.turns.map((t) => ({
+        ...t,
+        blocks: patchToolBlock(t.blocks, p.toolUseId, (tool) => ({ ...tool, bgTaskId: p.taskId })),
+      }))
+      return { ...prev, bgTasks, turns: linkedTurns }
+    }
+    case 'task_notification': {
+      const p = asTaskNotification(payload)
+      if (!p.taskId || !prev.bgTasks[p.taskId]) return prev
+      const cur = prev.bgTasks[p.taskId]
+      const bgTasks = {
+        ...prev.bgTasks,
+        [p.taskId]: {
+          ...cur,
+          notificationCount: cur.notificationCount + 1,
+          lastEventSummary: p.summary,
+          // Some CLIs emit the final 'completed' status on task_notification
+          // before/instead of task_updated. Mirror it through so the UI
+          // freezes regardless of which arrives first.
+          status: p.status === 'completed' ? 'completed' as const : cur.status,
+          finishedAt: p.status === 'completed' && !cur.finishedAt
+            ? new Date().toISOString()
+            : cur.finishedAt,
+        },
+      }
+      return { ...prev, bgTasks }
+    }
+    case 'task_updated': {
+      const p = asTaskUpdated(payload)
+      if (!p.taskId || !prev.bgTasks[p.taskId]) return prev
+      const cur = prev.bgTasks[p.taskId]
+      if (p.status !== 'completed' && p.status !== 'failed') return prev
+      const bgTasks = {
+        ...prev.bgTasks,
+        [p.taskId]: {
+          ...cur,
+          status: p.status,
+          finishedAt: p.endTime
+            ? new Date(p.endTime).toISOString()
+            : new Date().toISOString(),
+        },
+      }
+      return { ...prev, bgTasks }
+    }
     default:
       return prev
   }
@@ -463,5 +524,53 @@ function asResult(
     isError: !!p?.is_error,
     totalCostUsd: p?.total_cost_usd,
     result: p?.result,
+  }
+}
+
+function asTaskStarted(
+  payload: unknown,
+): { taskId: string; toolUseId: string; description: string; taskType: string } {
+  const p = payload as {
+    task_id?: string
+    tool_use_id?: string
+    description?: string
+    task_type?: string
+  } | null
+  return {
+    taskId: p?.task_id ?? '',
+    toolUseId: p?.tool_use_id ?? '',
+    description: p?.description ?? '',
+    taskType: p?.task_type ?? '',
+  }
+}
+
+function asTaskNotification(
+  payload: unknown,
+): { taskId: string; toolUseId: string; status: string; summary: string } {
+  const p = payload as {
+    task_id?: string
+    tool_use_id?: string
+    status?: string
+    summary?: string
+  } | null
+  return {
+    taskId: p?.task_id ?? '',
+    toolUseId: p?.tool_use_id ?? '',
+    status: p?.status ?? '',
+    summary: p?.summary ?? '',
+  }
+}
+
+function asTaskUpdated(
+  payload: unknown,
+): { taskId: string; status: string; endTime: number } {
+  const p = payload as {
+    task_id?: string
+    patch?: { status?: string; end_time?: number }
+  } | null
+  return {
+    taskId: p?.task_id ?? '',
+    status: p?.patch?.status ?? '',
+    endTime: p?.patch?.end_time ?? 0,
   }
 }
