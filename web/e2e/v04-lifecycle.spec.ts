@@ -108,3 +108,33 @@ test('monitor_task_lifecycle_completes', async ({ page }) => {
   // Eventually the check mark appears once task_updated.status=completed lands.
   await expect(monitorCard.locator('.claude-tool__check')).toBeVisible({ timeout: 60_000 })
 })
+
+test('multiple_concurrent_monitors', async ({ page }) => {
+  test.setTimeout(240_000)
+  const token = await login(page)
+  const sid = await freshSession(page, token, 'concurrent-mon')
+  await loginUI(page, token)
+  await page.locator(`li:has-text("pw-v04-concurrent-mon")`).first().click()
+  await enterClaudeUI(page)
+
+  await sendPrompt(page,
+    'Dispatch three Monitor tools in parallel, each running a different 12-second bash command. ' +
+    'First: `for i in 1 2 3; do echo a-$i; sleep 4; done` (description: "stream A"). ' +
+    'Second: `for i in 1 2 3; do echo b-$i; sleep 4; done` (description: "stream B"). ' +
+    'Third: `for i in 1 2 3; do echo c-$i; sleep 4; done` (description: "stream C"). ' +
+    'Then respond "all three dispatched".'
+  )
+
+  // Wait until three Monitor cards are visible.
+  const monitorCards = page.locator('.claude-tool:has(.claude-tool__name:text-is("Monitor"))')
+  await expect(monitorCards).toHaveCount(3, { timeout: 90_000 })
+
+  // Sidebar pill should show ≥3 active tasks while they're running.
+  // Tooltip enumerates monitor task count.
+  const pill = page.locator('.session-pill').first()
+  await expect(pill).toBeVisible({ timeout: 30_000 })
+  await expect(pill).toContainText(/[3-9]/)
+
+  // All three eventually checkmark.
+  await expect(monitorCards.locator('.claude-tool__check')).toHaveCount(3, { timeout: 120_000 })
+})
