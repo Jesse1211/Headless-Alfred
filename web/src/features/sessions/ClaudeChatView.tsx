@@ -310,14 +310,22 @@ function TurnView({ turn, bgTasks, subagents }: {
         {!turn.done && turn.blocks.length === 0 && (
           <div className="claude-turn__thinking">…</div>
         )}
-        {turn.done && turn.usage && (
+        {!turn.done && <LiveTurnElapsed turn={turn} />}
+        {turn.done && (turn.usage || turnDuration(turn) !== null) && (
           <div className="claude-turn__footer">
+            {turnDuration(turn) !== null && (
+              <span title="Time the turn took, end-to-end">
+                {formatElapsed(turnDuration(turn)!)}
+              </span>
+            )}
             {turn.totalCostUsd != null && (
               <span title="Total cost for this turn">${turn.totalCostUsd.toFixed(4)}</span>
             )}
-            <span title="Input → output tokens">
-              {turn.usage.inputTokens.toLocaleString()} in → {turn.usage.outputTokens.toLocaleString()} out
-            </span>
+            {turn.usage && (
+              <span title="Input → output tokens">
+                {turn.usage.inputTokens.toLocaleString()} in → {turn.usage.outputTokens.toLocaleString()} out
+              </span>
+            )}
           </div>
         )}
         <TurnStatsLine turn={turn} bgTasks={bgTasks} subagents={subagents} />
@@ -552,6 +560,36 @@ function useElapsed(startedAt: string | undefined, finishedAt: string | undefine
   return Math.max(0, Math.floor((end - start) / 1000))
   // tick is referenced implicitly via re-render; suppress unused warn
   void tick
+}
+
+// LiveTurnElapsed renders a one-second-tick counter while the turn is
+// streaming, in the same row position the final duration shows up in
+// once the turn is done. Pinned at the bottom of the assistant area so
+// the user can see "Claude has been replying for 14s" without watching
+// the spinner. Reuses useElapsed (now-driven when finishedAt is
+// undefined); the parent gates rendering to !turn.done.
+function LiveTurnElapsed({ turn }: { turn: ClaudeTurn }) {
+  const secs = useElapsed(turn.startedAt, turn.finishedAt)
+  if (!turn.startedAt) return null
+  return (
+    <div className="claude-turn__footer claude-turn__footer--live" aria-live="polite">
+      <span title="Time elapsed since the turn began">
+        {formatElapsed(secs)}
+      </span>
+    </div>
+  )
+}
+
+// turnDuration returns the turn's end-to-end elapsed seconds, or null
+// if either timestamp is missing / invalid. Restored history may not
+// have finishedAt for the trailing turn (no successor user-line ts to
+// bracket against), in which case the footer hides the duration.
+function turnDuration(turn: ClaudeTurn): number | null {
+  if (!turn.startedAt || !turn.finishedAt) return null
+  const start = Date.parse(turn.startedAt)
+  const end = Date.parse(turn.finishedAt)
+  if (isNaN(start) || isNaN(end) || end < start) return null
+  return Math.max(0, Math.floor((end - start) / 1000))
 }
 
 // formatElapsed: seconds → "47s" / "2m14s" / "1h03m"

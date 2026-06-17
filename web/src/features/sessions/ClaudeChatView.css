@@ -275,6 +275,15 @@
   gap: 14px;
 }
 
+/* Live elapsed: same row geometry as the done footer, but no top
+ * border so it doesn't look like the turn already settled. Slightly
+ * dimmer so the eye doesn't fixate on a counter that's still ticking. */
+.claude-turn__footer--live {
+  border-top: none;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
 .claude-tool {
   margin: 6px 0;
   border: 1px solid rgba(255, 255, 255, 0.08);
