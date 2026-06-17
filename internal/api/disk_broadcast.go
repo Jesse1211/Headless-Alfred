@@ -22,7 +22,8 @@ import (
 // One goroutine, owned by main(); subscribers are per-WS-connection.
 // Same fan-out shape as recapBroadcaster.
 type diskBroadcaster struct {
-	dataDir string
+	dataDir    string
+	quotaBytes uint64
 
 	mu   sync.Mutex
 	subs map[chan DiskUsage]struct{}
@@ -33,14 +34,21 @@ type diskBroadcaster struct {
 }
 
 // newDiskBroadcaster starts the poller. interval governs how often
-// we statfs; 60s is a sensible default (writes are rare events that
-// don't need second-level precision, and statfs is cheap so we
-// could go faster if needed). Cancel via Close().
-func newDiskBroadcaster(dataDir string, interval time.Duration) *diskBroadcaster {
+// we walk the Alfred-owned dirs; 60s is a sensible default (jsonl /
+// pty.stream growth is bursty but never per-second, and the walk is
+// fast enough — thousands of small files in microseconds). Cancel
+// via Close().
+//
+// quotaBytes is the PVC quota the alert thresholds are computed
+// against. 0 means "unknown" (env var missing) and we skip
+// percentage-based alerts; the snapshot still includes used bytes
+// so the UI can show *something*.
+func newDiskBroadcaster(dataDir string, quotaBytes uint64, interval time.Duration) *diskBroadcaster {
 	b := &diskBroadcaster{
-		dataDir: dataDir,
-		subs:    map[chan DiskUsage]struct{}{},
-		stop:    make(chan struct{}),
+		dataDir:    dataDir,
+		quotaBytes: quotaBytes,
+		subs:       map[chan DiskUsage]struct{}{},
+		stop:       make(chan struct{}),
 	}
 	go b.loop(interval)
 	return b
@@ -72,7 +80,7 @@ func (b *diskBroadcaster) loop(interval time.Duration) {
 // poll runs one statfs and broadcasts if the alert threshold
 // classification changed (or this is the first reading ever).
 func (b *diskBroadcaster) poll() {
-	du, err := readDiskUsage(b.dataDir)
+	du, err := readDiskUsage(b.dataDir, b.quotaBytes)
 	if err != nil {
 		slog.Warn("disk poll failed", "err", err, "path", b.dataDir)
 		return

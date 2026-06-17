@@ -73,6 +73,17 @@ spec:
           value: ":8080"
         - name: ALFRED_DATA_DIR
           value: "/data"
+        # Quota of the PVC we mount. statfs would only see the
+        # underlying node disk (oracle physical, ~100GB), which makes
+        # the disk-pressure banner useless: 5Gi of writes would cause
+        # ENOSPC long before statfs claims 80% full. Pass the chart's
+        # configured quota through so alfred-server can compare its
+        # actual usage (du-style walk of /data + ~/.claude) against
+        # the number that controls when writes fail. Helm-style size
+        # string (e.g. "5Gi"); alfred parses both binary and decimal
+        # prefixes.
+        - name: ALFRED_PVC_LIMIT
+          value: {{ .Values.persistence.size | quote }}
         - name: ALFRED_USER
           valueFrom:
             secretKeyRef:

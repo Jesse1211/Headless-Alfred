@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ShellSocket, ServerMsg, ConnState, DiskUsage } from '../../lib/ws'
+import { ShellSocket, ServerMsg, ConnState, ConnInfo, DiskUsage } from '../../lib/ws'
 import {
   Session,
   listSessions,
@@ -38,6 +38,10 @@ function b64decode(s: string): string {
 
 export function useSessions(token: string) {
   const [connState, setConnState] = useState<ConnState>('connecting')
+  // Diagnostic detail emitted by ShellSocket on every state change.
+  // Drives the disconnected-state tooltip (close code, last open
+  // time, retry count).
+  const [connInfo, setConnInfo] = useState<ConnInfo>({})
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(null)
   const [perSession, setPerSession] = useState<Map<string, PerSessionState>>(new Map())
@@ -128,7 +132,10 @@ export function useSessions(token: string) {
       new ShellSocket({
         url: location.protocol === 'https:' ? `wss://${location.host}/ws` : `ws://${location.host}/ws`,
         getToken: () => tokenRef.current,
-        onState: setConnState,
+        onState: (s, info) => {
+          setConnState(s)
+          if (info) setConnInfo(info)
+        },
         onMessage: (m: ServerMsg) => {
           // session_closed / session_renamed / error live outside perSession.
           if (m.type === 'session_closed') {
@@ -308,7 +315,7 @@ export function useSessions(token: string) {
   )
 
   const claudePrompt = useCallback(
-    (sid: string, text: string, opts?: { renderTemplate?: string; optimisticLabel?: string }) => {
+    (sid: string, text: string, opts?: { renderTemplate?: string; optimisticLabel?: string; templates?: string[] }) => {
       // Optimistic: register the user's prompt as the start of a new
       // turn locally so the chat view renders it immediately. When the
       // text is empty (server-rendered template), use optimisticLabel
@@ -321,7 +328,13 @@ export function useSessions(token: string) {
         next.set(sid, { ...cur, claude: beginClaudeTurn(c, label) })
         return next
       })
-      socket.send({ type: 'claude_prompt', sessionID: sid, text, renderTemplate: opts?.renderTemplate })
+      socket.send({
+        type: 'claude_prompt',
+        sessionID: sid,
+        text,
+        renderTemplate: opts?.renderTemplate,
+        templates: opts?.templates,
+      })
     },
     [socket],
   )
@@ -403,7 +416,7 @@ export function useSessions(token: string) {
   // path on subsequent clicks.
 
   return {
-    connState, sessions, selectedSessionID, selectSession, perSession, setPerSession,
+    connState, connInfo, sessions, selectedSessionID, selectSession, perSession, setPerSession,
     submit, stop, createSession, renameSession, closeSession,
     enterClaude, exitClaude, sendStdin, registerPtyHandler,
     claudePrompt, toolDecision, interruptClaude, submitQuestionAnswer,

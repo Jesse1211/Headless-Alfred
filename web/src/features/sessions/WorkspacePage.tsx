@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
+import { listTemplates, TemplateSummary } from '../../lib/api'
 import { useSessions } from './useSessions'
 import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { useClaudeHistoryLoader } from './useClaudeHistoryLoader'
@@ -47,6 +48,18 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const [gitCredsOpen, setGitCredsOpen] = useState(false)
   const [claudeCredsOpen, setClaudeCredsOpen] = useState(false)
   const [claudeVersionOpen, setClaudeVersionOpen] = useState(false)
+  // Catalog of templates the composer's checkbox strip renders.
+  // Loaded once per page lifecycle; the list rarely changes (it's
+  // a code-side registry on the server). Empty until first fetch
+  // resolves — composer falls through to "no strip" until then.
+  const [availableTemplates, setAvailableTemplates] = useState<TemplateSummary[]>([])
+  useEffect(() => {
+    let alive = true
+    listTemplates()
+      .then((list) => { if (alive) setAvailableTemplates(list) })
+      .catch(() => { /* empty list is fine — composer just hides the strip */ })
+    return () => { alive = false }
+  }, [])
   // Session ID for which the "Start Claude" renderer-pick dialog is open.
   const [startClaudeFor, setStartClaudeFor] = useState<string | null>(null)
 
@@ -217,20 +230,37 @@ export function WorkspacePage({ token, onLogout }: Props) {
           <div className="workspace__header-left">
             <div className="workspace__brand">{selected?.name ?? 'Headless Alfred'}</div>
             <div className="workspace__status">
-              <SessionIndicatorDot status={sessionIndicator(s.connState, ps)} />
+              <SessionIndicatorDot status={sessionIndicator(s.connState, ps)} connInfo={s.connInfo} />
             </div>
           </div>
           <div className="workspace__header-center">
-            {selected && ps && ps.mode === 'claude' && (
-              <button
-                type="button"
-                className="workspace__claude-btn workspace__claude-btn--exit"
-                onClick={() => s.exitClaude(selected.id)}
-                data-tooltip="Send Ctrl+C and return to shell"
-              >
-                Exit Claude
-              </button>
-            )}
+            {selected && ps && ps.mode === 'claude' && (() => {
+              // UI mode: alfred-server forks `claude -p` per prompt;
+              // between prompts there's NO claude process. Exit just
+              // flips the mode flag — bash in the pane is untouched,
+              // so cwd / env / aliases / shell history all survive.
+              // Conversation continues next time you click Claude
+              // because `--resume <uuid>` rebuilds context from the
+              // jsonl on the PVC.
+              //
+              // TUI mode: a long-lived `claude` TUI owns the pane.
+              // Exit has to SIGKILL it (no clean way to find its
+              // pid through tmux), which kills the pane's bash too
+              // and forces a respawn — cwd / env get reset.
+              const isUI = ps.renderer === 'ui'
+              return (
+                <button
+                  type="button"
+                  className="workspace__claude-btn workspace__claude-btn--exit"
+                  onClick={() => s.exitClaude(selected.id)}
+                  data-tooltip={isUI
+                    ? 'Pause Claude — conversation saved, click Claude to resume'
+                    : 'Exit Claude — resets shell cwd / env / aliases'}
+                >
+                  {isUI ? 'Pause Claude' : 'Exit Claude'}
+                </button>
+              )
+            })()}
             {selected && ps && ps.mode !== 'claude' && (
               <button
                 type="button"
@@ -281,9 +311,14 @@ export function WorkspacePage({ token, onLogout }: Props) {
 
         {selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && (
           <ClaudeChatView
+            key={selected.id}
             state={ps.claude ?? emptyClaudeState()}
             disabled={s.connState !== 'open'}
-            onPrompt={(text) => s.claudePrompt(selected.id, text)}
+            sessionID={selected.id}
+            templates={availableTemplates}
+            onPrompt={(text, templates) =>
+              s.claudePrompt(selected.id, text, { templates })
+            }
             onToolDecision={(toolUseId, decision, reason) =>
               s.toolDecision(selected.id, toolUseId, decision, reason)
             }

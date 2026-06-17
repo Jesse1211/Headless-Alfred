@@ -4,15 +4,55 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
+import type { TemplateSummary } from '../../lib/api'
 import { ToolApprovalCard } from './ToolApprovalCard'
 import { AskUserQuestionCard } from './AskUserQuestionCard'
 import { isSubmitKey } from '../../lib/keyboard'
 import './ClaudeChatView.css'
 
+// Per-session template selection lives in localStorage. Sticky
+// across page reloads, keyed by sessionID so two sessions can
+// have different defaults. We use a Set in memory (cheap membership
+// checks for the checkbox renderer) and serialize to a sorted
+// string[] for storage stability.
+function templatesStorageKey(sid: string): string {
+  return `alfred_templates_${sid}`
+}
+
+function readSelectedTemplates(sid: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(templatesStorageKey(sid))
+    if (!raw) return new Set()
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? new Set(arr.filter((x) => typeof x === 'string')) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+
+function writeSelectedTemplates(sid: string, sel: Set<string>): void {
+  try {
+    localStorage.setItem(templatesStorageKey(sid), JSON.stringify([...sel].sort()))
+  } catch {
+    /* quota / disabled — fail open */
+  }
+}
+
 interface Props {
   state: ClaudeState
   disabled: boolean
-  onPrompt: (text: string) => void
+  // sessionID is used to scope the per-session template-selection
+  // localStorage key. Required so two open sessions don't share
+  // a checkbox state.
+  sessionID: string
+  // templates is the catalog the composer's checkbox strip renders.
+  // Empty array means "no templates available" → strip is hidden.
+  templates: TemplateSummary[]
+  // onPrompt now takes the selected template IDs as a second
+  // argument. Caller forwards them as opts.templates to
+  // claude_prompt; backend uses them per-prompt (overriding the
+  // legacy session-default).
+  onPrompt: (text: string, templates: string[]) => void
   onToolDecision: (toolUseId: string, decision: 'allow' | 'deny', reason?: string) => void
   onQuestionAnswer: (toolUseId: string, formattedAnswer: string) => void
   onInterrupt: () => void
@@ -22,9 +62,16 @@ interface Props {
 // Renders assistant text as markdown (via react-markdown + remark-gfm),
 // surfaces tool calls inline, and floats pending approval cards at the bottom.
 export function ClaudeChatView({
-  state, disabled, onPrompt, onToolDecision, onQuestionAnswer, onInterrupt,
+  state, disabled, sessionID, templates, onPrompt, onToolDecision, onQuestionAnswer, onInterrupt,
 }: Props) {
   const [draft, setDraft] = useState('')
+  // Per-session, persisted-across-reloads selection. Read once on
+  // mount (lazy state init) so a session switch doesn't ever leak
+  // a previous session's choices into the new one. Writes happen
+  // inside the toggle handler.
+  const [selectedTemplates, setSelectedTemplates] = useState<Set<string>>(() =>
+    readSelectedTemplates(sessionID)
+  )
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   // Auto-scroll to bottom whenever a new event lands.
@@ -37,8 +84,21 @@ export function ClaudeChatView({
   function submit() {
     const text = draft.trim()
     if (!text || state.inFlight) return
-    onPrompt(text)
+    // Snapshot the currently-checked templates so this prompt uses
+    // them even if the user untoggles in the next 50ms. (Sticky
+    // checkboxes — selectedTemplates state survives the submit.)
+    onPrompt(text, [...selectedTemplates])
     setDraft('')
+  }
+
+  function toggleTemplate(id: string) {
+    setSelectedTemplates((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      writeSelectedTemplates(sessionID, next)
+      return next
+    })
   }
 
   // Empty state: no turns yet, nothing in flight, no pending
@@ -135,6 +195,28 @@ export function ClaudeChatView({
           )}
         </div>
         </div>
+        {templates.length > 0 && (
+          <div className="claude-chat__templates" role="group" aria-label="Templates to inject this prompt">
+            <span className="claude-chat__templates-label">Inject:</span>
+            {templates.map((tpl) => {
+              const checked = selectedTemplates.has(tpl.id)
+              return (
+                <label
+                  key={tpl.id}
+                  className={`claude-chat__template ${checked ? 'is-checked' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleTemplate(tpl.id)}
+                    disabled={state.inFlight}
+                  />
+                  <span>{tpl.name}</span>
+                </label>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -196,6 +278,22 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
                 <AssistantMarkdown text={block.text} />
               </div>
             )
+          }
+          // TodoWrite gets a custom rendering — it's the model's
+          // own task tracker and reads much better as a checklist
+          // than as a folded JSON dump. Falls through to the generic
+          // ToolCallView if the input shape doesn't match.
+          if (block.tool.name === 'TodoWrite') {
+            const todos = parseTodoWriteInput(block.tool.input)
+            if (todos) {
+              return (
+                <TodoWriteCard
+                  key={block.tool.toolUseId}
+                  todos={todos}
+                  turn={turn}
+                />
+              )
+            }
           }
           return <ToolCallView key={block.tool.toolUseId} tool={block.tool} />
         })}
@@ -259,6 +357,95 @@ function AssistantMarkdown({ text }: { text: string }) {
 // the actual reply; expand to read Claude's reasoning, which renders
 // as full markdown (tables, code blocks, lists — same renderer as
 // the main assistant reply).
+// TodoItem mirrors the TodoWrite tool's input schema: each entry has
+// a content string and a status from a small enum. activeForm is the
+// CLI's "what's happening right now" phrasing for the in_progress
+// state; if present we prefer it over content for that single entry
+// so the card reads "Updating sessions reducer..." instead of
+// "Update sessions reducer" when work is mid-flight.
+interface TodoItem {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+  activeForm?: string
+}
+
+// parseTodoWriteInput narrows the tool's input JSON into a typed
+// list of TodoItems. Returns null when the input doesn't match the
+// expected shape (model emitted a weird payload, schema drift,
+// etc.) — caller falls back to the generic ToolCallView card.
+function parseTodoWriteInput(input: unknown): TodoItem[] | null {
+  const obj = input as { todos?: unknown } | null
+  if (!obj || !Array.isArray(obj.todos)) return null
+  const out: TodoItem[] = []
+  for (const raw of obj.todos) {
+    const t = raw as Partial<TodoItem> | null
+    if (!t || typeof t.content !== 'string') continue
+    const status = t.status
+    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') continue
+    out.push({
+      content: t.content,
+      status,
+      activeForm: typeof t.activeForm === 'string' ? t.activeForm : undefined,
+    })
+  }
+  return out.length > 0 ? out : null
+}
+
+// TodoWriteCard renders a parsed TodoWrite call as a checklist with
+// done / in-progress / pending markers, plus a header showing the
+// turn's elapsed time and cumulative token usage. Pure presentation
+// — no state, no re-fetch.
+function TodoWriteCard({ todos, turn }: { todos: TodoItem[]; turn: ClaudeTurn }) {
+  const elapsed = turnElapsed(turn)
+  const inTok = turn.usage?.inputTokens
+  const outTok = turn.usage?.outputTokens
+  const done = todos.filter((t) => t.status === 'completed').length
+  return (
+    <div className="claude-todo">
+      <div className="claude-todo__header">
+        <span className="claude-todo__title">Tasks ({done}/{todos.length})</span>
+        <span className="claude-todo__meta">
+          {elapsed}
+          {(inTok != null || outTok != null) && (
+            <> · {(inTok ?? 0).toLocaleString()} in → {(outTok ?? 0).toLocaleString()} out</>
+          )}
+        </span>
+      </div>
+      <ul className="claude-todo__list">
+        {todos.map((t, i) => (
+          <li key={i} className={`claude-todo__item claude-todo__item--${t.status}`}>
+            <span className="claude-todo__marker" aria-hidden>
+              {t.status === 'completed' ? '✔' : t.status === 'in_progress' ? '◼' : '◻'}
+            </span>
+            <span className="claude-todo__text">
+              {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+// turnElapsed returns a human-formatted duration since the turn
+// started, or up to when it finished if `done`. Used in the
+// TodoWrite card header. Live turns re-render frequently enough
+// (every stream event) that "now" stays approximately current
+// without a separate timer.
+function turnElapsed(turn: ClaudeTurn): string {
+  const start = Date.parse(turn.startedAt)
+  if (isNaN(start)) return ''
+  const ms = Date.now() - start
+  const sec = Math.max(0, Math.round(ms / 1000))
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  const rem = sec % 60
+  if (min < 60) return rem > 0 ? `${min}m ${rem}s` : `${min}m`
+  const hr = Math.floor(min / 60)
+  const minRem = min % 60
+  return minRem > 0 ? `${hr}h ${minRem}m` : `${hr}h`
+}
+
 function ThinkingBlockView({ body }: { body: string }) {
   const [expanded, setExpanded] = useState(false)
   return (
