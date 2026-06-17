@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import type { ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
+import type { BgTask, ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
 import type { TemplateSummary } from '../../lib/api'
 import { ToolApprovalCard } from './ToolApprovalCard'
 import { AskUserQuestionCard } from './AskUserQuestionCard'
@@ -125,7 +125,7 @@ export function ClaudeChatView({
       ) : (
         <div className="claude-chat__scroll" ref={scrollRef}>
           {state.turns.map((t) => (
-            <TurnView key={t.id} turn={t} />
+            <TurnView key={t.id} turn={t} bgTasks={state.bgTasks} />
           ))}
           {state.pending.map((req) => (
             <ToolApprovalCard
@@ -259,7 +259,10 @@ function UserPromptBubble({ turn }: { turn: ClaudeTurn }) {
   )
 }
 
-function TurnView({ turn }: { turn: ClaudeTurn }) {
+function TurnView({ turn, bgTasks }: {
+  turn: ClaudeTurn
+  bgTasks: Record<string, BgTask>
+}) {
   return (
     <div className="claude-turn">
       <UserPromptBubble turn={turn} />
@@ -295,7 +298,13 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
               )
             }
           }
-          return <ToolCallView key={block.tool.toolUseId} tool={block.tool} />
+          return (
+            <ToolCallView
+              key={block.tool.toolUseId}
+              tool={block.tool}
+              bgTask={block.tool.bgTaskId ? bgTasks[block.tool.bgTaskId] : undefined}
+            />
+          )
         })}
         {!turn.done && turn.blocks.length === 0 && (
           <div className="claude-turn__thinking">…</div>
@@ -502,7 +511,7 @@ function formatElapsed(secs: number): string {
   return `${h}h${m.toString().padStart(2, '0')}m`
 }
 
-function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
+function ToolCallView({ tool, bgTask }: { tool: ClaudeToolCall; bgTask?: BgTask }) {
   const [expanded, setExpanded] = useState(false)
   const status = toolStatus(tool)
   const elapsedSecs = useElapsed(tool.startedAt, tool.finishedAt)
@@ -510,6 +519,11 @@ function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
   const elapsedClass =
     elapsedSecs >= 300 ? 'is-stuck' :
     elapsedSecs >= 30  ? 'is-slow'  : ''
+  // For Monitor: prefer the bgTask's elapsed (which spans the whole
+  // background task lifetime, not just the tool_use_id's brief life)
+  // and append a count + ✓ marker when completed.
+  const isMonitorWithTask = tool.name === 'Monitor' && bgTask !== undefined
+  const bgElapsedSecs = useElapsed(bgTask?.startedAt, bgTask?.finishedAt)
   const preview = toolPreview(tool)
   const hasDetails = tool.input != null || (tool.result != null && tool.result !== '')
   return (
@@ -530,6 +544,16 @@ function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
             {formatElapsed(elapsedSecs)}
           </span>
         )}
+        {isMonitorWithTask && (
+          <span className="claude-tool__bg">
+            {' · task '}<code>{bgTask!.taskId}</code>
+            {' · '}{formatElapsed(bgElapsedSecs)}
+            {bgTask!.notificationCount > 0 && (
+              <> {' · '} {bgTask!.notificationCount} events</>
+            )}
+            {bgTask!.status === 'completed' && <span className="claude-tool__check">{' ✓'}</span>}
+          </span>
+        )}
       </button>
       {expanded && hasDetails && (
         <div className="claude-tool__body">
@@ -538,6 +562,11 @@ function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
           )}
           {tool.result != null && tool.result !== '' && (
             <pre className="claude-tool__result">{tool.result}</pre>
+          )}
+          {bgTask?.lastEventSummary && (
+            <div className="claude-tool__last-event">
+              Latest: {bgTask.lastEventSummary}
+            </div>
           )}
         </div>
       )}

@@ -96,3 +96,25 @@ code, pre {
   font-weight: 600;
   opacity: 1;
 }
+
+.claude-tool__bg {
+  margin-left: 8px;
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+.claude-tool__bg code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.claude-tool__check {
+  color: #2c9c4a;
+  font-weight: 700;
+  margin-left: 4px;
+}
+.claude-tool__last-event {
+  margin-top: 6px;
+  font-size: 0.85em;
+  opacity: 0.75;
+  font-style: italic;
+}
