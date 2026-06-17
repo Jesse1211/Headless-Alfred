@@ -7,6 +7,46 @@ Most-recent first.
 
 ---
 
+## v0.2 — 2026-06-17
+
+Two small infra/UX features for self-managed deploys.
+
+### PVC capacity monitoring
+
+A thin banner appears at the top of the workspace when the
+backing PVC is filling up:
+
+- ≥ 80% used → yellow warning banner
+- ≥ 95% used → red banner with subtle pulse
+- Below 80% → hidden (no noise when fine)
+
+Backend probes `/data` via statfs every 60s and pushes a
+`disk_usage` WS frame to all clients only when the alert level
+flips (or on first connect). Read-only fetch endpoint:
+`GET /api/disk-usage` returns `{path, totalBytes, usedBytes,
+availableBytes, usedPercent}` for ad-hoc debugging.
+
+`/data` and `/home/alfred` share one PVC, so the umbrella
+percentage is what matters — that's what we monitor and surface.
+
+### Claude CLI runtime upgrade
+
+New "Claude version" button in the left sidebar footer opens a
+dialog showing the currently-installed CLI version with an input
+to upgrade to `latest` / `next` / a specific `X.Y.Z`. The npm
+output streams live into the dialog (no spinning-then-done UX).
+
+Updates land in `~/.npm-global/` on the PVC (entrypoint set npm
+prefix there in v0.1), so they survive pod restarts. The next
+Claude UI prompt automatically forks the new binary via PATH
+lookup — no service restart, no redeploy.
+
+Server-side: strict version-string regex (`latest|next|X.Y.Z`)
+and hardcoded package name prevent the endpoint from being
+coerced into installing arbitrary npm packages.
+
+---
+
 ## v0.1 — 2026-06-17
 
 First tagged release. Marks "what's deployed on oracle k3s as of
