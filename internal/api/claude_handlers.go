@@ -194,6 +194,16 @@ func claudeEventPayload(ev claude.Event) any {
 		return nil
 	case claude.KindResult:
 		return ev.Result
+	case claude.KindTaskStarted:
+		return ev.TaskStarted
+	case claude.KindTaskNotification:
+		return ev.TaskNotification
+	case claude.KindTaskUpdated:
+		return ev.TaskUpdated
+	case claude.KindHookStarted:
+		return ev.HookStarted
+	case claude.KindHookResponse:
+		return ev.HookResponse
 	case claude.KindUnknown:
 		return ev.Unknown
 	}
