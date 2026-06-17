@@ -138,3 +138,37 @@ test('multiple_concurrent_monitors', async ({ page }) => {
   // All three eventually checkmark.
   await expect(monitorCards.locator('.claude-tool__check')).toHaveCount(3, { timeout: 120_000 })
 })
+
+test('subagent_long_running', async ({ page }) => {
+  test.setTimeout(360_000)  // 6 min
+  const token = await login(page)
+  const sid = await freshSession(page, token, 'subagent-long')
+  await loginUI(page, token)
+  await page.locator(`li:has-text("pw-v04-subagent-long")`).first().click()
+  await enterClaudeUI(page)
+
+  await sendPrompt(page,
+    'Use the Task / Agent tool to dispatch a general-purpose subagent with this task: ' +
+    '"List the 10 largest files under /tmp by size. Use ls + sort. ' +
+    'Take your time, walk through it carefully step by step." ' +
+    'Then wait for the subagent to finish and report back its summary.'
+  )
+
+  // Agent card appears.
+  const agentCard = page.locator('.claude-tool:has(.claude-tool__name:text-is("Task"), .claude-tool__name:text-is("Agent"))').last()
+  await expect(agentCard).toBeVisible({ timeout: 60_000 })
+
+  // Elapsed timer should be ticking (>1s) while running.
+  const elapsed = agentCard.locator('.claude-tool__elapsed').first()
+  await expect(elapsed).toBeVisible({ timeout: 30_000 })
+  const t0 = await elapsed.textContent()
+  await page.waitForTimeout(3_000)
+  const t1 = await elapsed.textContent()
+  expect(t1).not.toBe(t0)
+
+  // Eventually the agent finishes — turn becomes done, phase chip says "Done".
+  await expect(page.locator('.turn-phase-chip--done').last()).toBeVisible({ timeout: 240_000 })
+
+  // Turn stats line mentions at least 1 subagent.
+  await expect(page.locator('.turn-stats').last()).toContainText(/subagent/)
+})
