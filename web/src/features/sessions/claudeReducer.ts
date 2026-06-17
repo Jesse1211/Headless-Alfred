@@ -177,7 +177,6 @@ export function applyClaudeEvent(
 
   switch (kind) {
     case 'system':
-    case 'message_start':
     case 'text_block_end':
     case 'message_stop':
     case 'rate_limit':
@@ -187,6 +186,21 @@ export function applyClaudeEvent(
       // message but a turn may have several when tool use kicks in,
       // so we wait for `result` to mark the turn done.
       return prev
+    case 'message_start': {
+      // Anthropic stream-json resets the content-block `index` to 0 at
+      // the start of every assistant message. A single Alfred turn often
+      // spans multiple assistant messages (text → tool_use → tool_result
+      // → next assistant message). Without clearing the index maps here,
+      // the next message's text_delta(index=0) folds back into the
+      // previous message's first text block and its tool_use(index=1)
+      // pushes to the array tail, collapsing all text on top and sinking
+      // all tools to the bottom.
+      if (!last || last.done) return prev
+      last._blockIndexMap = {}
+      last._thinkingIndexMap = {}
+      turns[lastIdx] = last
+      return { ...prev, turns }
+    }
     case 'text_delta': {
       const p = asTextDelta(payload)
       if (!last || last.done) return prev
@@ -287,6 +301,7 @@ export function applyClaudeEvent(
       last.done = true
       last.isError = p.isError
       last.totalCostUsd = p.totalCostUsd
+      last.finishedAt = new Date().toISOString()
       // If the turn has no assistant text yet (auth failure, etc.),
       // surface the result string as a synthetic final text block so
       // the user sees something.
@@ -437,7 +452,12 @@ export function finalizeInFlightTurn(prev: ClaudeState, reason?: string): Claude
   const turns = [...prev.turns]
   const lastIdx = turns.length - 1
   if (lastIdx >= 0 && !turns[lastIdx].done) {
-    const last = { ...turns[lastIdx], done: true, isError: true }
+    const last = {
+      ...turns[lastIdx],
+      done: true,
+      isError: true,
+      finishedAt: new Date().toISOString(),
+    }
     // If the turn produced nothing visible yet (auth failure / runner
     // died / 5xx before any block streamed), surface `reason` as a
     // synthetic text block so the user sees something other than a

@@ -38,6 +38,13 @@ export interface ClaudeTurn {
   // what they paid tokens for.
   expandedPrompt?: string
   startedAt: string
+  // finishedAt is when the turn ended — set by `result` (success path)
+  // and by finalizeInFlightTurn (error / runner-died backstop). When
+  // restored from jsonl, the backend fills this from the next user
+  // row's timestamp (the closest bracket available, since assistant
+  // jsonl rows carry no ts). The trailing turn in a restored history
+  // may have no finishedAt; the footer hides the elapsed display then.
+  finishedAt?: string
   // The assistant's reply as an ORDERED list of text + tool blocks
   // in the exact order Claude streamed them. Render each one in
   // sequence to faithfully reproduce the "Claude says something, then
