@@ -345,11 +345,12 @@ export function applyClaudeEvent(
       if (!p.taskId || !prev.bgTasks[p.taskId]) return prev
       const cur = prev.bgTasks[p.taskId]
       if (p.status !== 'completed' && p.status !== 'failed') return prev
+      const status: 'completed' | 'failed' = p.status
       const bgTasks = {
         ...prev.bgTasks,
         [p.taskId]: {
           ...cur,
-          status: p.status,
+          status,
           finishedAt: p.endTime
             ? new Date(p.endTime).toISOString()
             : new Date().toISOString(),
