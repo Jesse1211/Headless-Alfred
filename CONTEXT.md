@@ -138,6 +138,21 @@ static/      (embed.FS of web/dist with SPA fallback)
 
 ---
 
+## Release flow
+
+`main` = production (push triggers oracle deploy via CI).
+`next` = long-lived wip branch (no CI deploy).
+
+Daily work happens on `next`. When `next` has enough to ship as a
+new version, merge `next` → `main`, bump `Chart.yaml` appVersion
+(manual semver: v0.1, v0.2…), add a `docs/RELEASES.md` entry, tag
+the commit, push tag + main. CI takes over.
+
+Full procedure + rollback playbook in `RELEASE.md` at the repo
+root. User-facing changelog in `docs/RELEASES.md`.
+
+---
+
 ## Quick orientation for "I want to change X"
 
 | Change | Where to look first |
