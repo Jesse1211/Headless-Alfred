@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import type { BgTask, ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
+import type { BgTask, ClaudeState, ClaudeToolCall, ClaudeTurn, SubagentEntry } from './types'
 import type { TemplateSummary } from '../../lib/api'
 import { ToolApprovalCard } from './ToolApprovalCard'
 import { AskUserQuestionCard } from './AskUserQuestionCard'
@@ -125,7 +125,7 @@ export function ClaudeChatView({
       ) : (
         <div className="claude-chat__scroll" ref={scrollRef}>
           {state.turns.map((t) => (
-            <TurnView key={t.id} turn={t} bgTasks={state.bgTasks} />
+            <TurnView key={t.id} turn={t} bgTasks={state.bgTasks} subagents={state.subagents} />
           ))}
           {state.pending.map((req) => (
             <ToolApprovalCard
@@ -259,15 +259,16 @@ function UserPromptBubble({ turn }: { turn: ClaudeTurn }) {
   )
 }
 
-function TurnView({ turn, bgTasks }: {
+function TurnView({ turn, bgTasks, subagents }: {
   turn: ClaudeTurn
   bgTasks: Record<string, BgTask>
+  subagents: Record<string, SubagentEntry>
 }) {
   return (
     <div className="claude-turn">
       <UserPromptBubble turn={turn} />
       <div className={`claude-turn__assistant ${turn.isError ? 'is-error' : ''}`}>
-        <div className="claude-turn__label">Claude</div>
+        <div className="claude-turn__label">Claude<TurnPhaseChip turn={turn} /></div>
         {turn.thinking && turn.thinking.map((body, i) => (
           <ThinkingBlockView key={`think-${i}`} body={body} />
         ))}
@@ -319,9 +320,64 @@ function TurnView({ turn, bgTasks }: {
             </span>
           </div>
         )}
+        <TurnStatsLine turn={turn} bgTasks={bgTasks} subagents={subagents} />
       </div>
     </div>
   )
+}
+
+function turnPhase(turn: ClaudeTurn): string {
+  if (turn.done) return 'Done'
+  if (turn.blocks.length === 0) return 'Initializing'
+  // The last block determines the phase: if it's a still-running tool, "Calling X"; otherwise "Thinking".
+  const last = turn.blocks[turn.blocks.length - 1]
+  if (last.kind === 'tool' && !last.tool.finishedAt) return `Calling ${last.tool.name}`
+  return 'Thinking'
+}
+
+function TurnPhaseChip({ turn }: { turn: ClaudeTurn }) {
+  const phase = turnPhase(turn)
+  return <span className={`turn-phase-chip turn-phase-chip--${phase.toLowerCase().replace(/\s+/g, '-')}`}>{phase}</span>
+}
+
+function TurnStatsLine({ turn, bgTasks, subagents }: {
+  turn: ClaudeTurn
+  bgTasks: Record<string, BgTask>
+  subagents: Record<string, SubagentEntry>
+}) {
+  if (!turn.done) return null
+  const toolCount = turn.blocks.filter((b) => b.kind === 'tool').length
+  const monitorBlocks = turn.blocks.filter(
+    (b) => b.kind === 'tool' && b.tool.name === 'Monitor' && b.tool.bgTaskId,
+  ) as Array<{ kind: 'tool'; tool: ClaudeToolCall }>
+  const monitorTasks = monitorBlocks
+    .map((b) => bgTasks[b.tool.bgTaskId!])
+    .filter((t): t is BgTask => !!t)
+  const monitorTotal = monitorTasks.length
+  const monitorRunning = monitorTasks.filter((t) => t.status === 'in_progress').length
+  const monitorDone = monitorTotal - monitorRunning
+  void monitorDone // reserved for future "X done" detail; suppress unused warn
+
+  const agentBlocks = turn.blocks.filter(
+    (b) => b.kind === 'tool' && b.tool.name === 'Agent',
+  )
+  const subagentTotal = agentBlocks.length
+  // Best-effort: subagents map values, filter to entries that started during this turn.
+  // For simplicity we count all current subagents map entries here; FIFO pairing
+  // already finalises them as SubagentStop arrives.
+  const subagentsList = Object.values(subagents)
+  const subagentRunning = subagentsList.filter((s) => !s.finishedAt).length
+  const subagentDone = subagentsList.filter((s) => !!s.finishedAt).length
+
+  const parts: string[] = [`${toolCount} tool call${toolCount === 1 ? '' : 's'}`]
+  if (monitorTotal > 0) {
+    parts.push(`${monitorTotal} Monitor task${monitorTotal === 1 ? '' : 's'} (${monitorRunning > 0 ? 'running' : 'done'})`)
+  }
+  if (subagentTotal > 0 || subagentRunning > 0 || subagentDone > 0) {
+    const total = Math.max(subagentTotal, subagentRunning + subagentDone)
+    parts.push(`${total} subagent${total === 1 ? '' : 's'} (${subagentRunning > 0 ? 'running' : 'done'})`)
+  }
+  return <div className="turn-stats">{parts.join(' · ')}</div>
 }
 
 // AssistantMarkdown is the markdown renderer shared by the
