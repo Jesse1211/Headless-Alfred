@@ -32,6 +32,35 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+      initContainers:
+      # subPath mounts are NOT covered by fsGroup recursive chown
+      # (kubelet only adjusts ownership on the volume root, not the
+      # subdirectory it chrooted into for subPath). Without this
+      # init step the first pod on a fresh PVC sees /data and
+      # /home/alfred owned by root:root mode 0755, and alfred
+      # (UID 1000) can't write — every feature that touches $HOME
+      # silently fails on the first deploy. Run a tiny one-shot
+      # busybox-style init as root to fix ownership, then exit; the
+      # main container starts with the corrected perms.
+      - name: chown-volumes
+        image: busybox:1.36
+        command:
+          - sh
+          - -c
+          - 'chown -R 1000:1000 /data /home/alfred && chmod 0700 /home/alfred'
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+          capabilities:
+            drop: ['ALL']
+            add: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE']
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: data
+          mountPath: /home/alfred
+          subPath: home
       containers:
       - name: alfred
         image: {{ include "alfred.image" . | quote }}
@@ -78,6 +107,21 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
+        # Persist the WHOLE home directory across pod restarts. Several
+        # features write under $HOME and need to survive an image bump:
+        #   ~/.git-credentials, ~/.gitconfig — git auth
+        #   ~/.claude/.credentials.json    — Anthropic API key
+        #   ~/.claude/settings.json        — PreToolUse hook config
+        #   ~/.claude/projects/<flat-cwd>/<uuid>.jsonl — Claude transcripts
+        # Mounting one umbrella subPath covers all of them in one mount,
+        # and any future feature that writes to $HOME just works. The
+        # Dockerfile's useradd -m drops default skel files (.bashrc etc)
+        # into the image's /home/alfred but Alfred runs bash with
+        # --noprofile --norc so we don't rely on them being visible.
+        # Same PVC as /data — claims one PV, shares quota.
+        - name: data
+          mountPath: /home/alfred
+          subPath: home
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
