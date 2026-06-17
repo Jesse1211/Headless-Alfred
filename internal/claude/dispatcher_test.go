@@ -25,7 +25,7 @@ func TestDispatcher_RoutesToSubscriber(t *testing.T) {
 			return "alfred-A"
 		}
 		return ""
-	}, nil, autoAllow, autoDeny, "")
+	}, nil, nil, autoAllow, autoDeny, "")
 
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "claude-1", ToolName: "Bash"})
 
@@ -54,7 +54,7 @@ func TestDispatcher_NoSubscriber_AutoDeny(t *testing.T) {
 		denied = append(denied, id+":"+reason)
 		mu.Unlock()
 	}
-	onAsk := d.OnAsk(func(string) string { return "alfred-X" }, nil, noAllow, autoDeny, "")
+	onAsk := d.OnAsk(func(string) string { return "alfred-X" }, nil, nil, noAllow, autoDeny, "")
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "claude-1"})
 
 	mu.Lock()
@@ -78,7 +78,7 @@ func TestDispatcher_UnknownClaudeConvo_AutoAllow(t *testing.T) {
 	var denied int
 	autoAllow := func(string) { allowed++ }
 	autoDeny := func(string, string) { denied++ }
-	onAsk := d.OnAsk(func(string) string { return "" }, nil, autoAllow, autoDeny, "")
+	onAsk := d.OnAsk(func(string) string { return "" }, nil, nil, autoAllow, autoDeny, "")
 	onAsk(PendingRequest{ToolUseID: "tu-1", SessionID: "unknown"})
 	if allowed != 1 {
 		t.Errorf("allowed=%d, want 1", allowed)
@@ -104,7 +104,7 @@ func TestDispatcher_ResubscribeClosesPrior(t *testing.T) {
 		t.Error("old channel never closed")
 	}
 
-	onAsk := d.OnAsk(func(string) string { return "A" }, nil, noAllow, noDeny, "")
+	onAsk := d.OnAsk(func(string) string { return "A" }, nil, nil, noAllow, noDeny, "")
 	onAsk(PendingRequest{ToolUseID: "tu", SessionID: "C"})
 	select {
 	case got := <-chNew:
@@ -122,7 +122,7 @@ func TestDispatcher_FullBuffer_AutoDeny(t *testing.T) {
 	defer unsub()
 	var denied int
 	autoDeny := func(string, string) { denied++ }
-	onAsk := d.OnAsk(func(string) string { return "A" }, nil, noAllow, autoDeny, "")
+	onAsk := d.OnAsk(func(string) string { return "A" }, nil, nil, noAllow, autoDeny, "")
 
 	// Fill the 4-deep buffer; the 5th call should auto-deny.
 	for i := 0; i < 5; i++ {
@@ -149,7 +149,8 @@ func TestDispatcher_SummaryWrite_AutoAllows(t *testing.T) {
 			}
 			return ""
 		},
-		nil,
+		nil, // isRecapSession
+		nil, // isBypassSession
 		autoAllow,
 		autoDeny,
 		"/data", // new dataDir argument
@@ -186,6 +187,7 @@ func TestDispatcher_RecapSession_AutoAllowsAnyTool(t *testing.T) {
 	onAsk := d.OnAsk(
 		func(s string) string { return "alfred-recap" },
 		func(alfredSID string) bool { return alfredSID == "alfred-recap" },
+		nil, // isBypassSession
 		autoAllow,
 		autoDeny,
 		"/data",
@@ -210,6 +212,85 @@ func TestDispatcher_RecapSession_AutoAllowsAnyTool(t *testing.T) {
 	}
 }
 
+func TestDispatcher_BypassSession_AutoAllowsAnyTool(t *testing.T) {
+	d := NewDispatcher()
+	ch, unsub := d.SubscribeAsks("alfred-bypass")
+	defer unsub()
+
+	var allowed int
+	autoAllow := func(string) { allowed++ }
+	autoDeny := func(string, string) {}
+
+	onAsk := d.OnAsk(
+		func(string) string { return "alfred-bypass" },
+		nil, // isRecapSession
+		func(alfredSID string) bool { return alfredSID == "alfred-bypass" },
+		autoAllow,
+		autoDeny,
+		"/data",
+	)
+
+	// User opted into bypass on this session → tool call auto-allows
+	// without bothering the WS subscriber.
+	onAsk(PendingRequest{
+		ToolUseID: "tu-bash",
+		SessionID: "claude-bypass",
+		ToolName:  "Bash",
+		ToolInput: []byte(`{"command":"ls"}`),
+	})
+
+	if allowed != 1 {
+		t.Errorf("allowed=%d, want 1 (bypass session must auto-allow)", allowed)
+	}
+	select {
+	case got := <-ch:
+		t.Errorf("bypass session tool must NOT push to subscriber; got %+v", got)
+	default:
+	}
+}
+
+func TestDispatcher_BypassSession_AskUserQuestion_GoesToSubscriber(t *testing.T) {
+	d := NewDispatcher()
+	ch, unsub := d.SubscribeAsks("alfred-bypass")
+	defer unsub()
+
+	var allowed int
+	autoAllow := func(string) { allowed++ }
+	autoDeny := func(string, string) {}
+
+	onAsk := d.OnAsk(
+		func(string) string { return "alfred-bypass" },
+		nil,
+		func(alfredSID string) bool { return alfredSID == "alfred-bypass" },
+		autoAllow,
+		autoDeny,
+		"/data",
+	)
+
+	// AskUserQuestion bypasses the bypass — it's a question for the
+	// user, not a tool call; auto-allowing it strands the question
+	// with no answer path. Must route to the subscriber so the
+	// AskUserQuestionCard renders.
+	onAsk(PendingRequest{
+		ToolUseID: "tu-q",
+		SessionID: "claude-bypass",
+		ToolName:  "AskUserQuestion",
+		ToolInput: []byte(`{"questions":[]}`),
+	})
+
+	if allowed != 0 {
+		t.Errorf("allowed=%d, want 0 (AskUserQuestion must not auto-allow even on bypass session)", allowed)
+	}
+	select {
+	case got := <-ch:
+		if got.ToolName != "AskUserQuestion" {
+			t.Errorf("subscriber got %q, want AskUserQuestion", got.ToolName)
+		}
+	case <-time.After(time.Second):
+		t.Error("subscriber never received AskUserQuestion request")
+	}
+}
+
 func TestDispatcher_RecapSession_AskUserQuestion_GoesToSubscriber(t *testing.T) {
 	d := NewDispatcher()
 	ch, unsub := d.SubscribeAsks("alfred-recap")
@@ -222,6 +303,7 @@ func TestDispatcher_RecapSession_AskUserQuestion_GoesToSubscriber(t *testing.T) 
 	onAsk := d.OnAsk(
 		func(s string) string { return "alfred-recap" },
 		func(alfredSID string) bool { return alfredSID == "alfred-recap" },
+		nil, // isBypassSession
 		autoAllow,
 		autoDeny,
 		"/data",

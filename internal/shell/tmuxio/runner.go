@@ -52,6 +52,13 @@ type TmuxRunner interface {
 	// remain-on-exit is on).
 	PaneDead(session string) (bool, error)
 
+	// PaneCurrentPath returns the cwd of the pane's foreground process
+	// (typically bash). tmux maintains this by polling each pane's
+	// shell-tracked working directory; it's authoritative and zero-
+	// state for us. Used to decide which dir `claude -p` should be
+	// invoked in so users get "ls / Read / Write happen where I cd'd to".
+	PaneCurrentPath(session string) (string, error)
+
 	// SetOption applies `tmux set-option -t <session> <name> <value>`.
 	SetOption(session, name, value string) error
 
@@ -160,6 +167,14 @@ func (e *ExecRunner) PanePID(session string) (int, error) {
 		return 0, fmt.Errorf("parse pane_pid %q: %w", out, err)
 	}
 	return pid, nil
+}
+
+func (e *ExecRunner) PaneCurrentPath(session string) (string, error) {
+	out, err := e.cmd("display-message", "-t", session, "-p", "#{pane_current_path}").Output()
+	if err != nil {
+		return "", fmt.Errorf("tmux display-message %s pane_current_path: %w (stderr=%q)", session, err, exitStderr(err))
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func (e *ExecRunner) PaneDead(session string) (bool, error) {

@@ -85,6 +85,7 @@ func (d *Dispatcher) SubscribeAsks(sessionID string) (<-chan PendingRequest, fun
 func (d *Dispatcher) OnAsk(
 	lookup func(claudeConvoID string) string,
 	isRecapSession func(alfredSID string) bool,
+	isBypassSession func(alfredSID string) bool,
 	autoAllow func(toolUseID string),
 	autoDeny func(toolUseID string, reason string),
 	dataDir string,
@@ -111,6 +112,18 @@ func (d *Dispatcher) OnAsk(
 		// so the AskUserQuestionCard renders in the chat.
 		if isRecapSession != nil && isRecapSession(alfredSID) && req.ToolName != "AskUserQuestion" {
 			slog.Debug("dispatcher: recap session, auto-allow", "session", alfredSID, "tool", req.ToolName)
+			autoAllow(req.ToolUseID)
+			return
+		}
+		// User opted into bypassPermissions on this session. The
+		// "don't ask me, just run it" semantic should apply to our
+		// hook too, not just the CLI's built-in prompt — otherwise
+		// the user clicked --dangerously-skip-permissions but still
+		// gets an Allow / Deny card from us. Same AskUserQuestion
+		// exception as the recap branch: model questions still need
+		// to reach the human.
+		if isBypassSession != nil && isBypassSession(alfredSID) && req.ToolName != "AskUserQuestion" {
+			slog.Debug("dispatcher: bypass session, auto-allow", "session", alfredSID, "tool", req.ToolName)
 			autoAllow(req.ToolUseID)
 			return
 		}

@@ -236,6 +236,23 @@ func (ts *TmuxShell) CurrentCommand() *RunningCommand {
 	return &cp
 }
 
+// CurrentCWD asks tmux for the pane's foreground process working
+// directory. Used to choose where `claude -p` should be invoked so
+// users get "ls / Read / Write happen in the dir I just cd'd to".
+//
+// Returns "" on any error; callers should fall back to their default
+// cwd in that case. tmux maintains pane_current_path itself by
+// polling each pane's shell-tracked cwd, so this is authoritative
+// and zero-state on our side.
+func (ts *TmuxShell) CurrentCWD() string {
+	path, err := ts.cfg.Runner.PaneCurrentPath(ts.cfg.SessionID)
+	if err != nil {
+		ts.cfg.Logger.Warn("CurrentCWD: tmux PaneCurrentPath failed", "err", err, "session", ts.cfg.SessionID)
+		return ""
+	}
+	return path
+}
+
 func (ts *TmuxShell) SubscribeEvents(buffer int) (*EventSubscriber, func()) {
 	sub := ts.evtBcast.Subscribe(buffer)
 	return sub, sub.Close

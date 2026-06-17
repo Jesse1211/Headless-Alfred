@@ -12,6 +12,9 @@ type Shell interface {
 	Write(cmdID, userCmd string) error
 	Stop()
 	CurrentCommand() *shell.RunningCommand
+	// CurrentCWD returns the pane's foreground process working directory
+	// (via tmux pane_current_path). Empty string on error.
+	CurrentCWD() string
 	SubscribeEvents(buffer int) (*shell.EventSubscriber, func())
 	// Claude-mode APIs.
 	SubscribeRaw(buffer int) *shell.Subscriber

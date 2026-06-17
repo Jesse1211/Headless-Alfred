@@ -24,8 +24,9 @@ type FakeRunner struct {
 }
 
 type fakeSession struct {
-	dead bool
-	pid  int
+	dead    bool
+	pid     int
+	cwdPath string // returned by PaneCurrentPath; tests can override via SetPaneCurrentPath.
 }
 
 func NewFakeRunner() *FakeRunner {
@@ -60,6 +61,16 @@ func (f *FakeRunner) MarkPaneDead(session string) {
 	defer f.mu.Unlock()
 	if s, ok := f.sessions[session]; ok {
 		s.dead = true
+	}
+}
+
+// SetPaneCurrentPath overrides the path PaneCurrentPath will return
+// for session. If unset, PaneCurrentPath returns the empty string.
+func (f *FakeRunner) SetPaneCurrentPath(session, path string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, ok := f.sessions[session]; ok {
+		s.cwdPath = path
 	}
 }
 
@@ -151,6 +162,19 @@ func (f *FakeRunner) PaneDead(session string) (bool, error) {
 		return s.dead, nil
 	}
 	return false, nil
+}
+
+func (f *FakeRunner) PaneCurrentPath(session string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("PaneCurrentPath", session)
+	if err := f.takeErr("PaneCurrentPath"); err != nil {
+		return "", err
+	}
+	if s, ok := f.sessions[session]; ok {
+		return s.cwdPath, nil
+	}
+	return "", nil
 }
 
 func (f *FakeRunner) SetOption(session, name, value string) error {

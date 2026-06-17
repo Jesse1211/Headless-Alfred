@@ -126,6 +126,13 @@ func main() {
 			meta, ok := mgr.FindByID(alfredSID)
 			return ok && meta.Kind == store.KindRecap
 		},
+		// isBypassSession: when the user picked "bypass permissions"
+		// in the StartClaudeDialog, the dispatcher auto-allows every
+		// tool call (except AskUserQuestion). Matches the user's
+		// "don't interrupt me" intent — without this, --dangerously-
+		// skip-permissions on the CLI only silenced the CLI prompt
+		// while we kept popping our own Allow/Deny cards.
+		mgr.GetClaudeBypass,
 		func(toolUseID string) {
 			bridge.Resolve(toolUseID, claude.Decision{Permission: "allow"})
 		},
