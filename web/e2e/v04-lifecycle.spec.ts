@@ -16,14 +16,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Monitor + Agent dispatches against the live CLI. Run them with:
 //   npx playwright test e2e/v04-lifecycle.spec.ts --timeout=600000
 
-const BACKEND = 'http://localhost:8080'
+const BACKEND = process.env.ALFRED_BACKEND_URL || 'http://localhost:8080'
+const ALFRED_USER = process.env.ALFRED_USER || 'admin'
+const ALFRED_PASSWORD = process.env.ALFRED_PASSWORD || 'admin'
 
 let cachedToken = ''
 
 async function login(page: Page): Promise<string> {
   if (cachedToken) return cachedToken
   const r = await page.request.post(`${BACKEND}/api/login`, {
-    data: { user: 'admin', password: 'admin' },
+    data: { user: ALFRED_USER, password: ALFRED_PASSWORD },
   })
   const { token } = await r.json()
   cachedToken = token
@@ -63,7 +65,7 @@ async function sendPrompt(page: Page, text: string): Promise<void> {
 // Cleanup: best-effort delete pw-v04-* at startup.
 test.beforeAll(async ({ request }) => {
   const r = await request.post(`${BACKEND}/api/login`, {
-    data: { user: 'admin', password: 'admin' },
+    data: { user: ALFRED_USER, password: ALFRED_PASSWORD },
   })
   const { token } = await r.json()
   cachedToken = token
