@@ -69,6 +69,41 @@ func parseLine(line []byte) []Event {
 
 	switch head.Type {
 	case "system":
+		// Subtype-aware dispatch. The original system path (init / status)
+		// keeps the same SystemEvent payload; the v0.4 lifecycle subtypes
+		// get their own variants.
+		switch head.Subtype {
+		case "task_started":
+			var e TaskStartedEvent
+			if err := json.Unmarshal(line, &e); err != nil {
+				return []Event{unknown(line)}
+			}
+			return []Event{{Kind: KindTaskStarted, TaskStarted: &e}}
+		case "task_notification":
+			var e TaskNotificationEvent
+			if err := json.Unmarshal(line, &e); err != nil {
+				return []Event{unknown(line)}
+			}
+			return []Event{{Kind: KindTaskNotification, TaskNotification: &e}}
+		case "task_updated":
+			var e TaskUpdatedEvent
+			if err := json.Unmarshal(line, &e); err != nil {
+				return []Event{unknown(line)}
+			}
+			return []Event{{Kind: KindTaskUpdated, TaskUpdated: &e}}
+		case "hook_started":
+			var e HookStartedEvent
+			if err := json.Unmarshal(line, &e); err != nil {
+				return []Event{unknown(line)}
+			}
+			return []Event{{Kind: KindHookStarted, HookStarted: &e}}
+		case "hook_response":
+			var e HookResponseEvent
+			if err := json.Unmarshal(line, &e); err != nil {
+				return []Event{unknown(line)}
+			}
+			return []Event{{Kind: KindHookResponse, HookResponse: &e}}
+		}
 		var e systemLine
 		if err := json.Unmarshal(line, &e); err != nil {
 			return []Event{unknown(line)}
