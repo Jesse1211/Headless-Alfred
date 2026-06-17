@@ -469,9 +469,47 @@ function ThinkingBlockView({ body }: { body: string }) {
   )
 }
 
+// useElapsed returns the number of seconds between `startedAt` and
+// either `finishedAt` (if set) or now (re-rendered every second).
+// Returns 0 when startedAt is undefined (e.g. restored from history
+// without lifecycle events) — callers should hide the elapsed
+// display when that's the case.
+function useElapsed(startedAt: string | undefined, finishedAt: string | undefined): number {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (!startedAt || finishedAt) return
+    const id = window.setInterval(() => setTick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [startedAt, finishedAt])
+  if (!startedAt) return 0
+  const end = finishedAt ? Date.parse(finishedAt) : Date.now()
+  const start = Date.parse(startedAt)
+  return Math.max(0, Math.floor((end - start) / 1000))
+  // tick is referenced implicitly via re-render; suppress unused warn
+  void tick
+}
+
+// formatElapsed: seconds → "47s" / "2m14s" / "1h03m"
+function formatElapsed(secs: number): string {
+  if (secs < 60) return `${secs}s`
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60)
+    const s = secs % 60
+    return `${m}m${s.toString().padStart(2, '0')}s`
+  }
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  return `${h}h${m.toString().padStart(2, '0')}m`
+}
+
 function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
   const [expanded, setExpanded] = useState(false)
   const status = toolStatus(tool)
+  const elapsedSecs = useElapsed(tool.startedAt, tool.finishedAt)
+  const showElapsed = tool.startedAt !== undefined
+  const elapsedClass =
+    elapsedSecs >= 300 ? 'is-stuck' :
+    elapsedSecs >= 30  ? 'is-slow'  : ''
   const preview = toolPreview(tool)
   const hasDetails = tool.input != null || (tool.result != null && tool.result !== '')
   return (
@@ -487,6 +525,11 @@ function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
         <code className="claude-tool__name">{tool.name}</code>
         {preview && <span className="claude-tool__preview">({preview})</span>}
         <span className="claude-tool__status">{status}</span>
+        {showElapsed && (
+          <span className={`claude-tool__elapsed ${elapsedClass}`}>
+            {formatElapsed(elapsedSecs)}
+          </span>
+        )}
       </button>
       {expanded && hasDetails && (
         <div className="claude-tool__body">
