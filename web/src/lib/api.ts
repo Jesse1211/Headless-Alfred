@@ -165,6 +165,19 @@ export async function saveAnthropicCredentials(credentialsJson: string): Promise
   })
 }
 
+// TemplateSummary is one entry returned by GET /api/templates.
+// Used by the composer's checkbox strip — body is fetched
+// separately via getTemplate(id) only when the user wants to read it.
+export interface TemplateSummary {
+  id: string
+  name: string
+}
+
+export async function listTemplates(): Promise<TemplateSummary[]> {
+  const res = await request('/api/templates')
+  return res.json()
+}
+
 // getClaudeCLIVersion probes the pod for the currently-installed
 // `claude --version` string. Used by the version dialog to show
 // "current".

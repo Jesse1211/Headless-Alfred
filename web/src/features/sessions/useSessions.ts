@@ -315,7 +315,7 @@ export function useSessions(token: string) {
   )
 
   const claudePrompt = useCallback(
-    (sid: string, text: string, opts?: { renderTemplate?: string; optimisticLabel?: string }) => {
+    (sid: string, text: string, opts?: { renderTemplate?: string; optimisticLabel?: string; templates?: string[] }) => {
       // Optimistic: register the user's prompt as the start of a new
       // turn locally so the chat view renders it immediately. When the
       // text is empty (server-rendered template), use optimisticLabel
@@ -328,7 +328,13 @@ export function useSessions(token: string) {
         next.set(sid, { ...cur, claude: beginClaudeTurn(c, label) })
         return next
       })
-      socket.send({ type: 'claude_prompt', sessionID: sid, text, renderTemplate: opts?.renderTemplate })
+      socket.send({
+        type: 'claude_prompt',
+        sessionID: sid,
+        text,
+        renderTemplate: opts?.renderTemplate,
+        templates: opts?.templates,
+      })
     },
     [socket],
   )

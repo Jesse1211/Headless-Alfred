@@ -78,6 +78,7 @@ func NewRouter(d Deps) http.Handler {
 		r.Post("/api/sessions/{sid}/commands/{id}/stop", StopCommandHandler(d.Manager).ServeHTTP)
 
 		// Templates.
+		r.Get("/api/templates", ListTemplatesHandler().ServeHTTP)
 		r.Get("/api/templates/{id}", GetTemplateHandler().ServeHTTP)
 
 		// Summary.

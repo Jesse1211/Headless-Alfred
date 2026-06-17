@@ -639,3 +639,57 @@
 .claude-todo__item--in_progress .claude-todo__text {
   font-weight: 600;
 }
+
+/* Template-injection strip under the composer textarea. Renders
+   only when the server reports at least one template (no template
+   = no UI clutter). Sticky per-session via localStorage so the
+   user's "I want summary every turn" preference persists across
+   reloads. */
+.claude-chat__templates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.05);
+  font-size: 11.5px;
+}
+
+.claude-chat__templates-label {
+  color: var(--text-muted, #9aa3b2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+  margin-right: 2px;
+}
+
+.claude-chat__template {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-muted, #9aa3b2);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.claude-chat__template:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text, #eaeaea);
+}
+
+.claude-chat__template.is-checked {
+  background: rgba(122, 162, 247, 0.12);
+  border-color: rgba(122, 162, 247, 0.35);
+  color: rgba(122, 162, 247, 0.95);
+}
+
+.claude-chat__template input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent, #7aa2f7);
+}

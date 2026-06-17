@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
+import { listTemplates, TemplateSummary } from '../../lib/api'
 import { useSessions } from './useSessions'
 import { useSessionHistoryLoader } from './useSessionHistoryLoader'
 import { useClaudeHistoryLoader } from './useClaudeHistoryLoader'
@@ -47,6 +48,18 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const [gitCredsOpen, setGitCredsOpen] = useState(false)
   const [claudeCredsOpen, setClaudeCredsOpen] = useState(false)
   const [claudeVersionOpen, setClaudeVersionOpen] = useState(false)
+  // Catalog of templates the composer's checkbox strip renders.
+  // Loaded once per page lifecycle; the list rarely changes (it's
+  // a code-side registry on the server). Empty until first fetch
+  // resolves — composer falls through to "no strip" until then.
+  const [availableTemplates, setAvailableTemplates] = useState<TemplateSummary[]>([])
+  useEffect(() => {
+    let alive = true
+    listTemplates()
+      .then((list) => { if (alive) setAvailableTemplates(list) })
+      .catch(() => { /* empty list is fine — composer just hides the strip */ })
+    return () => { alive = false }
+  }, [])
   // Session ID for which the "Start Claude" renderer-pick dialog is open.
   const [startClaudeFor, setStartClaudeFor] = useState<string | null>(null)
 
@@ -298,9 +311,14 @@ export function WorkspacePage({ token, onLogout }: Props) {
 
         {selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && (
           <ClaudeChatView
+            key={selected.id}
             state={ps.claude ?? emptyClaudeState()}
             disabled={s.connState !== 'open'}
-            onPrompt={(text) => s.claudePrompt(selected.id, text)}
+            sessionID={selected.id}
+            templates={availableTemplates}
+            onPrompt={(text, templates) =>
+              s.claudePrompt(selected.id, text, { templates })
+            }
             onToolDecision={(toolUseId, decision, reason) =>
               s.toolDecision(selected.id, toolUseId, decision, reason)
             }

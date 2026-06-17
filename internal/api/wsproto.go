@@ -28,6 +28,12 @@ type InMsg struct {
 	// prompts (e.g. "Generate today's recap") without owning placeholder
 	// resolution. Ignored if Text is non-empty too — explicit text wins.
 	RenderTemplate     string `json:"renderTemplate,omitempty"`
+	// Templates is the per-prompt list of template IDs to inject
+	// after the user's text (claude_prompt). Replaces the legacy
+	// session-default TemplateID when non-nil. Empty array means
+	// "no templates this turn"; nil/missing means "use session
+	// default" (back-compat for older clients).
+	Templates          []string `json:"templates,omitempty"`
 	ToolUseID          string `json:"toolUseId,omitempty"`          // tool_decision target
 	Decision           string `json:"decision,omitempty"`           // "allow" | "deny" on tool_decision
 	Reason             string `json:"reason,omitempty"`             // optional deny reason

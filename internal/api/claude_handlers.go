@@ -28,19 +28,36 @@ import (
 )
 
 // composePromptText assembles the final prompt text that will be
-// piped to `claude -p` stdin. If the session has a template
-// active, the rendered template is appended after the user's
-// message separated by a markdown horizontal rule so Claude can
-// tell what came from the user and what came from the harness.
-func composePromptText(userText, templateID, sessionID, summaryPath string) string {
-	rendered := template.Render(templateID, template.RenderArgs{
-		SessionID:   sessionID,
-		SummaryPath: summaryPath,
-	})
-	if rendered == "" {
-		return userText
+// piped to `claude -p` stdin. Each non-empty rendered template is
+// appended after the user's message separated by a markdown
+// horizontal rule so Claude can tell what came from the user and
+// what came from the harness.
+//
+// templateIDs is the list of templates to inject for THIS prompt.
+// The frontend sends it per-prompt (per-prompt selectable checkboxes
+// in the composer); when nil/empty the call site can choose to fall
+// back to the session-default TemplateID for backwards-compat with
+// older clients. Order of templateIDs is preserved — the rendered
+// blocks concatenate in the same order.
+//
+// Unknown IDs and templates that render to "" are silently skipped
+// (template.Render returns "" for unknown IDs). That's the right
+// behaviour for forward-compat: if the client offers a template
+// that the server doesn't know yet (or vice versa), we just drop
+// it rather than 400.
+func composePromptText(userText string, templateIDs []string, sessionID, summaryPath string) string {
+	out := userText
+	for _, id := range templateIDs {
+		rendered := template.Render(id, template.RenderArgs{
+			SessionID:   sessionID,
+			SummaryPath: summaryPath,
+		})
+		if rendered == "" {
+			continue
+		}
+		out += "\n\n---\n" + rendered
 	}
-	return userText + "\n\n---\n" + rendered
+	return out
 }
 
 // claudeRunState tracks one in-flight `claude -p` invocation per
@@ -453,9 +470,20 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	// Per-prompt template selection: if the client sent a Templates
+	// array (any non-nil value, including the empty list — that
+	// means "explicitly inject nothing"), honor it. Older clients
+	// without the field fall back to the session-default TemplateID
+	// for backwards compat.
+	templateIDs := msg.Templates
+	if templateIDs == nil {
+		if id := m.GetTemplateID(msg.SessionID); id != "" {
+			templateIDs = []string{id}
+		}
+	}
 	finalText := composePromptText(
 		msg.Text,
-		m.GetTemplateID(msg.SessionID),
+		templateIDs,
 		msg.SessionID,
 		summary.Path(m.DataDir(), msg.SessionID),
 	)

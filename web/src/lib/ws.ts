@@ -69,7 +69,7 @@ export type ClientMsg =
   | { type: 'enter_claude'; sessionID: string; renderer?: ClaudeRenderer; bypassPermissions?: boolean; templateId?: string }
   | { type: 'exit_claude'; sessionID: string }
   | { type: 'stdin'; sessionID: string; data: string }
-  | { type: 'claude_prompt'; sessionID: string; text: string; renderTemplate?: string }
+  | { type: 'claude_prompt'; sessionID: string; text: string; renderTemplate?: string; templates?: string[] }
   | { type: 'tool_decision'; sessionID: string; toolUseId: string; decision: 'allow' | 'deny'; reason?: string }
   | { type: 'interrupt'; sessionID: string }
   | { type: 'ping' }
