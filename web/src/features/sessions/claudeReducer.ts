@@ -235,7 +235,12 @@ export function applyClaudeEvent(
       positions[p.index] = pos
       blocks.push({
         kind: 'tool',
-        tool: { toolUseId: p.toolUseId, name: p.name, decision: 'pending' },
+        tool: {
+          toolUseId: p.toolUseId,
+          name: p.name,
+          decision: 'pending',
+          startedAt: new Date().toISOString(),
+        },
       })
       last.blocks = blocks
       last._blockIndexMap = positions
@@ -256,6 +261,7 @@ export function applyClaudeEvent(
         ...t,
         result: p.content,
         isError: p.isError,
+        finishedAt: new Date().toISOString(),
       }))
       turns[lastIdx] = last
       return { ...prev, turns }
