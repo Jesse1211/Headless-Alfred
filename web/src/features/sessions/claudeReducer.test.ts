@@ -165,3 +165,28 @@ describe('applyClaudeEvent: subagent lifecycle', () => {
     expect(Object.keys(s.subagents)).toHaveLength(0)
   })
 })
+
+import { reduceClaudeMsg } from './claudeReducer'
+
+describe('claude_exited resets bgTasks + subagents', () => {
+  it('clears bgTasks and subagents maps', () => {
+    const sid = 'sess1'
+    let perSession = new Map()
+    let s = beginClaudeTurn(emptyClaudeState(), 'use monitor')
+    s = applyClaudeEvent(s, 'task_started', {
+      task_id: 'task_x',
+      tool_use_id: 'tu_1',
+      description: 'x',
+      task_type: 'local_bash',
+    })
+    perSession.set(sid, {
+      running: null, messages: [], messagesLoaded: false,
+      mode: 'claude', renderer: 'ui',
+      claude: s,
+    })
+    const next = reduceClaudeMsg(perSession, { type: 'claude_exited', sessionID: sid })!
+    const after = next.get(sid)!.claude!
+    expect(Object.keys(after.bgTasks)).toHaveLength(0)
+    expect(Object.keys(after.subagents)).toHaveLength(0)
+  })
+})

@@ -73,7 +73,15 @@ export function reduceClaudeMsg(
         // is reset so the next enter triggers a fresh history fetch — the
         // underlying ClaudeSessionID may have rotated.
         claude: cur.claude
-          ? { ...cur.claude, inFlight: false, pending: [], pendingQuestions: [], turnsLoaded: false }
+          ? {
+              ...cur.claude,
+              inFlight: false,
+              pending: [],
+              pendingQuestions: [],
+              turnsLoaded: false,
+              bgTasks: {},
+              subagents: {},
+            }
           : undefined,
       })
       return next
