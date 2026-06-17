@@ -2,8 +2,56 @@ package claudehistory
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// joinText concatenates all text blocks in order. Test-only helper —
+// production code iterates Blocks directly, but tests are simpler when
+// they can assert "the assistant said X" without walking the union.
+func joinText(t Turn) string {
+	var b strings.Builder
+	for _, blk := range t.Blocks {
+		if blk.Kind == "text" {
+			b.WriteString(blk.Text)
+		}
+	}
+	return b.String()
+}
+
+// allTools collects tool blocks in order.
+func allTools(t Turn) []ToolCall {
+	var out []ToolCall
+	for _, blk := range t.Blocks {
+		if blk.Kind == "tool" && blk.Tool != nil {
+			out = append(out, *blk.Tool)
+		}
+	}
+	return out
+}
+
+func TestSplitInjectedPrompt(t *testing.T) {
+	cases := []struct {
+		in           string
+		wantUser     string
+		wantExpanded string
+	}{
+		{"hi", "hi", ""},
+		// No separator: full text is user-visible, expanded empty.
+		{"please tell me a joke", "please tell me a joke", ""},
+		// With the composePromptText separator: user-visible part is
+		// the prefix, expanded is the full original text.
+		{"ls\n\n---\nAfter your reply, update summary at /data/...", "ls", "ls\n\n---\nAfter your reply, update summary at /data/..."},
+		// Edge: separator at the very start = empty user, full expanded.
+		{"\n\n---\ninjection only", "", "\n\n---\ninjection only"},
+	}
+	for _, c := range cases {
+		u, e := splitInjectedPrompt(c.in)
+		if u != c.wantUser || e != c.wantExpanded {
+			t.Errorf("splitInjectedPrompt(%q) = (%q, %q), want (%q, %q)", c.in, u, e, c.wantUser, c.wantExpanded)
+		}
+	}
+}
 
 func TestParse_Empty(t *testing.T) {
 	turns, err := Parse(filepath.Join("testdata", "empty.jsonl"), 100, "")
@@ -26,8 +74,8 @@ func TestParse_SimpleUserAssistant(t *testing.T) {
 	if turns[0].Prompt != "hi" {
 		t.Errorf("prompt = %q", turns[0].Prompt)
 	}
-	if turns[0].Text != "hello" {
-		t.Errorf("text = %q", turns[0].Text)
+	if got := joinText(turns[0]); got != "hello" {
+		t.Errorf("text = %q", got)
 	}
 	if !turns[0].Done {
 		t.Errorf("turn not marked done")
@@ -46,13 +94,14 @@ func TestParse_ToolUseAndResult(t *testing.T) {
 		t.Fatalf("want 1 turn, got %d", len(turns))
 	}
 	turn := turns[0]
-	if turn.Text != "readingdone" {
-		t.Errorf("text = %q (want concatenated assistant text)", turn.Text)
+	if got := joinText(turn); got != "readingdone" {
+		t.Errorf("text = %q (want concatenated assistant text)", got)
 	}
-	if len(turn.Tools) != 1 {
-		t.Fatalf("want 1 tool, got %d", len(turn.Tools))
+	tools := allTools(turn)
+	if len(tools) != 1 {
+		t.Fatalf("want 1 tool, got %d", len(tools))
 	}
-	tool := turn.Tools[0]
+	tool := tools[0]
 	if tool.ToolUseID != "t1" || tool.Name != "Read" {
 		t.Errorf("tool id/name = %q/%q", tool.ToolUseID, tool.Name)
 	}
@@ -108,7 +157,7 @@ func TestParse_UnknownTypesSkipped(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("want 1 turn, got %d", len(turns))
 	}
-	if turns[0].Prompt != "hi" || turns[0].Text != "hello" {
+	if turns[0].Prompt != "hi" || joinText(turns[0]) != "hello" {
 		t.Errorf("unexpected turn: %+v", turns[0])
 	}
 }
@@ -124,7 +173,7 @@ func TestParse_MalformedMidReturnsPartial(t *testing.T) {
 	if len(turns) < 1 {
 		t.Fatalf("want at least 1 turn, got %d", len(turns))
 	}
-	if turns[0].Prompt != "q1" || turns[0].Text != "a1" {
+	if turns[0].Prompt != "q1" || joinText(turns[0]) != "a1" {
 		t.Errorf("first turn lost: %+v", turns[0])
 	}
 }

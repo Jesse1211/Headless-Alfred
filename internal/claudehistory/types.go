@@ -9,12 +9,39 @@ package claudehistory
 // frontend's ClaudeTurn shape exactly so the handler can stream
 // straight to the reducer.
 type Turn struct {
-	ID        string     `json:"id"`
-	Prompt    string     `json:"prompt"`
-	StartedAt string     `json:"startedAt"`
-	Text      string     `json:"text"`
-	Tools     []ToolCall `json:"tools"`
-	Done      bool       `json:"done"`
+	ID string `json:"id"`
+	// Prompt is what the user typed (the visible bubble). When the
+	// server injected a template body before piping to claude -p,
+	// Prompt is the user's part only — the full text including the
+	// injection lives in ExpandedPrompt.
+	Prompt string `json:"prompt"`
+	// ExpandedPrompt is the FULL text the server piped to claude -p
+	// for this turn. Populated only when the jsonl-recorded prompt
+	// contains the "\n\n---\n" separator composePromptText writes
+	// between the user's message and the rendered template. When
+	// equal to Prompt (no template injection happened), the frontend
+	// hides the "Show full prompt" toggle.
+	ExpandedPrompt string `json:"expandedPrompt,omitempty"`
+	StartedAt      string `json:"startedAt"`
+	// Blocks is the assistant's reply as an ORDERED list of text and
+	// tool blocks in the exact order Claude streamed them. JSON tag
+	// "blocks" matches the frontend ClaudeTurn.blocks shape.
+	Blocks []Block `json:"blocks"`
+	// Thinking is the assistant's extended-thinking content blocks
+	// recovered from the assistant message snapshot. Each element is
+	// one complete thinking block (markdown text). Separate from
+	// Blocks because thinking is internal reasoning, not part of the
+	// user-facing reply timeline.
+	Thinking []string `json:"thinking,omitempty"`
+	Done     bool     `json:"done"`
+}
+
+// Block is one item in a turn's reply timeline. Discriminated by
+// Kind. Exactly one of Text or Tool is meaningful per Block.
+type Block struct {
+	Kind string    `json:"kind"` // "text" or "tool"
+	Text string    `json:"text,omitempty"`
+	Tool *ToolCall `json:"tool,omitempty"`
 }
 
 // ToolCall is one tool invocation inside a turn. `Decision` is

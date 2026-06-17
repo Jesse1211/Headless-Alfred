@@ -8,7 +8,27 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 )
+
+// promptInjectionSeparator is the literal string composePromptText
+// (in internal/api/claude_handlers.go) writes between the user's
+// message and the rendered template body. Splitting on this string
+// is how the history rebuild recovers the user-visible vs full
+// prompt distinction; if you change one, change both.
+const promptInjectionSeparator = "\n\n---\n"
+
+// splitInjectedPrompt returns (userText, expanded) for a prompt
+// string read out of jsonl. If the separator is present, userText is
+// the text before it and expanded is the full original string. If not,
+// userText is the full string and expanded is empty (no toggle to
+// show on the frontend).
+func splitInjectedPrompt(s string) (userText, expanded string) {
+	if i := strings.Index(s, promptInjectionSeparator); i >= 0 {
+		return s[:i], s
+	}
+	return s, ""
+}
 
 // Parse reads a Claude CLI jsonl transcript and reconstructs the
 // conversation as a slice of Turns (oldest → newest).
@@ -110,11 +130,20 @@ func handleUser(turns *[]Turn, line []byte) {
 		if id == "" {
 			id = stableID(line)
 		}
+		// Recover the user-visible prompt vs the server-injected
+		// expanded prompt by splitting on the "\n\n---\n" separator
+		// that composePromptText writes in internal/api/claude_handlers.go.
+		// Claude jsonl records only the post-injection text (that's
+		// what Claude actually saw), so without this split the
+		// rebuilt history shows the user a wall of injected template
+		// text under "You" instead of their original message.
+		userText, expanded := splitInjectedPrompt(s)
 		*turns = append(*turns, Turn{
-			ID:        id,
-			Prompt:    s,
-			StartedAt: full.TS,
-			Tools:     []ToolCall{},
+			ID:             id,
+			Prompt:         userText,
+			ExpandedPrompt: expanded,
+			StartedAt:      full.TS,
+			Blocks:         []Block{},
 		})
 		return
 	}
@@ -143,10 +172,13 @@ func handleUser(turns *[]Turn, line []byte) {
 		if item.Type != "tool_result" {
 			continue
 		}
-		for i := range cur.Tools {
-			if cur.Tools[i].ToolUseID == item.ToolUseID {
-				cur.Tools[i].Result = item.Content
-				cur.Tools[i].IsError = item.IsError
+		// Match the tool_result back to the matching tool block by
+		// toolUseId and patch in the result + error flag. Tool blocks
+		// live mixed in with text blocks; we have to walk the array.
+		for i := range cur.Blocks {
+			if cur.Blocks[i].Kind == "tool" && cur.Blocks[i].Tool != nil && cur.Blocks[i].Tool.ToolUseID == item.ToolUseID {
+				cur.Blocks[i].Tool.Result = item.Content
+				cur.Blocks[i].Tool.IsError = item.IsError
 				break
 			}
 		}
@@ -171,24 +203,44 @@ func handleAssistant(turns *[]Turn, line []byte) {
 	cur := &(*turns)[len(*turns)-1]
 	for _, raw := range full.Message.Content {
 		var item struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+			Type     string          `json:"type"`
+			Text     string          `json:"text"`
+			Thinking string          `json:"thinking"`
+			ID       string          `json:"id"`
+			Name     string          `json:"name"`
+			Input    json.RawMessage `json:"input"`
 		}
 		if err := json.Unmarshal(raw, &item); err != nil {
 			continue
 		}
 		switch item.Type {
 		case "text":
-			cur.Text += item.Text
+			// Append a text block. Don't concat into a previous text
+			// block — assistant messages CAN have multiple text
+			// content items at top level (rare, but legal), and even
+			// if Claude only emits one per message, multiple
+			// assistant messages within the same Alfred turn (e.g.
+			// the model thinks, calls a tool, replies again) each
+			// land as a separate text block.
+			if item.Text != "" {
+				cur.Blocks = append(cur.Blocks, Block{Kind: "text", Text: item.Text})
+			}
+		case "thinking":
+			// One whole thinking block per content item — append
+			// rather than concat so the UI can render each as its
+			// own collapsible card.
+			if item.Thinking != "" {
+				cur.Thinking = append(cur.Thinking, item.Thinking)
+			}
 		case "tool_use":
-			cur.Tools = append(cur.Tools, ToolCall{
-				ToolUseID: item.ID,
-				Name:      item.Name,
-				Input:     []byte(item.Input),
-				Decision:  "allow",
+			cur.Blocks = append(cur.Blocks, Block{
+				Kind: "tool",
+				Tool: &ToolCall{
+					ToolUseID: item.ID,
+					Name:      item.Name,
+					Input:     []byte(item.Input),
+					Decision:  "allow",
+				},
 			})
 		}
 	}

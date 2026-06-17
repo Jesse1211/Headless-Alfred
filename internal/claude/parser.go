@@ -160,6 +160,15 @@ func parseStreamEvent(line []byte) []Event {
 				Index: wrap.Event.Index,
 				Text:  wrap.Event.Delta.Text,
 			}}}
+		case "thinking_delta":
+			// Extended-thinking content chunk. The "thinking" field
+			// (not "text") carries the actual prose — Anthropic
+			// stream-json uses a separate field name to signal "this
+			// is the model's reasoning, not its final reply".
+			return []Event{{Kind: KindThinkingDelta, ThinkingDelta: &ThinkingDeltaEvent{
+				Index: wrap.Event.Index,
+				Text:  wrap.Event.Delta.Thinking,
+			}}}
 		case "input_json_delta":
 			// Tool call input arriving as JSON fragments; we don't
 			// emit individual deltas to the UI because the user only
@@ -313,6 +322,7 @@ type contentBlock struct {
 type streamEventDelta struct {
 	Type        string `json:"type"`
 	Text        string `json:"text"`
+	Thinking    string `json:"thinking"` // present only when Type == "thinking_delta"
 	StopReason  string `json:"stop_reason"`
 	PartialJSON string `json:"partial_json"`
 }

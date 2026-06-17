@@ -18,6 +18,7 @@ import {
   ClaudeTurn,
   ClaudeToolCall,
   ClaudeQuestion,
+  AssistantBlock,
   emptyClaudeState,
 } from './types'
 
@@ -179,38 +180,83 @@ export function applyClaudeEvent(
       // so we wait for `result` to mark the turn done.
       return prev
     case 'text_delta': {
-      const text = asTextDelta(payload)
+      const p = asTextDelta(payload)
       if (!last || last.done) return prev
-      last.text = last.text + text
+      // Stream deltas land in the block at content-block index p.index.
+      // We track index → array position on the turn; if that index has
+      // no block yet, push a fresh text block. text_delta arriving at
+      // an index that's currently holding a tool block (shouldn't
+      // happen in well-formed streams, but defensive) opens a new text
+      // block at that index — last write wins.
+      const blocks = last.blocks ? last.blocks.slice() : []
+      const positions = last._blockIndexMap ? { ...last._blockIndexMap } : {}
+      let pos = positions[p.index]
+      if (pos === undefined || blocks[pos]?.kind !== 'text') {
+        pos = blocks.length
+        positions[p.index] = pos
+        blocks.push({ kind: 'text', text: '' })
+      }
+      const existing = blocks[pos] as { kind: 'text'; text: string }
+      blocks[pos] = { kind: 'text', text: existing.text + p.text }
+      last.blocks = blocks
+      last._blockIndexMap = positions
+      turns[lastIdx] = last
+      return { ...prev, turns }
+    }
+    case 'thinking_delta': {
+      const p = asThinkingDelta(payload)
+      if (!last || last.done) return prev
+      // Same per-index accumulation, but into a SEPARATE thinking[]
+      // array (rendered above the visible blocks timeline) since
+      // thinking isn't part of the user-facing reply.
+      const tblocks = last.thinking ? last.thinking.slice() : []
+      const positions = last._thinkingIndexMap ? { ...last._thinkingIndexMap } : {}
+      let pos = positions[p.index]
+      if (pos === undefined) {
+        pos = tblocks.length
+        positions[p.index] = pos
+        tblocks.push('')
+      }
+      tblocks[pos] = tblocks[pos] + p.text
+      last.thinking = tblocks
+      last._thinkingIndexMap = positions
       turns[lastIdx] = last
       return { ...prev, turns }
     }
     case 'tool_use_start': {
       const p = asToolUseStart(payload)
       if (!p.toolUseId || !last || last.done) return prev
-      const tools: ClaudeToolCall[] = [
-        ...last.tools,
-        { toolUseId: p.toolUseId, name: p.name, decision: 'pending' },
-      ]
-      last.tools = tools
+      // Push a new tool block at the next slot and remember its index
+      // so subsequent tool_use_end / tool_result events can patch the
+      // right block via the toolUseId match.
+      const blocks = last.blocks ? last.blocks.slice() : []
+      const positions = last._blockIndexMap ? { ...last._blockIndexMap } : {}
+      const pos = blocks.length
+      positions[p.index] = pos
+      blocks.push({
+        kind: 'tool',
+        tool: { toolUseId: p.toolUseId, name: p.name, decision: 'pending' },
+      })
+      last.blocks = blocks
+      last._blockIndexMap = positions
       turns[lastIdx] = last
       return { ...prev, turns }
     }
     case 'tool_use_end': {
       const p = asToolUseEnd(payload)
       if (!p.toolUseId || !last) return prev
-      last.tools = last.tools.map((t) =>
-        t.toolUseId === p.toolUseId ? { ...t, input: p.input } : t,
-      )
+      last.blocks = patchToolBlock(last.blocks, p.toolUseId, (t) => ({ ...t, input: p.input }))
       turns[lastIdx] = last
       return { ...prev, turns }
     }
     case 'tool_result': {
       const p = asToolResult(payload)
       if (!p.toolUseId || !last) return prev
-      last.tools = last.tools.map((t) =>
-        t.toolUseId === p.toolUseId ? { ...t, result: p.content, isError: p.isError } : t,
-      )
+      last.blocks = patchToolBlock(last.blocks, p.toolUseId, (t) => ({
+        ...t,
+        result: p.content,
+        isError: p.isError,
+      }))
       turns[lastIdx] = last
       return { ...prev, turns }
     }
@@ -228,10 +274,10 @@ export function applyClaudeEvent(
       last.isError = p.isError
       last.totalCostUsd = p.totalCostUsd
       // If the turn has no assistant text yet (auth failure, etc.),
-      // surface the result string as the text so the user sees
-      // something.
-      if (!last.text && p.result) {
-        last.text = p.result
+      // surface the result string as a synthetic final text block so
+      // the user sees something.
+      if (last.blocks.length === 0 && p.result) {
+        last.blocks = [{ kind: 'text', text: p.result }]
       }
       turns[lastIdx] = last
       return { ...prev, turns, inFlight: false }
@@ -241,6 +287,26 @@ export function applyClaudeEvent(
   }
 }
 
+// patchToolBlock returns a new blocks array with the tool block
+// whose toolUseId matches `id` replaced by patch(prev). Non-matching
+// blocks and text blocks are untouched. Returns the input array
+// unchanged if no match (no allocation).
+function patchToolBlock(
+  blocks: AssistantBlock[],
+  id: string,
+  patch: (t: ClaudeToolCall) => ClaudeToolCall,
+): AssistantBlock[] {
+  let changed = false
+  const next = blocks.map((b) => {
+    if (b.kind === 'tool' && b.tool.toolUseId === id) {
+      changed = true
+      return { kind: 'tool' as const, tool: patch(b.tool) }
+    }
+    return b
+  })
+  return changed ? next : blocks
+}
+
 // beginClaudeTurn registers a fresh turn for the user's outgoing
 // prompt. Called from useSessions when claude_prompt is sent.
 export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState {
@@ -248,8 +314,7 @@ export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState 
     id: randomId(),
     prompt,
     startedAt: new Date().toISOString(),
-    text: '',
-    tools: [],
+    blocks: [],
     done: false,
   }
   return { ...prev, turns: [...prev.turns, turn], inFlight: true, lastError: undefined }
@@ -267,8 +332,12 @@ export function finalizeInFlightTurn(prev: ClaudeState, reason?: string): Claude
   const lastIdx = turns.length - 1
   if (lastIdx >= 0 && !turns[lastIdx].done) {
     const last = { ...turns[lastIdx], done: true, isError: true }
-    if (!last.text && reason) {
-      last.text = reason
+    // If the turn produced nothing visible yet (auth failure / runner
+    // died / 5xx before any block streamed), surface `reason` as a
+    // synthetic text block so the user sees something other than a
+    // silent empty bubble.
+    if (last.blocks.length === 0 && reason) {
+      last.blocks = [{ kind: 'text', text: reason }]
     }
     turns[lastIdx] = last
   }
@@ -285,9 +354,7 @@ export function resolveClaudeTool(
   const pending = prev.pending.filter((p) => p.toolUseId !== toolUseId)
   const turns = prev.turns.map((t) => ({
     ...t,
-    tools: t.tools.map((tool) =>
-      tool.toolUseId === toolUseId ? { ...tool, decision } : tool,
-    ),
+    blocks: patchToolBlock(t.blocks, toolUseId, (tool) => ({ ...tool, decision })),
   }))
   return { ...prev, pending, turns }
 }
@@ -336,14 +403,19 @@ export function parseAskUserQuestionInput(input: unknown): ClaudeQuestion[] {
 
 // ---- payload narrowing ---------------------------------------------------
 
-function asTextDelta(payload: unknown): string {
-  const p = payload as { text?: string } | null
-  return p?.text ?? ''
+function asTextDelta(payload: unknown): { index: number; text: string } {
+  const p = payload as { index?: number; text?: string } | null
+  return { index: p?.index ?? 0, text: p?.text ?? '' }
 }
 
-function asToolUseStart(payload: unknown): { toolUseId: string; name: string } {
-  const p = payload as { tool_use_id?: string; name?: string } | null
-  return { toolUseId: p?.tool_use_id ?? '', name: p?.name ?? 'tool' }
+function asThinkingDelta(payload: unknown): { index: number; text: string } {
+  const p = payload as { index?: number; text?: string } | null
+  return { index: p?.index ?? 0, text: p?.text ?? '' }
+}
+
+function asToolUseStart(payload: unknown): { index: number; toolUseId: string; name: string } {
+  const p = payload as { index?: number; tool_use_id?: string; name?: string } | null
+  return { index: p?.index ?? 0, toolUseId: p?.tool_use_id ?? '', name: p?.name ?? 'tool' }
 }
 
 function asToolUseEnd(payload: unknown): { toolUseId: string; input: unknown } {

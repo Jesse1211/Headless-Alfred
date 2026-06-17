@@ -13,6 +13,7 @@ export type ClaudeEventKind =
   | 'rate_limit'
   | 'text_delta'
   | 'text_block_end'
+  | 'thinking_delta'
   | 'tool_use_start'
   | 'tool_use_end'
   | 'tool_result'

@@ -3,10 +3,15 @@ import {
   reducePerSession, applyAuthoritativeRecord,
   applyClaudeEvent, beginClaudeTurn, resolveClaudeTool, finalizeInFlightTurn,
 } from './sessionsReducer'
-import { PerSessionState, emptyPerSessionState, emptyClaudeState } from './types'
+import { PerSessionState, ClaudeTurn, emptyPerSessionState, emptyClaudeState, joinAssistantText } from './types'
 
 const id = (s: string) => Buffer.from(s, 'utf8').toString('base64')
 const b64decode = (s: string) => Buffer.from(s, 'base64').toString('utf8')
+
+// Tests previously asserted turn.text (a single concatenated string).
+// The new turn shape stores text + tools interleaved in turn.blocks,
+// so tests use joinAssistantText() to recover the equivalent.
+const turnText = (t: ClaudeTurn) => joinAssistantText(t.blocks)
 
 describe('reducePerSession', () => {
   it('idle initializes per-session state', () => {
@@ -200,7 +205,7 @@ describe('claude UI reducer', () => {
       b64decode,
     )
     const turns = perSession.get('A')!.claude!.turns
-    expect(turns[0].text).toBe('Hello')
+    expect(turnText(turns[0])).toBe('Hello')
   })
 
   it('claude_event result marks the turn done and clears inFlight', () => {
@@ -273,25 +278,38 @@ describe('claude UI reducer', () => {
       ...emptyClaudeState(),
       pending: [{ toolUseId: 't1', tool: 'Bash', input: {} }],
       turns: [{
-        id: 'turn-1', prompt: 'p', startedAt: 't', text: '', tools: [
-          { toolUseId: 't1', name: 'Bash', decision: 'pending' as const },
-        ], done: false,
+        id: 'turn-1', prompt: 'p', startedAt: 't',
+        blocks: [{
+          kind: 'tool' as const,
+          tool: { toolUseId: 't1', name: 'Bash', decision: 'pending' as const },
+        }],
+        done: false,
       }],
     }
     const next = resolveClaudeTool(c, 't1', 'allow')
     expect(next.pending).toEqual([])
-    expect(next.turns[0].tools[0].decision).toBe('allow')
+    const block0 = next.turns[0].blocks[0]
+    expect(block0.kind).toBe('tool')
+    if (block0.kind === 'tool') expect(block0.tool.decision).toBe('allow')
   })
 
   it('applyClaudeEvent handles tool_use_start, tool_use_end, tool_result in order', () => {
     let c = beginClaudeTurn(emptyClaudeState(), 'do x')
-    c = applyClaudeEvent(c, 'tool_use_start', { tool_use_id: 't1', name: 'Bash' })
-    expect(c.turns[0].tools[0]).toMatchObject({ toolUseId: 't1', name: 'Bash', decision: 'pending' })
+    c = applyClaudeEvent(c, 'tool_use_start', { index: 0, tool_use_id: 't1', name: 'Bash' })
+    const firstBlock = c.turns[0].blocks[0]
+    expect(firstBlock.kind).toBe('tool')
+    if (firstBlock.kind === 'tool') {
+      expect(firstBlock.tool).toMatchObject({ toolUseId: 't1', name: 'Bash', decision: 'pending' })
+    }
     c = applyClaudeEvent(c, 'tool_use_end', { tool_use_id: 't1', input: { cmd: 'ls' } })
-    expect(c.turns[0].tools[0].input).toEqual({ cmd: 'ls' })
+    const afterEnd = c.turns[0].blocks[0]
+    if (afterEnd.kind === 'tool') expect(afterEnd.tool.input).toEqual({ cmd: 'ls' })
     c = applyClaudeEvent(c, 'tool_result', { tool_use_id: 't1', content: 'a\nb', is_error: false })
-    expect(c.turns[0].tools[0].result).toBe('a\nb')
-    expect(c.turns[0].tools[0].isError).toBe(false)
+    const afterResult = c.turns[0].blocks[0]
+    if (afterResult.kind === 'tool') {
+      expect(afterResult.tool.result).toBe('a\nb')
+      expect(afterResult.tool.isError).toBe(false)
+    }
   })
 
   it('claude_exited preserves turn history but clears in-flight + pending', () => {
@@ -304,7 +322,11 @@ describe('claude UI reducer', () => {
           ...emptyClaudeState(),
           inFlight: true,
           pending: [{ toolUseId: 't1', tool: 'Bash', input: {} }],
-          turns: [{ id: 'turn-1', prompt: 'p', startedAt: 't', text: 'reply', tools: [], done: true }],
+          turns: [{
+            id: 'turn-1', prompt: 'p', startedAt: 't',
+            blocks: [{ kind: 'text' as const, text: 'reply' }],
+            done: true,
+          }],
         },
       }],
     ])
@@ -351,7 +373,7 @@ describe('claude UI reducer', () => {
     expect(c.inFlight).toBe(false)
     expect(c.turns[0].done).toBe(true)
     expect(c.turns[0].isError).toBe(true)
-    expect(c.turns[0].text).toBe('signal: interrupt')
+    expect(turnText(c.turns[0])).toBe('signal: interrupt')
   })
 
   it('claude_run_ended after a normal result is a no-op on turn state', () => {
@@ -371,7 +393,7 @@ describe('claude UI reducer', () => {
     expect(out.inFlight).toBe(false)
     expect(out.turns[0].done).toBe(true)
     expect(out.turns[0].isError).toBe(false) // unchanged
-    expect(out.turns[0].text).toBe('hello')  // unchanged
+    expect(turnText(out.turns[0])).toBe('hello')  // unchanged
   })
 
   it('claude_run_ended with no claude state is a no-op', () => {
@@ -390,7 +412,7 @@ describe('claude UI reducer', () => {
     const c = beginClaudeTurn(emptyClaudeState(), 'hi')
     const out = finalizeInFlightTurn(c, 'boom')
     expect(out.inFlight).toBe(false)
-    expect(out.turns[0].text).toBe('boom')
+    expect(turnText(out.turns[0])).toBe('boom')
     expect(out.turns[0].isError).toBe(true)
   })
 
@@ -398,7 +420,7 @@ describe('claude UI reducer', () => {
     let c = beginClaudeTurn(emptyClaudeState(), 'hi')
     c = applyClaudeEvent(c, 'text_delta', { text: 'partial answer' })
     const out = finalizeInFlightTurn(c, 'crash')
-    expect(out.turns[0].text).toBe('partial answer')
+    expect(turnText(out.turns[0])).toBe('partial answer')
     expect(out.turns[0].isError).toBe(true)
   })
 

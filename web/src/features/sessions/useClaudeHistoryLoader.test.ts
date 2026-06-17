@@ -5,7 +5,11 @@ import { PerSessionState, emptyPerSessionState, emptyClaudeState, ClaudeTurn } f
 import * as api from '../../lib/api'
 
 function makeTurn(id: string, prompt: string): ClaudeTurn {
-  return { id, prompt, startedAt: '2026-06-15T00:00:00Z', text: 'r', tools: [], done: true }
+  return {
+    id, prompt, startedAt: '2026-06-15T00:00:00Z',
+    blocks: [{ kind: 'text', text: 'r' }],
+    done: true,
+  }
 }
 
 describe('useClaudeHistoryLoader', () => {

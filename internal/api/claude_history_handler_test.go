@@ -91,8 +91,12 @@ func TestClaudeHistory_ReturnsParsedTurns(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v body=%s", err, w.Body.String())
 	}
-	if len(got) != 1 || got[0].Prompt != "hi" || got[0].Text != "hello" {
+	if len(got) != 1 || got[0].Prompt != "hi" {
 		t.Errorf("got %+v", got)
+	}
+	// Reply text is now an array of blocks; pluck the first text block.
+	if len(got[0].Blocks) == 0 || got[0].Blocks[0].Kind != "text" || got[0].Blocks[0].Text != "hello" {
+		t.Errorf("blocks = %+v, want one text block 'hello'", got[0].Blocks)
 	}
 }
 

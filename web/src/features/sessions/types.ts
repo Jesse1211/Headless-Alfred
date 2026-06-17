@@ -38,10 +38,24 @@ export interface ClaudeTurn {
   // what they paid tokens for.
   expandedPrompt?: string
   startedAt: string
-  // Accumulated assistant text deltas in order.
-  text: string
-  // Tool calls Claude requested during this turn, in order.
-  tools: ClaudeToolCall[]
+  // The assistant's reply as an ORDERED list of text + tool blocks
+  // in the exact order Claude streamed them. Render each one in
+  // sequence to faithfully reproduce the "Claude says something, then
+  // calls a tool, then says something else, then calls another tool"
+  // flow you see in the terminal. Earlier versions of this type had
+  // separate `text: string` + `tools: ClaudeToolCall[]` fields, but
+  // those collapsed all text into one paragraph and stacked all tools
+  // at the bottom, losing the interleave.
+  blocks: AssistantBlock[]
+  // Extended-thinking content blocks. Independent of `blocks` (rendered
+  // separately above them) because thinking is the model's internal
+  // reasoning, not part of the visible reply timeline.
+  thinking?: string[]
+  // Private bookkeeping for live-streaming reducers: maps stream
+  // content-block index → position in the corresponding array.
+  // Underscore prefix flags 'transient, do not serialize'.
+  _thinkingIndexMap?: Record<number, number>
+  _blockIndexMap?: Record<number, number>
   // Once the result event arrives the turn is "done".
   done: boolean
   // Set by the result event.
@@ -68,6 +82,23 @@ export interface ClaudeToolCall {
   // Output from the tool, once it ran. May still be empty if denied.
   result?: string
   isError?: boolean
+}
+
+// AssistantBlock is one item in a turn's reply timeline. The two
+// kinds tag-discriminate so the renderer can dispatch on `kind`.
+// Order matters — the array's order IS the rendering order.
+export type AssistantBlock =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; tool: ClaudeToolCall }
+
+// Helper for legacy code paths that want the full assistant text as
+// one string (e.g. for measuring token usage, copy-to-clipboard).
+// New code should iterate blocks directly.
+export function joinAssistantText(blocks: AssistantBlock[]): string {
+  return blocks
+    .filter((b): b is { kind: 'text'; text: string } => b.kind === 'text')
+    .map((b) => b.text)
+    .join('')
 }
 
 export interface ClaudeState {

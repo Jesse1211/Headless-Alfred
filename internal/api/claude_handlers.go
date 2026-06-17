@@ -161,6 +161,8 @@ func claudeEventPayload(ev claude.Event) any {
 		return ev.TextDelta
 	case claude.KindTextBlockEnd:
 		return ev.TextBlockEnd
+	case claude.KindThinkingDelta:
+		return ev.ThinkingDelta
 	case claude.KindToolUseStart:
 		return ev.ToolUseStart
 	case claude.KindToolUseEnd:
@@ -412,6 +414,13 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	// `pwd`-readable access to past recaps as context, and its
 	// claude-mem / file-history scopes by this dir alone instead of
 	// the user's $HOME.
+	//
+	// For chat sessions, ask tmux for the pane's current working dir
+	// (`pane_current_path`). This makes "I cd'd to /foo then opened
+	// Claude" actually start Claude in /foo, so `ls`, `Read`, `Write`,
+	// `Glob` all behave like the shell session the user just left.
+	// Falls back to claudeInvocationCWD() if tmux returns empty (e.g.,
+	// pane just died and a respawn hasn't settled).
 	cwd := claudeInvocationCWD()
 	if isRecapKind(m, msg.SessionID) {
 		recapDir := recap.Dir(m.DataDir())
@@ -429,6 +438,18 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 			cwd = resolved
 		} else {
 			cwd = recapDir
+		}
+	} else if sh, err := m.Get(msg.SessionID); err == nil {
+		if paneCwd := sh.CurrentCWD(); paneCwd != "" {
+			// Same symlink-resolution as the recap branch: claude CLI
+			// computes the transcript dir hash from the realpath of cwd,
+			// so passing /tmp/X when /tmp -> /private/tmp resolves to
+			// /private/tmp/X would break transcript lookups on macOS.
+			if resolved, err := filepath.EvalSymlinks(paneCwd); err == nil {
+				cwd = resolved
+			} else {
+				cwd = paneCwd
+			}
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())

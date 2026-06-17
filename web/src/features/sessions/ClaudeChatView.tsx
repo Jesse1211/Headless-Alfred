@@ -183,45 +183,23 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
       <UserPromptBubble turn={turn} />
       <div className={`claude-turn__assistant ${turn.isError ? 'is-error' : ''}`}>
         <div className="claude-turn__label">Claude</div>
-        {turn.text && (
-          <div className="claude-turn__text">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                // Custom code renderer: fenced blocks get Prism syntax
-                // highlighting (oneDark theme matches our background);
-                // inline code keeps the simple span styling from CSS.
-                code(props) {
-                  const { className, children, ...rest } = props as any
-                  const match = /language-(\w+)/.exec(className || '')
-                  const isFenced = !!match
-                  if (!isFenced) {
-                    return <code className={className} {...rest}>{children}</code>
-                  }
-                  return (
-                    <SyntaxHighlighter
-                      language={match![1]}
-                      style={oneDark}
-                      PreTag="div"
-                      customStyle={{
-                        margin: 0,
-                        borderRadius: 6,
-                        background: 'rgba(0, 0, 0, 0.35)',
-                      }}
-                      codeTagProps={{ style: { fontSize: 12.5, fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace' } }}
-                    >
-                      {String(children).replace(/\n$/, '')}
-                    </SyntaxHighlighter>
-                  )
-                },
-              }}
-            >{turn.text}</ReactMarkdown>
-          </div>
-        )}
-        {turn.tools.map((tool) => (
-          <ToolCallView key={tool.toolUseId} tool={tool} />
+        {turn.thinking && turn.thinking.map((body, i) => (
+          <ThinkingBlockView key={`think-${i}`} body={body} />
         ))}
-        {!turn.done && !turn.text && turn.tools.length === 0 && (
+        {turn.blocks.map((block, i) => {
+          if (block.kind === 'text') {
+            // Skip empty text blocks (can happen mid-stream when a
+            // delta hasn't landed yet for an opened block index).
+            if (!block.text) return null
+            return (
+              <div key={`block-${i}`} className="claude-turn__text">
+                <AssistantMarkdown text={block.text} />
+              </div>
+            )
+          }
+          return <ToolCallView key={block.tool.toolUseId} tool={block.tool} />
+        })}
+        {!turn.done && turn.blocks.length === 0 && (
           <div className="claude-turn__thinking">…</div>
         )}
         {turn.done && turn.usage && (
@@ -235,6 +213,71 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// AssistantMarkdown is the markdown renderer shared by the
+// assistant's regular text reply and its extended-thinking blocks.
+// Same Prism + remark-gfm config in both places so tables / fenced
+// code / GFM features look identical wherever they appear.
+function AssistantMarkdown({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        code(props) {
+          const { className, children, ...rest } = props as any
+          const match = /language-(\w+)/.exec(className || '')
+          const isFenced = !!match
+          if (!isFenced) {
+            return <code className={className} {...rest}>{children}</code>
+          }
+          return (
+            <SyntaxHighlighter
+              language={match![1]}
+              style={oneDark}
+              PreTag="div"
+              customStyle={{
+                margin: 0,
+                borderRadius: 6,
+                background: 'rgba(0, 0, 0, 0.35)',
+              }}
+              codeTagProps={{ style: { fontSize: 12.5, fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace' } }}
+            >
+              {String(children).replace(/\n$/, '')}
+            </SyntaxHighlighter>
+          )
+        },
+      }}
+    >{text}</ReactMarkdown>
+  )
+}
+
+// ThinkingBlockView renders one extended-thinking block as a
+// collapsible card. Default collapsed so the user's focus stays on
+// the actual reply; expand to read Claude's reasoning, which renders
+// as full markdown (tables, code blocks, lists — same renderer as
+// the main assistant reply).
+function ThinkingBlockView({ body }: { body: string }) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <div className={`claude-thinking ${expanded ? 'is-expanded' : ''}`}>
+      <button
+        type="button"
+        className="claude-thinking__row"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <span className="claude-thinking__chev">{expanded ? '▾' : '▸'}</span>
+        <span className="claude-thinking__label">Thinking</span>
+        <span className="claude-thinking__meta">({body.length.toLocaleString()} chars)</span>
+      </button>
+      {expanded && (
+        <div className="claude-thinking__body">
+          <AssistantMarkdown text={body} />
+        </div>
+      )}
     </div>
   )
 }

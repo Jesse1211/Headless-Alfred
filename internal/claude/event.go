@@ -26,18 +26,19 @@ type Event struct {
 	Kind EventKind
 
 	// Variant payloads. Exactly one is non-nil per Event.
-	System       *SystemEvent
-	RateLimit    *RateLimitEvent
-	TextDelta    *TextDeltaEvent
-	TextBlockEnd *TextBlockEndEvent
-	ToolUseStart *ToolUseStartEvent
-	ToolUseEnd   *ToolUseEndEvent
-	ToolResult   *ToolResultEvent
-	MessageStart *MessageStartEvent
-	MessageDelta *MessageDeltaEvent
-	MessageStop  *MessageStopEvent
-	Result       *ResultEvent
-	Unknown      *UnknownEvent
+	System        *SystemEvent
+	RateLimit     *RateLimitEvent
+	TextDelta     *TextDeltaEvent
+	TextBlockEnd  *TextBlockEndEvent
+	ThinkingDelta *ThinkingDeltaEvent
+	ToolUseStart  *ToolUseStartEvent
+	ToolUseEnd    *ToolUseEndEvent
+	ToolResult    *ToolResultEvent
+	MessageStart  *MessageStartEvent
+	MessageDelta  *MessageDeltaEvent
+	MessageStop   *MessageStopEvent
+	Result        *ResultEvent
+	Unknown       *UnknownEvent
 }
 
 // EventKind tags the Event union. Stable enough to use in WS frames.
@@ -46,8 +47,9 @@ type EventKind string
 const (
 	KindSystem       EventKind = "system"
 	KindRateLimit    EventKind = "rate_limit"
-	KindTextDelta    EventKind = "text_delta"
-	KindTextBlockEnd EventKind = "text_block_end"
+	KindTextDelta     EventKind = "text_delta"
+	KindTextBlockEnd  EventKind = "text_block_end"
+	KindThinkingDelta EventKind = "thinking_delta"
 	KindToolUseStart EventKind = "tool_use_start"
 	KindToolUseEnd   EventKind = "tool_use_end"
 	KindToolResult   EventKind = "tool_result"
@@ -90,6 +92,15 @@ type TextDeltaEvent struct {
 // can finalize Markdown rendering of the accumulated deltas.
 type TextBlockEndEvent struct {
 	Index int `json:"index"`
+}
+
+// ThinkingDeltaEvent — one chunk of the assistant's extended-thinking
+// content (only emitted when the model has thinking enabled). Index
+// identifies which content block this delta belongs to so the UI can
+// accumulate parallel thinking + text blocks correctly.
+type ThinkingDeltaEvent struct {
+	Index int    `json:"index"`
+	Text  string `json:"text"`
 }
 
 // ToolUseStartEvent — Claude wants to call a tool. UI shows an
