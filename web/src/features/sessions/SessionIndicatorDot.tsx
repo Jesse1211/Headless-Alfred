@@ -3,6 +3,7 @@ import type { SessionIndicator } from './sessionStatus'
 const LABEL: Record<SessionIndicator, string> = {
   idle: 'Connected · your turn',
   busy: 'Connected · waiting for reply',
+  needsAction: 'Needs your decision (allow / deny / answer)',
   disconnected: 'Disconnected',
 }
 

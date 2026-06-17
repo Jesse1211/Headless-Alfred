@@ -29,10 +29,12 @@
   align-items: center;
 }
 
-/* Single combined connection + turn indicator. Idle and busy render
-   as colored dots; disconnected renders as a warning triangle (the
-   <span> wraps an inline SVG, so it's slightly larger to host the
-   glyph). */
+/* Single combined connection + turn indicator. idle / busy /
+   needsAction render as colored dots; disconnected renders as a
+   warning triangle (the <span> wraps an inline SVG, so it's
+   slightly larger to host the glyph).
+   needsAction and disconnected both use --warn for color; the
+   triangle vs dot shape is the disambiguator. */
 .session-indicator {
   display: inline-flex;
   align-items: center;
@@ -43,7 +45,8 @@
 }
 
 .session-indicator--idle,
-.session-indicator--busy {
+.session-indicator--busy,
+.session-indicator--needsAction {
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -51,7 +54,20 @@
 
 .session-indicator--idle { background: var(--ok); }
 .session-indicator--busy { background: var(--error); }
+.session-indicator--needsAction {
+  background: var(--warn);
+  /* Subtle pulse so it draws the eye — pending tool approval is
+     blocking Claude until the user clicks. The animation is
+     short and low-contrast on purpose; full strobing would be
+     annoying when a session sits in needsAction for a while. */
+  animation: session-indicator-pulse 1.5s ease-in-out infinite;
+}
 .session-indicator--disconnected { color: var(--warn); }
+
+@keyframes session-indicator-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
 
 .terminal-page__logout {
   background: transparent;

@@ -6,19 +6,22 @@ import type { ConnState } from '../../lib/ws'
 //
 //   - 'disconnected' (⚠️ icon): WebSocket isn't open. Overrides
 //     everything else — without a connection neither idle nor busy
-//     is meaningful (we don't actually know what Claude is doing).
+//     nor needsAction is meaningful (we don't actually know what
+//     Claude is doing).
+//
+//   - 'needsAction' (yellow dot): connected AND Claude has a pending
+//     tool approval (PreToolUse Allow/Deny) or a pending
+//     AskUserQuestion card. Higher priority than 'busy' because
+//     inFlight is usually still true while these sit there — but
+//     the user's decision is what unblocks Claude, so surface the
+//     actionable state rather than the merely-in-flight one.
 //
 //   - 'busy' (red dot): connected AND Claude in-flight / shell
-//     command running. User waits.
+//     command running, with no pending user action. User waits.
 //
-//   - 'idle' (green dot): connected AND nothing in flight. Your
-//     turn to type.
-//
-// Pending tool approvals / AskUserQuestion cards aren't surfaced
-// here — they ride along with inFlight=true so the dot stays red
-// until the user resolves them, and the approval card itself in
-// the chat stream is the actionable UI.
-export type SessionIndicator = 'idle' | 'busy' | 'disconnected'
+//   - 'idle' (green dot): connected AND nothing in flight, no
+//     pending user action. Your turn to type.
+export type SessionIndicator = 'idle' | 'busy' | 'needsAction' | 'disconnected'
 
 export function sessionIndicator(
   connState: ConnState,
@@ -27,7 +30,11 @@ export function sessionIndicator(
   if (connState !== 'open') return 'disconnected'
   if (!ps) return 'idle'
   if (ps.mode === 'claude') {
-    return ps.claude?.inFlight ? 'busy' : 'idle'
+    const c = ps.claude
+    if (c && (c.pending.length > 0 || c.pendingQuestions.length > 0)) {
+      return 'needsAction'
+    }
+    return c?.inFlight ? 'busy' : 'idle'
   }
   return ps.running != null ? 'busy' : 'idle'
 }
