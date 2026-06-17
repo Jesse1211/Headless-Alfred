@@ -76,11 +76,31 @@ export type ClientMsg =
 
 export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed'
 
+// ConnInfo carries diagnostic detail about the WebSocket's recent
+// history. Useful for the disconnected-state tooltip so the user
+// can see WHY they got dropped (server kicked them / network blip /
+// auth expired) rather than just a generic ⚠ icon. All fields are
+// optional — emitted alongside state changes when they're known.
+export interface ConnInfo {
+  // WebSocket close code from the last close event. 1000 = clean,
+  // 1006 = abnormal (most common: network or server gone), 4xxx =
+  // application-defined.
+  lastCloseCode?: number
+  // Human-readable reason the server sent (often empty for 1006).
+  lastCloseReason?: string
+  // ISO timestamp of the last successful open. Lets the tooltip
+  // say "last seen 12s ago".
+  lastOpenAt?: string
+  // Reconnect attempts since the last successful open. 0 while
+  // connected; 1+ during reconnecting.
+  retries?: number
+}
+
 export interface ShellSocketOptions {
   url: string
   getToken: () => string
   onMessage: (m: ServerMsg) => void
-  onState: (s: ConnState) => void
+  onState: (s: ConnState, info?: ConnInfo) => void
 }
 
 const DELAYS = [1000, 2000, 4000, 8000, 16000, 30000]
@@ -91,6 +111,10 @@ export class ShellSocket {
   private retry = 0
   private stopped = false
   private pingTimer: number | null = null
+  // Carried in onState calls so the consumer (useSessions) can
+  // surface it in the disconnected-dot tooltip. Updated on
+  // open / close events.
+  private info: ConnInfo = {}
 
   constructor(opts: ShellSocketOptions) {
     this.opts = opts
@@ -114,7 +138,7 @@ export class ShellSocket {
   stop(): void {
     this.stopped = true
     this.abandonCurrent()
-    this.opts.onState('closed')
+    this.opts.onState('closed', this.info)
   }
 
   // abandonCurrent detaches all listeners from this.ws so any
@@ -145,7 +169,8 @@ export class ShellSocket {
 
   private connect(): void {
     if (this.stopped) return
-    this.opts.onState(this.retry === 0 ? 'connecting' : 'reconnecting')
+    this.info = { ...this.info, retries: this.retry }
+    this.opts.onState(this.retry === 0 ? 'connecting' : 'reconnecting', this.info)
     const token = this.opts.getToken()
     const sep = this.opts.url.includes('?') ? '&' : '?'
     const url = `${this.opts.url}${sep}token=${encodeURIComponent(token)}`
@@ -160,7 +185,8 @@ export class ShellSocket {
       // honour an early close() in some implementations.)
       if (this.ws !== ws) return
       this.retry = 0
-      this.opts.onState('open')
+      this.info = { ...this.info, lastOpenAt: new Date().toISOString(), retries: 0 }
+      this.opts.onState('open', this.info)
       this.pingTimer = window.setInterval(() => {
         this.send({ type: 'ping' })
       }, 25_000) as unknown as number
@@ -176,17 +202,25 @@ export class ShellSocket {
       }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.ws !== ws) return // abandoned
       if (this.pingTimer != null) {
         window.clearInterval(this.pingTimer)
         this.pingTimer = null
       }
       this.ws = null
+      // Capture WHY the socket closed so the disconnected-state
+      // tooltip can show something useful.
+      this.info = {
+        ...this.info,
+        lastCloseCode: ev.code,
+        lastCloseReason: ev.reason || undefined,
+      }
       if (this.stopped) return
       const delay = DELAYS[Math.min(this.retry, DELAYS.length - 1)]
       this.retry += 1
-      this.opts.onState('reconnecting')
+      this.info = { ...this.info, retries: this.retry }
+      this.opts.onState('reconnecting', this.info)
       window.setTimeout(() => this.connect(), delay)
     }
 

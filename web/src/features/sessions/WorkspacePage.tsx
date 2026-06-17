@@ -217,7 +217,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
           <div className="workspace__header-left">
             <div className="workspace__brand">{selected?.name ?? 'Headless Alfred'}</div>
             <div className="workspace__status">
-              <SessionIndicatorDot status={sessionIndicator(s.connState, ps)} />
+              <SessionIndicatorDot status={sessionIndicator(s.connState, ps)} connInfo={s.connInfo} />
             </div>
           </div>
           <div className="workspace__header-center">
