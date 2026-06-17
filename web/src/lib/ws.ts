@@ -21,6 +21,12 @@ export type ClaudeEventKind =
   | 'message_delta'
   | 'message_stop'
   | 'result'
+  // v0.4: CLI lifecycle events (emitted under --include-hook-events).
+  | 'task_started'
+  | 'task_notification'
+  | 'task_updated'
+  | 'hook_started'
+  | 'hook_response'
   | 'unknown'
 
 // DiskUsage payload on the disk_usage WS frame (and the
