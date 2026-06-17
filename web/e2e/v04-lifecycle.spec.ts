@@ -172,3 +172,42 @@ test('subagent_long_running', async ({ page }) => {
   // Turn stats line mentions at least 1 subagent.
   await expect(page.locator('.turn-stats').last()).toContainText(/subagent/)
 })
+
+test('stats_line_shows_zero_when_claude_only_says_it_will_monitor', async ({ page }) => {
+  test.setTimeout(120_000)
+  const token = await login(page)
+  const sid = await freshSession(page, token, 'promise-mismatch')
+  await loginUI(page, token)
+  await page.locator(`li:has-text("pw-v04-promise-mismatch")`).first().click()
+  await enterClaudeUI(page)
+
+  // Prompt that explicitly tells Claude NOT to dispatch any tool.
+  await sendPrompt(page,
+    'Just respond with the exact text: ' +
+    '"OK, I will monitor CI and let you know when it finishes." ' +
+    'Do not use any tools. Reply with that one sentence only.'
+  )
+
+  // Wait for turn to complete.
+  await expect(page.locator('.turn-phase-chip--done').last()).toBeVisible({ timeout: 60_000 })
+  // Stats line for this turn should say zero tool calls — no Monitor.
+  const stats = page.locator('.turn-stats').last()
+  await expect(stats).toContainText(/0 tool calls/)
+  await expect(stats).not.toContainText(/Monitor/)
+})
+
+test('stats_line_shows_count_when_monitor_actually_dispatched', async ({ page }) => {
+  test.setTimeout(120_000)
+  const token = await login(page)
+  const sid = await freshSession(page, token, 'promise-truthful')
+  await loginUI(page, token)
+  await page.locator(`li:has-text("pw-v04-promise-truthful")`).first().click()
+  await enterClaudeUI(page)
+
+  await sendPrompt(page,
+    'Use the Monitor tool to run `echo hi; sleep 2; echo done`. Description: "quick poll". Just dispatch.'
+  )
+
+  await expect(page.locator('.turn-phase-chip--done').last()).toBeVisible({ timeout: 60_000 })
+  await expect(page.locator('.turn-stats').last()).toContainText(/1 Monitor task/)
+})
