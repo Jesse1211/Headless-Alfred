@@ -19,6 +19,7 @@ interface Props {
   // they're always provided by WorkspacePage.
   onOpenGitCredentials?: () => void
   onOpenClaudeCredentials?: () => void
+  onOpenClaudeVersion?: () => void
   onLogout?: () => void
   // Collapse the sidebar to its narrow strip. Optional so tests
   // can render the sidebar in isolation without supplying it.
@@ -40,12 +41,13 @@ export function SessionsSidebar({
   onClose,
   onOpenGitCredentials,
   onOpenClaudeCredentials,
+  onOpenClaudeVersion,
   onLogout,
   onCollapse,
   statusForSession,
 }: Props) {
   const atLimit = sessions.length >= maxSessions
-  const hasFooter = !!(onOpenGitCredentials || onOpenClaudeCredentials || onLogout)
+  const hasFooter = !!(onOpenGitCredentials || onOpenClaudeCredentials || onOpenClaudeVersion || onLogout)
   return (
     <aside className="sessions-sidebar">
       <div className="sessions-sidebar__top-row">
@@ -113,6 +115,15 @@ export function SessionsSidebar({
               onClick={onOpenClaudeCredentials}
             >
               Claude credentials
+            </button>
+          )}
+          {onOpenClaudeVersion && (
+            <button
+              type="button"
+              className="sessions-sidebar__footer-btn"
+              onClick={onOpenClaudeVersion}
+            >
+              Claude version
             </button>
           )}
           {onLogout && (

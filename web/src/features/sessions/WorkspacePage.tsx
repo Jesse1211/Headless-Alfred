@@ -10,6 +10,7 @@ import { DiskUsageBanner } from './DiskUsageBanner'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GitCredentialsDialog } from './GitCredentialsDialog'
 import { ClaudeCredentialsDialog } from './ClaudeCredentialsDialog'
+import { ClaudeVersionDialog } from './ClaudeVersionDialog'
 import { ClaudeTerminal } from '../claude/ClaudeTerminal'
 import { RightRail } from './RightRail'
 import { RecapSidebar } from './RecapSidebar'
@@ -45,6 +46,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const [pendingClose, setPendingClose] = useState<string | null>(null)
   const [gitCredsOpen, setGitCredsOpen] = useState(false)
   const [claudeCredsOpen, setClaudeCredsOpen] = useState(false)
+  const [claudeVersionOpen, setClaudeVersionOpen] = useState(false)
   // Session ID for which the "Start Claude" renderer-pick dialog is open.
   const [startClaudeFor, setStartClaudeFor] = useState<string | null>(null)
 
@@ -197,6 +199,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
             onClose={(id) => setPendingClose(id)}
             onOpenGitCredentials={() => setGitCredsOpen(true)}
             onOpenClaudeCredentials={() => setClaudeCredsOpen(true)}
+            onOpenClaudeVersion={() => setClaudeVersionOpen(true)}
             onLogout={onLogout}
             onCollapse={() => setLeftCollapsedPersisted(true)}
             statusForSession={(id) => sessionIndicator(s.connState, s.perSession.get(id))}
@@ -373,6 +376,10 @@ export function WorkspacePage({ token, onLogout }: Props) {
 
       {gitCredsOpen && (
         <GitCredentialsDialog onClose={() => setGitCredsOpen(false)} />
+      )}
+
+      {claudeVersionOpen && (
+        <ClaudeVersionDialog onClose={() => setClaudeVersionOpen(false)} />
       )}
 
       {claudeCredsOpen && (

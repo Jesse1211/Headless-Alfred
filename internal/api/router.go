@@ -106,6 +106,12 @@ func NewRouter(d Deps) http.Handler {
 		// same backing volume; we probe /data). Drives the frontend's
 		// "disk almost full" banner and is useful for ad-hoc debugging.
 		r.Get("/api/disk-usage", DiskUsageHandler(d.Manager.DataDir()).ServeHTTP)
+
+		// Claude CLI version probe + runtime upgrade. The upgrade
+		// endpoint streams npm output back as chunked text/plain so
+		// the user sees progress (npm runs can take 10s+).
+		r.Get("/api/claude-cli/version", ClaudeCLIVersionHandler().ServeHTTP)
+		r.Post("/api/claude-cli/upgrade", ClaudeCLIUpgradeHandler().ServeHTTP)
 	})
 
 	r.NotFound(static.Handler().ServeHTTP)
