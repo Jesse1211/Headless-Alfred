@@ -7,6 +7,71 @@ Most-recent first.
 
 ---
 
+## v0.3 — 2026-06-17
+
+UX polish + one v0.2 fix.
+
+### Exit Claude is now mode-aware
+
+UI mode (the ChatGPT-style renderer) used to SIGKILL the pane's
+bash on Exit Claude, which reset the shell's cwd / env / aliases —
+even though there's NO claude process to kill in UI mode between
+prompts (it's per-prompt forked). Now Exit in UI mode just flips
+the mode flag; bash stays put. Button reads **"Pause Claude"** with
+a tooltip explaining the conversation resumes on next click (it
+does — `--resume <uuid>` reads the jsonl on the PVC).
+
+TUI mode keeps the SIGKILL+respawn path (a long-lived `claude` TUI
+owns the pane and has to be killed). Button still reads "Exit
+Claude" with a tooltip warning about the cwd/env reset.
+
+### Disconnected indicator now shows why
+
+Hovering the ⚠ disconnected dot used to show just "Disconnected".
+Now it expands to a multi-line tooltip with:
+
+  Disconnected
+  code: 1006 (abnormal)
+  last seen 12s ago
+  reconnect attempt 3
+
+Captures WebSocket close code + reason, last successful open, and
+current retry count.
+
+### TodoWrite progress card
+
+Claude's TodoWrite tool calls used to render as folded JSON tool
+cards. Now they get a real checklist card with status markers and
+the current turn's elapsed time + cumulative token usage:
+
+  Tasks (2/4)             12m 34s · 8,510 in → 1,230 out
+    ✔ Stage 3b.1 — geometry.py
+    ✔ Stage 3b.2 — cartoon.py
+    ◼ Updating repository functions for cartoon
+    ◻ Stage 3b.4 — render routes
+
+### Per-prompt template multi-select
+
+Templates moved from "always-on per session" to "checkbox under the
+composer textarea, choose per-prompt". Sticky per session via
+localStorage so your preferred default persists across reloads.
+Backend now accepts a `templates[]` array on `claude_prompt`;
+multiple selected templates concatenate in order, each preceded by
+the `\\n\\n---\\n` separator. `GET /api/templates` lists available
+templates (id + name).
+
+### Fix: PVC monitoring now reads actual quota usage (was broken in v0.2)
+
+The disk-pressure banner in v0.2 read `statfs(/data)`, which sees
+the underlying node disk (~100GB on oracle), not the 5Gi PVC quota.
+Banner read "19% used" while real PVC could be at 95%. Replaced
+with a quota-aware computation: walk /data + ~/ for actual usage,
+compare against `ALFRED_PVC_LIMIT` (Helm passes
+`.Values.persistence.size`). Banner copy updated to "PVC X% full —
+A used of B" instead of confusing "Disk X% full".
+
+---
+
 ## v0.2 — 2026-06-17
 
 Two small infra/UX features for self-managed deploys.
