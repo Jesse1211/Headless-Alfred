@@ -108,6 +108,71 @@ iOS/Android can't edit `/etc/hosts`. Two practical options:
 
 ---
 
+## Dev mode: local frontend → deployed backend
+
+Iterate on `web/src/...` with full Vite HMR while every API + WS
+call rides through to the live oracle pod. Two frontends, one
+backend:
+
+| URL | Served by | Use for |
+|---|---|---|
+| `http://localhost:5173/` | Your local Vite (`npm run dev`) | Editing — CSS/TSX changes show up instantly. Proxies `/api` + `/ws` to the deployed backend. |
+| `http://alfred.local:8888/` | Pod's embedded `dist/` (via Traefik + ssh tunnel) | Daily use, phone, other devices. Stable copy matching what's deployed. |
+
+Both share the same backend, same PVC, same Claude/tmux state.
+Sessions you create in 5173 appear on 8888 after a refresh; tool
+approvals etc. are interchangeable.
+
+### Setup
+
+Prereq: the ssh tunnel from the "Client setup" section above —
+`ssh -fN -L 8888:127.0.0.1:80 oracle`.
+
+```bash
+cd web
+VITE_BACKEND_URL=http://alfred.local:8888 npm run dev
+```
+
+Open `http://localhost:5173/`. Log in with the same
+`ALFRED_USER` / `ALFRED_PASSWORD` (localStorage token is
+per-origin so this is a separate login from the 8888 one — they
+don't share state).
+
+### How the proxy is wired
+
+`web/vite.config.ts` reads `VITE_BACKEND_URL` and rewrites two
+headers on every proxied request:
+
+- **Host** → `alfred.local` (no port). Traefik's Ingress matches
+  on that exact hostname; the unmodified browser Host of
+  `localhost:5173` returns 404.
+- **Origin** → `http://alfred.local` (no port). The backend's
+  `gorilla/websocket` Upgrader enforces `Origin == "scheme://" + r.Host`;
+  without rewriting, the upgrade returns 403.
+
+The proxy target is forced to `127.0.0.1:8888` (literal IPv4)
+even though the hostname `alfred.local` would resolve to the
+same address — going via hostname triggers a Node DNS path that
+stalls the WS upgrade response. If you change the proxy config
+and ws connections suddenly hang in CONNECTING, look here first.
+
+### When to use which URL
+
+- **Editing UI code**: 5173. Save the file, the browser updates,
+  no rebuild loop.
+- **Smoke test against the deployed bits**: 8888. This is what
+  other devices and phones see; if it works here, it ships.
+- **Both at once**: fine. The backend doesn't know or care which
+  URL the client used — they hit the same handlers.
+
+### When NOT to use 5173
+
+- Phone/iPad: they can't run Vite. Use 8888 + Tailscale (see above).
+- Anything where you want to verify the production-built bundle
+  (different chunking, minification, asset hashing). Use 8888.
+
+---
+
 ## Manual deploy (from your laptop, no CI)
 
 ```bash
