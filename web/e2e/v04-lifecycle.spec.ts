@@ -211,3 +211,36 @@ test('stats_line_shows_count_when_monitor_actually_dispatched', async ({ page })
   await expect(page.locator('.turn-phase-chip--done').last()).toBeVisible({ timeout: 60_000 })
   await expect(page.locator('.turn-stats').last()).toContainText(/1 Monitor task/)
 })
+
+test('monitor_completes_after_parent_result', async ({ page }) => {
+  test.setTimeout(240_000)
+  const token = await login(page)
+  const sid = await freshSession(page, token, 'after-result')
+  await loginUI(page, token)
+  await page.locator(`li:has-text("pw-v04-after-result")`).first().click()
+  await enterClaudeUI(page)
+
+  await sendPrompt(page,
+    'Dispatch one Monitor tool to run `for i in 1 2 3 4 5; do echo step-$i; sleep 6; done`. ' +
+    'Description: "30s monitor". Just dispatch and immediately reply "monitor running".'
+  )
+
+  // The PARENT turn should finish quickly (phase chip "Done") because
+  // Monitor is detached. The Monitor card should still be ticking.
+  await expect(page.locator('.turn-phase-chip--done').last()).toBeVisible({ timeout: 60_000 })
+
+  const monitorCard = page.locator('.claude-tool:has(.claude-tool__name:text-is("Monitor"))').last()
+  await expect(monitorCard).toBeVisible()
+
+  // After the parent turn done, the Monitor card has NO checkmark yet.
+  await expect(monitorCard.locator('.claude-tool__check')).toHaveCount(0)
+
+  // The sidebar pill is still active.
+  await expect(page.locator('.session-pill').first()).toBeVisible()
+
+  // Wait for the eventual task_updated.completed → checkmark.
+  await expect(monitorCard.locator('.claude-tool__check')).toBeVisible({ timeout: 90_000 })
+
+  // Pill disappears once the Monitor is done.
+  await expect(page.locator('.session-pill')).toHaveCount(0, { timeout: 30_000 })
+})
