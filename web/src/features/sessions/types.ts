@@ -1,3 +1,9 @@
+// ClaudeState and its sub-types mirror the Go server's
+// internal/claudestate.ClaudeState exactly. The wire format
+// (HTTP /claude-state, WS frames, on-disk snapshot.json) uses
+// the same camelCase key names — no naming translation between
+// layers. When you change a field here, change the Go side too.
+
 export interface RunningCmd {
   id: string
   command: string
@@ -85,7 +91,8 @@ export interface ClaudeToolCall {
   // currently only show it on the approval card.
   input?: unknown
   // What the user decided when the approval card surfaced.
-  decision?: 'allow' | 'deny' | 'pending'
+  // Always present on the wire: 'allow', 'deny', or 'pending'.
+  decision: 'allow' | 'deny' | 'pending'
   // Output from the tool, once it ran. May still be empty if denied.
   result?: string
   isError?: boolean
