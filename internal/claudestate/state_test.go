@@ -266,3 +266,78 @@ func TestApply_ClaudeRunEnded_FinalizesInFlightAsError(t *testing.T) {
 		}
 	})
 }
+
+func TestApply_TaskStarted_LinksToolBlockAndCreatesBgTask(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "monitor", tAt(7, 0, 0))
+	must(t, s.Apply(Event{Kind: EventToolUseStart, Timestamp: tAt(7, 0, 1),
+		Payload: &ToolUseStartPayload{Index: 0, ToolUseID: "tu_mon", Name: "Monitor"}}))
+	must(t, s.Apply(Event{Kind: EventTaskStarted, Timestamp: tAt(7, 0, 2),
+		Payload: &TaskStartedPayload{
+			TaskID: "task_x", ToolUseID: "tu_mon",
+			Description: "tail logs", TaskType: "local_bash",
+		}}))
+	s.View(func(st *ClaudeState) {
+		bt, ok := st.BgTasks["task_x"]
+		if !ok {
+			t.Fatal("bgTask not created")
+		}
+		if bt.Status != "in_progress" {
+			t.Errorf("status = %q", bt.Status)
+		}
+		if !bt.StartedAt.Equal(tAt(7, 0, 2)) {
+			t.Errorf("StartedAt = %v", bt.StartedAt)
+		}
+		// The tool block now points at the bgTask.
+		tool := st.Turns[0].Blocks[0].Tool
+		if tool.BgTaskID != "task_x" {
+			t.Errorf("BgTaskID = %q", tool.BgTaskID)
+		}
+	})
+}
+
+func TestApply_HookSubagent_FIFOPair(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(Event{Kind: EventHookStarted, Timestamp: tAt(7, 0, 1),
+		Payload: &HookStartedPayload{HookID: "h_start_1", HookEvent: "SubagentStart"}}))
+	must(t, s.Apply(Event{Kind: EventHookStarted, Timestamp: tAt(7, 0, 2),
+		Payload: &HookStartedPayload{HookID: "h_start_2", HookEvent: "SubagentStart"}}))
+	must(t, s.Apply(Event{Kind: EventHookResponse, Timestamp: tAt(7, 0, 5),
+		Payload: &HookResponsePayload{HookID: "h_stop_X", HookEvent: "SubagentStop"}}))
+	s.View(func(st *ClaudeState) {
+		// Oldest in-progress subagent (h_start_1) should be marked finished.
+		first := st.Subagents["h_start_1"]
+		second := st.Subagents["h_start_2"]
+		if first.FinishedAt == nil {
+			t.Error("oldest subagent should be finished")
+		}
+		if second.FinishedAt != nil {
+			t.Error("newer subagent should still be in progress")
+		}
+	})
+}
+
+func TestApply_ToolDecision_PatchesBlockAndDropsApproval(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(Event{Kind: EventToolUseStart, Timestamp: tAt(7, 0, 1),
+		Payload: &ToolUseStartPayload{Index: 0, ToolUseID: "tu_1", Name: "Bash"}}))
+	// Seed a pending approval the way the server's tool_approval_request
+	// handler will: append to the queue, then resolve via tool_decision.
+	s.mu.Lock()
+	s.state.Pending = append(s.state.Pending, ClaudeToolApproval{ToolUseID: "tu_1", Tool: "Bash"})
+	s.mu.Unlock()
+
+	must(t, s.Apply(Event{Kind: EventToolDecision, Timestamp: tAt(7, 0, 2),
+		Payload: &ToolDecisionPayload{ToolUseID: "tu_1", Decision: "deny"}}))
+
+	s.View(func(st *ClaudeState) {
+		if len(st.Pending) != 0 {
+			t.Errorf("pending not drained: %+v", st.Pending)
+		}
+		if st.Turns[0].Blocks[0].Tool.Decision != "deny" {
+			t.Errorf("decision = %q", st.Turns[0].Blocks[0].Tool.Decision)
+		}
+	})
+}

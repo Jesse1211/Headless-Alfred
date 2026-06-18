@@ -158,6 +158,36 @@ func (s *SessionState) Apply(ev Event) error {
 		}
 		s.state.LastError = &ClaudeError{Code: p.Code, Message: p.Message}
 		s.finalizeInFlight(p.Message, ev.Timestamp)
+	case EventTaskStarted:
+		p, _ := ev.Payload.(*TaskStartedPayload)
+		if p != nil {
+			s.applyTaskStarted(p, ev.Timestamp)
+		}
+	case EventTaskNotification:
+		p, _ := ev.Payload.(*TaskNotificationPayload)
+		if p != nil {
+			s.applyTaskNotification(p, ev.Timestamp)
+		}
+	case EventTaskUpdated:
+		p, _ := ev.Payload.(*TaskUpdatedPayload)
+		if p != nil {
+			s.applyTaskUpdated(p, ev.Timestamp)
+		}
+	case EventHookStarted:
+		p, _ := ev.Payload.(*HookStartedPayload)
+		if p != nil {
+			s.applyHookStarted(p, ev.Timestamp)
+		}
+	case EventHookResponse:
+		p, _ := ev.Payload.(*HookResponsePayload)
+		if p != nil {
+			s.applyHookResponse(p, ev.Timestamp)
+		}
+	case EventToolDecision:
+		p, _ := ev.Payload.(*ToolDecisionPayload)
+		if p != nil {
+			s.applyToolDecision(p)
+		}
 	default:
 		// Unknown event kind; silently no-op so future versions
 		// don't crash on older runners.
@@ -347,5 +377,120 @@ func (s *SessionState) resetBlockIndex() {
 	if s.curIndex != nil {
 		s.curIndex.blocks = map[int]int{}
 		s.curIndex.thinking = map[int]int{}
+	}
+}
+
+// ---- task lifecycle reducers ----
+
+func (s *SessionState) applyTaskStarted(p *TaskStartedPayload, ts time.Time) {
+	if p.TaskID == "" {
+		return
+	}
+	s.state.BgTasks[p.TaskID] = BgTask{
+		TaskID:      p.TaskID,
+		ToolUseID:   p.ToolUseID,
+		Description: p.Description,
+		TaskType:    p.TaskType,
+		StartedAt:   ts, // BgTask.StartedAt stays non-optional — task only exists once it started
+		Status:      "in_progress",
+	}
+	// Link the matching tool block.
+	for ti := range s.state.Turns {
+		for bi := range s.state.Turns[ti].Blocks {
+			b := &s.state.Turns[ti].Blocks[bi]
+			if b.Kind == "tool" && b.Tool != nil && b.Tool.ToolUseID == p.ToolUseID {
+				b.Tool.BgTaskID = p.TaskID
+			}
+		}
+	}
+}
+
+func (s *SessionState) applyTaskNotification(p *TaskNotificationPayload, ts time.Time) {
+	bt, ok := s.state.BgTasks[p.TaskID]
+	if !ok {
+		return
+	}
+	bt.NotificationCount++
+	bt.LastEventSummary = p.Summary
+	if p.Status == "completed" {
+		bt.Status = "completed"
+		if bt.FinishedAt == nil {
+			bt.FinishedAt = timePtr(ts)
+		}
+	}
+	s.state.BgTasks[p.TaskID] = bt
+}
+
+func (s *SessionState) applyTaskUpdated(p *TaskUpdatedPayload, ts time.Time) {
+	bt, ok := s.state.BgTasks[p.TaskID]
+	if !ok {
+		return
+	}
+	if status, _ := p.Patch["status"].(string); status == "completed" || status == "failed" {
+		bt.Status = status
+		if et, ok := p.Patch["end_time"].(float64); ok && et > 0 {
+			bt.FinishedAt = timePtr(time.Unix(0, int64(et)*int64(time.Millisecond)).UTC())
+		} else {
+			bt.FinishedAt = timePtr(ts)
+		}
+		s.state.BgTasks[p.TaskID] = bt
+	}
+}
+
+// ---- hook lifecycle reducers ----
+
+func (s *SessionState) applyHookStarted(p *HookStartedPayload, ts time.Time) {
+	if p.HookEvent != "SubagentStart" || p.HookID == "" {
+		return
+	}
+	s.state.Subagents[p.HookID] = SubagentEntry{
+		HookID:    p.HookID,
+		StartedAt: ts,
+	}
+}
+
+func (s *SessionState) applyHookResponse(p *HookResponsePayload, ts time.Time) {
+	if p.HookEvent != "SubagentStop" {
+		return
+	}
+	// FIFO pair: stamp FinishedAt on the oldest in-progress subagent.
+	var oldestKey string
+	var oldestTS time.Time
+	for k, v := range s.state.Subagents {
+		if v.FinishedAt != nil {
+			continue
+		}
+		if oldestKey == "" || v.StartedAt.Before(oldestTS) {
+			oldestKey = k
+			oldestTS = v.StartedAt
+		}
+	}
+	if oldestKey == "" {
+		return
+	}
+	se := s.state.Subagents[oldestKey]
+	se.FinishedAt = timePtr(ts)
+	s.state.Subagents[oldestKey] = se
+}
+
+// ---- tool decision reducer ----
+
+func (s *SessionState) applyToolDecision(p *ToolDecisionPayload) {
+	// Drop from pending queue.
+	pending := s.state.Pending[:0]
+	for _, q := range s.state.Pending {
+		if q.ToolUseID != p.ToolUseID {
+			pending = append(pending, q)
+		}
+	}
+	s.state.Pending = pending
+	// Mark the tool block.
+	for ti := range s.state.Turns {
+		for bi := range s.state.Turns[ti].Blocks {
+			b := &s.state.Turns[ti].Blocks[bi]
+			if b.Kind == "tool" && b.Tool != nil && b.Tool.ToolUseID == p.ToolUseID {
+				b.Tool.Decision = p.Decision
+			}
+		}
 	}
 }
