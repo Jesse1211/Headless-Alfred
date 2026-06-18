@@ -2,6 +2,7 @@ package claudestate
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,7 +44,7 @@ func TestClaudeTurn_JSONRoundTrip(t *testing.T) {
 		`"blocks"`, `"thinking"`, `"done"`, `"totalCostUsd"`, `"usage"`,
 		`"inputTokens"`, `"outputTokens"`, `"toolUseId"`, `"decision"`,
 	} {
-		if !contains(s, want) {
+		if !strings.Contains(s, want) {
 			t.Errorf("missing key in JSON: %s\nJSON: %s", want, s)
 		}
 	}
@@ -61,13 +62,4 @@ func TestClaudeTurn_JSONRoundTrip(t *testing.T) {
 	if out.TotalCostUsd == nil || *out.TotalCostUsd != 0.0123 {
 		t.Errorf("cost lost: %v", out.TotalCostUsd)
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
