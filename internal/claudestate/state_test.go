@@ -312,6 +312,46 @@ func TestApply_Result_FinalizesTurn(t *testing.T) {
 	})
 }
 
+// A result event arriving after the turn was already closed
+// (claude_error, claude_run_ended, server shutdown finalize) must not
+// flip IsError back to false or overwrite the recorded close
+// metadata. The earlier terminator wins; the late result is dropped.
+//
+// Regression: before this guard, FinalizeAllInFlight at SIGTERM could
+// race with a slow result frame from the runner during the
+// srv.Shutdown drain window — the snapshot would persist Done=true
+// + IsError=false + cost set, hiding the fact that the user got
+// disconnected mid-turn.
+func TestApply_Result_AfterTerminator_DoesNotOverwriteDone(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(Event{Kind: EventClaudeError, Timestamp: tAt(7, 0, 5),
+		Payload: &ClaudeErrorPayload{Code: "server_shutdown", Message: "bye"}}))
+
+	// Late result arriving after the close.
+	must(t, s.Apply(Event{Kind: EventResult, Timestamp: tAt(7, 0, 9),
+		Payload: &ResultPayload{IsError: false, TotalCostUsd: 0.42}}))
+
+	s.View(func(st *ClaudeState) {
+		tt := st.Turns[0]
+		if !tt.Done {
+			t.Error("Done flipped to false")
+		}
+		if !tt.IsError {
+			t.Error("IsError got overwritten — late result must not erase the error")
+		}
+		if tt.FinishedAt == nil || !tt.FinishedAt.Equal(tAt(7, 0, 5)) {
+			t.Errorf("FinishedAt got reset: %v", tt.FinishedAt)
+		}
+		if tt.TotalCostUsd != nil {
+			t.Errorf("cost leaked through: %v", *tt.TotalCostUsd)
+		}
+		if st.LastError == nil || st.LastError.Code != "server_shutdown" {
+			t.Errorf("LastError got cleared: %+v", st.LastError)
+		}
+	})
+}
+
 func TestApply_ClaudeRunEnded_FinalizesInFlightAsError(t *testing.T) {
 	s := NewSessionState("sess1", "uuid-1")
 	s.BeginTurn("u1", "go", tAt(7, 0, 0))

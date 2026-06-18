@@ -97,3 +97,49 @@ func TestPersister_Flush_Sync(t *testing.T) {
 		t.Errorf("file not written after Flush: %v", err)
 	}
 }
+
+// CloseNoFlush exits the goroutine without producing a snapshot file
+// and without erroring even when the parent directory has been
+// removed under us. This is the session-deletion path: by the time
+// the close listener fires, session.Manager has already RemoveAll'd
+// the store directory; a final writeSnapshot would just emit
+// misleading ENOENT errors.
+func TestPersister_CloseNoFlush_SkipsWriteAndIgnoresMissingDir(t *testing.T) {
+	dir := t.TempDir()
+	sessDir := filepath.Join(dir, "sessions", "sess1")
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st := NewSessionState("sess1", "uuid-1")
+	st.BeginTurn("u1", "hi", tAt(7, 0, 0))
+
+	snapPath := filepath.Join(sessDir, "claude.json")
+	p, err := NewPersister(snapPath, st, 30*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	// Simulate the session-delete order: store removes the dir first,
+	// then the close listener fires CloseNoFlush.
+	if err := os.RemoveAll(sessDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.CloseNoFlush(context.Background()); err != nil {
+		t.Errorf("CloseNoFlush returned error: %v", err)
+	}
+
+	// Snapshot file must NOT have been recreated.
+	if _, err := os.Stat(snapPath); !os.IsNotExist(err) {
+		t.Errorf("snapshot resurrected at %s (stat err=%v)", snapPath, err)
+	}
+
+	// A second Close call (the Shutdown loop's iteration, say) must
+	// be a no-op — sync.Once prevents double-teardown.
+	if err := p.Close(context.Background()); err != nil {
+		t.Errorf("second Close after CloseNoFlush errored: %v", err)
+	}
+}

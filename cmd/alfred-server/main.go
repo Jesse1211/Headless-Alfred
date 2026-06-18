@@ -252,7 +252,10 @@ func main() {
 	// (debounced), so the snapshot the next boot reads already reflects
 	// the truth instead of "this turn was in flight forever". The
 	// deferred csMgr.Shutdown then performs the final synchronous flush.
-	csMgr.FinalizeAllInFlight("server shutting down; runner was killed")
+	// Per CONTEXT.md invariant #1 the runner subprocess is NOT actively
+	// killed here — it's orphaned to init when the Go process exits.
+	// Phrase the user-visible reason accordingly.
+	csMgr.FinalizeAllInFlight("server shutting down; reply will not be delivered")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

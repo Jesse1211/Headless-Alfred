@@ -79,11 +79,12 @@ func TestSessionManager_Shutdown_FlushesAndCloses(t *testing.T) {
 	}
 }
 
-// DeleteSession removes the in-memory entry, flushes the persister,
-// and makes a subsequent GetOrLoad construct a fresh SessionState
-// (not return the stale one). Without this hook the SessionState
-// leaks until process shutdown — and worse, its Persister keeps a
-// flock on a snapshot file the store has already deleted.
+// DeleteSession removes the in-memory entry, tears down the
+// persister WITHOUT a final write (the upstream store has already
+// removed the snapshot dir), and makes a subsequent GetOrLoad
+// construct a fresh SessionState (not return the stale one).
+// Without this hook the SessionState leaks until process shutdown —
+// and worse, its Persister keeps a flock on a file in a deleted dir.
 func TestSessionManager_DeleteSession_FreesEntry(t *testing.T) {
 	dir := t.TempDir()
 	m := NewSessionManager(dir, &fakeJsonlLocator{})

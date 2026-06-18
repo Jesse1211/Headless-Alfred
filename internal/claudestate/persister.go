@@ -37,9 +37,10 @@ type Persister struct {
 	state    *SessionState
 	debounce time.Duration
 
-	dirty    chan struct{}   // cap 1 — coalesces signals
-	flushReq chan chan error // synchronous flush
-	closeReq chan chan error // synchronous close
+	dirty           chan struct{}   // cap 1 — coalesces signals
+	flushReq        chan chan error // synchronous flush
+	closeReq        chan chan error // synchronous close
+	closeNoFlushReq chan chan error // synchronous close without a final write
 
 	flockFile *os.File
 	stopped   sync.Once
@@ -63,14 +64,15 @@ func NewPersister(path string, state *SessionState, debounce time.Duration) (*Pe
 	// Best-effort orphan tmp cleanup from a previous crash.
 	_ = os.Remove(path + ".tmp")
 	return &Persister{
-		path:      path,
-		tmpPath:   path + ".tmp",
-		state:     state,
-		debounce:  debounce,
-		dirty:     make(chan struct{}, 1),
-		flushReq:  make(chan chan error),
-		closeReq:  make(chan chan error),
-		flockFile: lf,
+		path:            path,
+		tmpPath:         path + ".tmp",
+		state:           state,
+		debounce:        debounce,
+		dirty:           make(chan struct{}, 1),
+		flushReq:        make(chan chan error),
+		closeReq:        make(chan chan error),
+		closeNoFlushReq: make(chan chan error),
+		flockFile:       lf,
 	}, nil
 }
 
@@ -104,6 +106,16 @@ func (p *Persister) Run(ctx context.Context) {
 			err := p.writeSnapshot()
 			p.releaseLock()
 			ack <- err
+			return
+		case ack := <-p.closeNoFlushReq:
+			// Caller has already removed our snapshot directory
+			// (session deletion) — a final writeSnapshot would
+			// fail with ENOENT for the tmp file. Skip straight to
+			// flock release so the goroutine exits cleanly without
+			// emitting a misleading "snapshot write failed" log.
+			stopTimer()
+			p.releaseLock()
+			ack <- nil
 			return
 		case <-ctx.Done():
 			stopTimer()
@@ -141,11 +153,25 @@ func (p *Persister) Flush(ctx context.Context) error {
 // Close synchronously flushes one final time and shuts down the
 // goroutine. Idempotent.
 func (p *Persister) Close(ctx context.Context) error {
+	return p.doClose(ctx, p.closeReq)
+}
+
+// CloseNoFlush shuts down the goroutine WITHOUT a final writeSnapshot.
+// Use it when the caller has already removed the snapshot directory
+// (per-session DELETE) so the final write would fail with ENOENT
+// noise that masquerades as a real error. Idempotent: a previous
+// Close wins (sync.Once); a previous CloseNoFlush makes a later
+// Close a no-op too.
+func (p *Persister) CloseNoFlush(ctx context.Context) error {
+	return p.doClose(ctx, p.closeNoFlushReq)
+}
+
+func (p *Persister) doClose(ctx context.Context, req chan chan error) error {
 	var finalErr error
 	p.stopped.Do(func() {
 		ack := make(chan error, 1)
 		select {
-		case p.closeReq <- ack:
+		case req <- ack:
 			select {
 			case finalErr = <-ack:
 			case <-ctx.Done():

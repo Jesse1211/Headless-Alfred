@@ -89,6 +89,17 @@ func (s *SessionState) Close(ctx context.Context) error {
 	return s.persister.Close(ctx)
 }
 
+// CloseNoFlush stops the Persister without a final write. Use when
+// the snapshot directory has already been removed (session was
+// deleted) so a final write would just produce misleading ENOENT
+// errors. Safe to call when persister is nil.
+func (s *SessionState) CloseNoFlush(ctx context.Context) error {
+	if s.persister == nil {
+		return nil
+	}
+	return s.persister.CloseNoFlush(ctx)
+}
+
 // BeginTurn appends a fresh turn to the conversation. Called from the
 // claude_prompt entry point (Plan 2) to optimistically register the
 // user's outgoing prompt before any stream events arrive.
@@ -320,6 +331,15 @@ func (s *SessionState) applyResult(p *ResultPayload, ts time.Time) {
 	turn := s.lastTurn()
 	s.state.InFlight = false
 	if turn == nil {
+		return
+	}
+	// Don't overwrite a turn that finalizeInFlight already closed
+	// (shutdown finalize, claude_error, claude_run_ended) — a late
+	// result event arriving after the synthetic close would otherwise
+	// flip IsError back to false and replace the recorded error text
+	// with success-looking cost/finishedAt fields. The earlier
+	// terminator wins; we just leave InFlight=false in place.
+	if turn.Done {
 		return
 	}
 	turn.Done = true

@@ -194,15 +194,22 @@ func (m *SessionManager) FinalizeAllInFlight(reason string) {
 	}
 }
 
-// DeleteSession removes one session's in-memory state and flushes
-// its Persister. Called when the upstream session is deleted via
-// the sessions REST API — without this hook the SessionState (and
-// its Persister goroutine, which holds an exclusive flock on a
-// snapshot file the store has already removed) leaks until process
-// shutdown. Safe to call for a session that was never loaded:
-// returns nil. Errors from the final Close are returned but the
-// map entry is removed regardless so callers can't get stuck on a
-// poisoned session.
+// DeleteSession removes one session's in-memory state and tears down
+// its Persister WITHOUT a final snapshot write — by the time this
+// fires (from session.Manager's onClose listener), the upstream
+// store has already RemoveAll'd <dataDir>/sessions/<sid>/, so the
+// final write would only produce ENOENT noise. Skipping it keeps
+// logs clean and matches reality: the session is going away, the
+// snapshot is meaningless.
+//
+// Without this hook the SessionState (and its Persister goroutine,
+// which holds an exclusive flock on a snapshot file that no longer
+// exists) leaks until process shutdown.
+//
+// Safe to call for a session that was never loaded: returns nil.
+// Errors from the no-flush teardown are returned but the map entry
+// is removed regardless so callers can't get stuck on a poisoned
+// session.
 func (m *SessionManager) DeleteSession(ctx context.Context, sessionID string) error {
 	m.mu.Lock()
 	if m.closed {
@@ -217,7 +224,7 @@ func (m *SessionManager) DeleteSession(ctx context.Context, sessionID string) er
 	if !ok {
 		return nil
 	}
-	if err := s.Close(ctx); err != nil {
+	if err := s.CloseNoFlush(ctx); err != nil {
 		slog.Error("claudestate: close on delete", "sessionID", sessionID, "err", err)
 		return err
 	}
