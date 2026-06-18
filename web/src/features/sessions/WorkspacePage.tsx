@@ -42,6 +42,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
     selectedSessionID: s.selectedSessionID,
     perSession: s.perSession,
     setPerSession: s.setPerSession,
+    wsEpoch: s.wsEpoch,
   })
 
   const [pendingClose, setPendingClose] = useState<string | null>(null)

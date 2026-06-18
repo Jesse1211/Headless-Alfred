@@ -61,31 +61,41 @@ export function useSessions(token: string) {
   const sessionsRef = useRef(sessions)
   sessionsRef.current = sessions
 
-  // Re-hydrate every session's Claude state when WS transitions back
-  // to 'open'. After a reconnect the in-memory ClaudeState may be
+  // Re-hydrate the SELECTED session's Claude state when WS transitions
+  // back to 'open'. After a reconnect the in-memory ClaudeState may be
   // stale — the most common case is a turn that was in-flight when
-  // the server died; Loader's stale-trailing-turn finalize now closes
-  // it out as an error, but the frontend only sees that after a
-  // fresh /claude-state fetch. Clearing turnsLoaded forces
-  // useClaudeStateLoader to re-run.
+  // the server died; Loader's stale-trailing-turn finalize closes it
+  // out as an error, but the frontend only sees that after a fresh
+  // /claude-state fetch.
+  //
+  // wsEpoch increments on every reconnect. Each per-session hydrate
+  // records the epoch it ran at, so when the user later switches to a
+  // background session whose hydrate predates the current epoch, we
+  // clear turnsLoaded then too. This collapses the legacy "refetch all
+  // N sessions on reconnect" stampede into "refetch lazily as you
+  // visit them", while still guaranteeing the user never sees stale
+  // state on the session they're actually looking at.
   const prevConnRef = useRef<ConnState>('connecting')
+  const [wsEpoch, setWsEpoch] = useState(0)
   useEffect(() => {
     const prev = prevConnRef.current
     prevConnRef.current = connState
     if (connState === 'open' && prev !== 'open' && prev !== 'connecting') {
-      setPerSession((cur) => {
-        const next = new Map<string, PerSessionState>()
-        cur.forEach((ps, sid) => {
-          if (ps.claude && ps.claude.turnsLoaded) {
-            next.set(sid, { ...ps, claude: { ...ps.claude, turnsLoaded: false } })
-          } else {
-            next.set(sid, ps)
-          }
-        })
-        return next
-      })
+      setWsEpoch((e) => e + 1)
     }
   }, [connState])
+  useEffect(() => {
+    const sid = selectedSessionID
+    if (!sid || connState !== 'open') return
+    setPerSession((cur) => {
+      const ps = cur.get(sid)
+      if (!ps?.claude?.turnsLoaded) return cur
+      if (ps.claude.hydrateEpoch === wsEpoch) return cur
+      const next = new Map(cur)
+      next.set(sid, { ...ps, claude: { ...ps.claude, turnsLoaded: false } })
+      return next
+    })
+  }, [wsEpoch, selectedSessionID, connState])
 
   // pty_data dispatch — claude-mode raw PTY bytes go straight to xterm
   // without round-tripping through React state. ClaudeTerminal calls
@@ -445,7 +455,7 @@ export function useSessions(token: string) {
   // path on subsequent clicks.
 
   return {
-    connState, connInfo, sessions, selectedSessionID, selectSession, perSession, setPerSession,
+    connState, connInfo, wsEpoch, sessions, selectedSessionID, selectSession, perSession, setPerSession,
     submit, stop, createSession, renameSession, closeSession,
     enterClaude, exitClaude, sendStdin, registerPtyHandler,
     claudePrompt, toolDecision, interruptClaude, submitQuestionAnswer,

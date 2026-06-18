@@ -13,6 +13,12 @@ interface Args {
   setPerSession: (
     updater: (prev: Map<string, PerSessionState>) => Map<string, PerSessionState>
   ) => void
+  // Stamped onto each successful hydrate so useSessions can detect a
+  // stale session ("hydrated at an earlier WS epoch than current") and
+  // re-clear turnsLoaded when the user finally switches to it.
+  // Optional so existing tests that only care about basic hydration
+  // don't have to wire it; defaults to 0.
+  wsEpoch?: number
 }
 
 // useClaudeStateLoader fetches the server-authoritative ClaudeState
@@ -31,6 +37,7 @@ export function useClaudeStateLoader({
   selectedSessionID,
   perSession,
   setPerSession,
+  wsEpoch = 0,
 }: Args) {
   const ps = selectedSessionID ? perSession.get(selectedSessionID) : undefined
   const mode = ps?.mode
@@ -51,7 +58,7 @@ export function useClaudeStateLoader({
           const cur = next.get(selectedSessionID) ?? emptyPerSessionState()
           next.set(selectedSessionID, {
             ...cur,
-            claude: { ...state, turnsLoaded: true },
+            claude: { ...state, turnsLoaded: true, hydrateEpoch: wsEpoch },
           })
           return next
         })
@@ -68,6 +75,7 @@ export function useClaudeStateLoader({
             claude: {
               ...existing,
               turnsLoaded: true,
+              hydrateEpoch: wsEpoch,
               lastError: { code: 'history_unavailable', message: msg },
             },
           })
@@ -77,5 +85,5 @@ export function useClaudeStateLoader({
     return () => {
       alive = false
     }
-  }, [selectedSessionID, mode, renderer, turnsLoaded, setPerSession])
+  }, [selectedSessionID, mode, renderer, turnsLoaded, setPerSession, wsEpoch])
 }

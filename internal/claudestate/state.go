@@ -42,20 +42,16 @@ func NewSessionState(sessionID, claudeUUID string) *SessionState {
 // SessionID returns the Alfred session id this state belongs to.
 func (s *SessionState) SessionID() string { return s.sessionID }
 
-// ClaudeUUID returns the current Claude CLI session uuid (mutable
-// after a /compact rotation; updated via SetClaudeUUID).
+// ClaudeUUID returns the Claude CLI session uuid this state was
+// constructed with. Treated as immutable for now: rotation (e.g.
+// /compact) is not currently propagated into SessionState — when we
+// implement that path it'll need to coordinate with Persister's
+// snapshot header and the jsonl Locator cache, so the setter was
+// removed to keep the contract honest.
 func (s *SessionState) ClaudeUUID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.claudeUUID
-}
-
-// SetClaudeUUID updates the tracked Claude uuid. Called after the
-// runner reports a rotation.
-func (s *SessionState) SetClaudeUUID(uuid string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.claudeUUID = uuid
 }
 
 // View runs fn against the state under the read lock. fn MUST NOT

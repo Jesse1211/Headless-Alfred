@@ -156,8 +156,14 @@ export interface ClaudeState {
   // True once useClaudeHistoryLoader has done its one-shot fetch
   // from the backend jsonl-restore endpoint. Cleared on claude_exited
   // so re-entering re-runs the fetch (the underlying uuid may have
-  // rotated). Sticky across WS reconnects within the same page load.
+  // rotated). Cleared on WS reconnect for whichever session is
+  // currently selected (see useSessions wsEpoch handling) so the
+  // user never looks at stale state.
   turnsLoaded?: boolean
+  // The wsEpoch this state was hydrated at. Lets useSessions notice
+  // that a background session loaded before the most recent reconnect
+  // is stale and trigger a refetch when the user finally switches to it.
+  hydrateEpoch?: number
   // True while a claude_prompt is in flight (claude -p running).
   inFlight: boolean
   // Pending tool approvals waiting for the user.
