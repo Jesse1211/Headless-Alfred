@@ -218,9 +218,17 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 	claudeRunStates := newClaudeRunStateMap()
 	defer func() {
 		// On disconnect, stop any still-running claude prompts so we
-		// don't leak processes.
-		for _, st := range claudeRunStates.takeAll() {
-			stopRun(st)
+		// don't leak processes — AND apply a synthetic
+		// claude_run_ended through server state. Without the Apply
+		// step, the reaper goroutine's own take() would now return
+		// owned=false (we already took the slot), so its run_ended
+		// branch wouldn't fire — and server state would persist
+		// InFlight=true / Done=false on the trailing turn forever.
+		// The next reconnect's /claude-state hydrate would still
+		// show "Claude is thinking…" with no way out.
+		for _, e := range claudeRunStates.takeAll() {
+			stopRun(e.state)
+			applyClaudeRunEnded(e.sessionID, "client disconnected", csMgr)
 		}
 	}()
 
@@ -397,13 +405,13 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			_ = write(OutMsg{Type: TypeDiskUsage, DiskUsage: &duCopy})
 		case sid := <-closedCh:
 			// Session was deleted via REST or by another tab. Kill any
-			// in-flight `claude -p` we were holding for it so the runner
-			// subprocess doesn't outlive its owning session (and keep
-			// burning tokens). runClientLoop's defer takeAll() would
-			// only catch this on WS disconnect — here we want
-			// per-session cleanup the moment the session goes away.
+			// in-flight `claude -p` we were holding for it AND apply a
+			// run_ended through server state — the session is going
+			// away but other tabs may still be looking at it during
+			// the brief delete-broadcast window.
 			if st, ok := claudeRunStates.take(sid); ok {
 				stopRun(st)
+				applyClaudeRunEnded(sid, "session closed", csMgr)
 			}
 			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
@@ -518,9 +526,12 @@ func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner 
 		handleEnterClaude(msg, m, write)
 	case "exit_claude":
 		handleExitClaude(msg, m, write)
-		// Interrupt any in-flight claude -p for this session.
+		// Interrupt any in-flight claude -p for this session AND finalize
+		// the trailing turn in server state — otherwise InFlight would
+		// stay true after the user explicitly left claude mode.
 		if st, ok := runStates.take(msg.SessionID); ok {
 			stopRun(st)
+			applyClaudeRunEnded(msg.SessionID, "exited claude mode", csMgr)
 		}
 	case "stdin":
 		handleStdin(msg, m, write)
@@ -710,6 +721,53 @@ func dispatchToolDecision(sessionID, toolUseID, decision, reason string, mgr *cl
 		ToolUseID: toolUseID,
 		Decision:  decision,
 		Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
+	})
+}
+
+// applyClaudeRunEnded routes a ClaudeRunEnded through Apply so the
+// trailing turn is finalized in server state (Done=true, IsError=
+// true, InFlight=false). Returns the Apply timestamp so the caller
+// can stamp it onto an outgoing claude_run_ended frame and have
+// streaming state match post-refresh hydrate state byte-for-byte.
+// Safe to call with a nil manager (no-op).
+//
+// Used by:
+//   - the reaper goroutine on runner exit (pairs with a frame write
+//     since a live client may still be reading)
+//   - runClientLoop's disconnect defer when SIGINT'ing leaked runners
+//     (no frame — there's no client to read it; we just need server
+//     state to stop saying "thinking…" forever)
+func applyClaudeRunEnded(sessionID, message string, mgr *claudestate.SessionManager) time.Time {
+	now := time.Now().UTC()
+	if mgr == nil {
+		return now
+	}
+	st, err := mgr.GetOrLoad(sessionID, "")
+	if err != nil {
+		slog.Warn("ws: get state for claude_run_ended", "sid", sessionID, "err", err)
+		return now
+	}
+	ev := claudestate.Event{
+		Kind:      claudestate.EventClaudeRunEnded,
+		Timestamp: now,
+		Payload:   &claudestate.ClaudeRunEndedPayload{Message: message},
+	}
+	if applyErr := st.Apply(ev); applyErr != nil {
+		slog.Warn("ws: apply claude_run_ended", "sid", sessionID, "err", applyErr)
+	}
+	return now
+}
+
+// dispatchClaudeRunEnded is the reaper-side helper: Apply + emit the
+// claude_run_ended frame to the client. Use it whenever the runner
+// dies and we still hold a writable conn.
+func dispatchClaudeRunEnded(sessionID, message string, mgr *claudestate.SessionManager, write func(OutMsg) error) {
+	ts := applyClaudeRunEnded(sessionID, message, mgr)
+	_ = write(OutMsg{
+		Type:      "claude_run_ended",
+		SessionID: sessionID,
+		Message:   message,
+		Timestamp: ts.Format(time.RFC3339Nano),
 	})
 }
 

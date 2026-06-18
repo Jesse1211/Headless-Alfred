@@ -110,14 +110,24 @@ func (s *claudeRunStateMap) take(sid string) (*claudeRunState, bool) {
 	return st, ok
 }
 
-// takeAll removes and returns every state. Used on WS disconnect
-// to stop in-flight runners.
-func (s *claudeRunStateMap) takeAll() []*claudeRunState {
+// claudeRunStateEntry pairs a sessionID with its run state — used by
+// takeAll so disconnect cleanup can both kill the runner AND tell
+// server state about it (Apply EventClaudeRunEnded). Without the
+// session id we'd kill the process but leave InFlight=true forever.
+type claudeRunStateEntry struct {
+	sessionID string
+	state     *claudeRunState
+}
+
+// takeAll removes and returns every state along with its sessionID.
+// Used on WS disconnect to stop in-flight runners AND signal Apply
+// so the trailing turn doesn't get stuck at Done=false.
+func (s *claudeRunStateMap) takeAll() []claudeRunStateEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*claudeRunState, 0, len(s.m))
-	for _, st := range s.m {
-		out = append(out, st)
+	out := make([]claudeRunStateEntry, 0, len(s.m))
+	for sid, st := range s.m {
+		out = append(out, claudeRunStateEntry{sessionID: sid, state: st})
 	}
 	s.m = map[string]*claudeRunState{}
 	return out
@@ -564,11 +574,13 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 			if waitErr != nil {
 				endMsg = waitErr.Error()
 			}
-			_ = write(OutMsg{
-				Type:      "claude_run_ended",
-				SessionID: msg.SessionID,
-				Message:   endMsg,
-			})
+			// Route through Apply so server state's InFlight clears
+			// and the trailing turn is marked Done — without this the
+			// frame would go out (possibly to a dead conn) but server
+			// state would persist InFlight=true forever, and the next
+			// reconnect's /claude-state hydrate would still show
+			// "Claude is thinking…".
+			dispatchClaudeRunEnded(msg.SessionID, endMsg, csMgr, write)
 		}
 	}()
 }

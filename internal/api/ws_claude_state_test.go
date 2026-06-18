@@ -141,6 +141,45 @@ func mustNoErr(t *testing.T, err error) {
 	}
 }
 
+// Regression for "WS drop leaves InFlight=true forever":
+// applyClaudeRunEnded must finalize the trailing turn so that after
+// runClientLoop's defer takeAll() kills leaked runners, the next
+// reconnect's /claude-state hydrate doesn't keep showing
+// "Claude is thinking…". This is the inner half of the disconnect
+// cleanup path — the outer half (stopRun on each entry) needs
+// real subprocesses, but the state-finalize step can be tested
+// hermetically.
+func TestWS_ApplyClaudeRunEnded_FinalizesInFlightTurn(t *testing.T) {
+	dir := t.TempDir()
+	mgr := claudestate.NewSessionManager(dir, stubLocator{})
+	defer mgr.Shutdown(context.Background())
+
+	st, _ := mgr.GetOrLoad("sess1", "uuid-1")
+	st.BeginTurn("u1", "hi", time.Now().UTC())
+	st.View(func(s *claudestate.ClaudeState) {
+		if !s.InFlight {
+			t.Fatal("precondition: InFlight should be true after BeginTurn")
+		}
+	})
+
+	applyClaudeRunEnded("sess1", "client disconnected", mgr)
+
+	st.View(func(s *claudestate.ClaudeState) {
+		if s.InFlight {
+			t.Error("InFlight stayed true after applyClaudeRunEnded")
+		}
+		if !s.Turns[0].Done {
+			t.Error("trailing turn not Done")
+		}
+		if !s.Turns[0].IsError {
+			t.Error("trailing turn not IsError — reconnect would render it as success")
+		}
+		if len(s.Turns[0].Blocks) == 0 {
+			t.Error("expected synthetic message block for the user to see")
+		}
+	})
+}
+
 // Regression for "composer locked forever after claude binary missing":
 // the optimistic in-flight turn registered by BeginTurn must be
 // finalized when spawn fails, not left dangling until the next server
