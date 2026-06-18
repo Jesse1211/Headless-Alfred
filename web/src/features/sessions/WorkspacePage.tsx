@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { listTemplates, TemplateSummary } from '../../lib/api'
 import { useSessions } from './useSessions'
 import { useSessionHistoryLoader } from './useSessionHistoryLoader'
-import { useClaudeHistoryLoader } from './useClaudeHistoryLoader'
+import { useClaudeStateLoader } from './useClaudeStateLoader'
 import { useResizableWidth } from './useResizableWidth'
 import { SessionsSidebar } from './SessionsSidebar'
 import { sessionIndicator } from './sessionStatus'
@@ -38,7 +38,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
     perSession: s.perSession,
     setPerSession: s.setPerSession,
   })
-  useClaudeHistoryLoader({
+  useClaudeStateLoader({
     selectedSessionID: s.selectedSessionID,
     perSession: s.perSession,
     setPerSession: s.setPerSession,
