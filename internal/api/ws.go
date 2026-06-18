@@ -30,6 +30,45 @@ const (
 	pingInterval      = 20 * time.Second
 )
 
+// errClientGone short-circuits all writes after the first WriteJSON
+// failure on a connection — see guardedWriter. We don't surface this
+// anywhere; it just stops downstream code from pushing more frames
+// onto a dead socket.
+var errClientGone = errors.New("ws: client gone")
+
+// guardedWriter returns a serialized write closure that:
+//   - serializes WriteJSON calls under a single mutex (gorilla
+//     websocket.Conn forbids concurrent writes);
+//   - on the FIRST write failure (TCP drop, half-close, client tab
+//     closed), closes the conn so the reader goroutine's ReadJSON
+//     wakes with an error; that closes inbound, which makes
+//     runClientLoop's main select return, which runs the deferred
+//     claudeRunStates.takeAll() + stopRun() to SIGINT any in-flight
+//     `claude -p` and unblock its forwarder goroutine.
+//
+// Without this, a dead WS connection left runners blocked forever
+// pushing onto the 64-slot claudeEvents channel that nobody was
+// draining — the runner subprocess survived, kept burning the
+// model's tokens, and the server's InFlight stayed true so the next
+// client reconnect saw "Claude still thinking" forever.
+func guardedWriter(writeJSON func(any) error, close func() error) func(OutMsg) error {
+	var mu sync.Mutex
+	var dead bool
+	return func(msg OutMsg) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if dead {
+			return errClientGone
+		}
+		if err := writeJSON(msg); err != nil {
+			dead = true
+			_ = close()
+			return err
+		}
+		return nil
+	}
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
@@ -85,12 +124,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 		return nil
 	})
 
-	writeMu := &sync.Mutex{}
-	write := func(msg OutMsg) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return conn.WriteJSON(msg)
-	}
+	write := guardedWriter(conn.WriteJSON, conn.Close)
 
 	sessions := m.ListAll()
 	subs := make([]NamedSubscriber, 0, len(sessions))
@@ -667,6 +701,41 @@ func dispatchToolDecision(sessionID, toolUseID, decision, reason string, mgr *cl
 		ToolUseID: toolUseID,
 		Decision:  decision,
 		Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
+	})
+}
+
+// dispatchClaudeError applies a ClaudeError event to server state and
+// emits a claude_error frame. Used when the server itself decides a
+// run is over (spawn failure, write-to-dead-client, shutdown, session
+// deletion) — paths where the runner won't emit a result or run_ended
+// of its own. The Apply call finalizes the in-flight turn so the
+// composer unlocks, then the frame fan-outs to the originating client.
+// Safe to call with a nil manager (no-op + frame still flies).
+func dispatchClaudeError(sessionID, code, message string, mgr *claudestate.SessionManager, write func(OutMsg) error) {
+	now := time.Now().UTC()
+	if mgr != nil {
+		if st, err := mgr.GetOrLoad(sessionID, ""); err == nil {
+			ev := claudestate.Event{
+				Kind:      claudestate.EventClaudeError,
+				Timestamp: now,
+				Payload: &claudestate.ClaudeErrorPayload{
+					Code:    code,
+					Message: message,
+				},
+			}
+			if applyErr := st.Apply(ev); applyErr != nil {
+				slog.Warn("ws: apply claude_error", "sid", sessionID, "err", applyErr)
+			}
+		} else {
+			slog.Warn("ws: get state for claude_error", "sid", sessionID, "err", err)
+		}
+	}
+	_ = write(OutMsg{
+		Type:      "claude_error",
+		SessionID: sessionID,
+		Code:      code,
+		Message:   message,
+		Timestamp: now.Format(time.RFC3339Nano),
 	})
 }
 

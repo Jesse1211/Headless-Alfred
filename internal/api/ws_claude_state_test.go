@@ -46,6 +46,48 @@ func TestWS_ClaudeEvent_RoutedThroughApply(t *testing.T) {
 	})
 }
 
+// Regression for "tools never render in UI": dispatch must accept a
+// *claude.ToolUseStartEvent (the actual production payload type) and
+// land its ToolUseID in server state via Apply. The envelope.payload
+// in production is a concrete struct pointer from claude.parser, not
+// a json.RawMessage — so this test mirrors that exactly.
+func TestWS_ToolUseStart_FromConcreteStruct_LandsInState(t *testing.T) {
+	dir := t.TempDir()
+	mgr := claudestate.NewSessionManager(dir, stubLocator{})
+	defer mgr.Shutdown(context.Background())
+
+	st, _ := mgr.GetOrLoad("sess1", "uuid-1")
+	st.BeginTurn("u1", "use a tool", time.Now().UTC())
+
+	cap := &writerCapture{}
+	env := claudeEventEnvelope{
+		sessionID: "sess1",
+		kind:      claude.KindToolUseStart,
+		payload: &claude.ToolUseStartEvent{
+			Index:     1,
+			ToolUseID: "toolu_abc123",
+			Name:      "Bash",
+		},
+	}
+	dispatchClaudeStreamEvent(env, "uuid-1", mgr, cap.write)
+
+	st.View(func(s *claudestate.ClaudeState) {
+		if len(s.Turns[0].Blocks) != 1 {
+			t.Fatalf("blocks = %d, want 1 tool block", len(s.Turns[0].Blocks))
+		}
+		b := s.Turns[0].Blocks[0]
+		if b.Kind != "tool" || b.Tool == nil {
+			t.Fatalf("block not tool: %+v", b)
+		}
+		if b.Tool.ToolUseID != "toolu_abc123" {
+			t.Errorf("ToolUseID = %q, want toolu_abc123 (snake_case decoding broken)", b.Tool.ToolUseID)
+		}
+		if b.Tool.Name != "Bash" {
+			t.Errorf("Name = %q, want Bash", b.Tool.Name)
+		}
+	})
+}
+
 // Inbound tool_decision message updates state AND emits
 // tool_decision_applied so other connected tabs see the change.
 func TestWS_ToolDecision_BroadcastsApplied(t *testing.T) {
@@ -97,6 +139,58 @@ func mustNoErr(t *testing.T, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Regression for "composer locked forever after claude binary missing":
+// the optimistic in-flight turn registered by BeginTurn must be
+// finalized when spawn fails, not left dangling until the next server
+// restart. dispatchClaudeError runs the same finalize path the
+// runner-died case uses and broadcasts a claude_error frame.
+func TestWS_ClaudeError_FinalizesInFlightTurn(t *testing.T) {
+	dir := t.TempDir()
+	mgr := claudestate.NewSessionManager(dir, stubLocator{})
+	defer mgr.Shutdown(context.Background())
+
+	st, _ := mgr.GetOrLoad("sess1", "uuid-1")
+	// Simulate dispatchClaudePromptBegin: optimistic turn registered.
+	st.BeginTurn("u1", "hi", time.Now().UTC())
+	st.View(func(s *claudestate.ClaudeState) {
+		if !s.InFlight {
+			t.Fatal("precondition: InFlight should be true after BeginTurn")
+		}
+	})
+
+	cap := &writerCapture{}
+	dispatchClaudeError("sess1", "claude_spawn_failed", "exec: claude not found", mgr, cap.write)
+
+	if len(cap.frames) != 1 {
+		t.Fatalf("frames: %d", len(cap.frames))
+	}
+	f := cap.frames[0]
+	if f.Type != "claude_error" {
+		t.Errorf("type: %q", f.Type)
+	}
+	if f.Code != "claude_spawn_failed" {
+		t.Errorf("code: %q", f.Code)
+	}
+	if f.Timestamp == "" {
+		t.Error("timestamp missing — frontend uses it for the turn's finishedAt")
+	}
+
+	st.View(func(s *claudestate.ClaudeState) {
+		if s.InFlight {
+			t.Error("InFlight stayed true — composer would never unlock")
+		}
+		if !s.Turns[0].Done {
+			t.Error("turn not marked Done — frontend's spinner would never stop")
+		}
+		if !s.Turns[0].IsError {
+			t.Error("turn not marked IsError — frontend wouldn't style it red")
+		}
+		if s.LastError == nil || s.LastError.Code != "claude_spawn_failed" {
+			t.Errorf("LastError = %+v", s.LastError)
+		}
+	})
 }
 
 func TestWS_ClaudePrompt_EmitsTurnStarted(t *testing.T) {

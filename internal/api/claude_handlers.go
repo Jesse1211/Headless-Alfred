@@ -516,7 +516,15 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	})
 	if err != nil {
 		cancel()
-		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "claude_spawn_failed", Message: err.Error()})
+		// BeginTurn already registered an optimistic in-flight turn via
+		// dispatchClaudePromptBegin above. Without a compensating
+		// finalize, that turn stays Done=false forever and the
+		// composer never unlocks (only a server restart's
+		// finalizeStaleTrailingTurn would recover it). Route a
+		// synthesized ClaudeError through Apply so InFlight clears and
+		// the turn closes as an error block — same finalize path the
+		// runner-died case uses.
+		dispatchClaudeError(msg.SessionID, "claude_spawn_failed", err.Error(), csMgr, write)
 		return
 	}
 	runStates.set(msg.SessionID, &claudeRunState{cancel: cancel, stop: pr.Stop})
