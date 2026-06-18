@@ -29,6 +29,12 @@ func Load(snapshotPath, jsonlPath string) (ClaudeState, error) {
 	state := EmptyClaudeState()
 	state.TurnsLoaded = true
 
+	// claudehistory.Parse force-sets every jsonl turn to done=true,
+	// so we can't rely on jsonl's done to detect a stale trailing
+	// turn. Take the answer from the snapshot's trailing turn before
+	// any merge and remember it.
+	staleTrailing := snapOK && len(snap.Turns) > 0 && !snap.Turns[len(snap.Turns)-1].Done
+
 	switch {
 	case snapOK && jsonlOK:
 		state.Turns = mergeTurns(jsonlTurns, snap.Turns)
@@ -39,8 +45,38 @@ func Load(snapshotPath, jsonlPath string) (ClaudeState, error) {
 	default:
 		// Both missing — empty state.
 	}
+	if staleTrailing {
+		finalizeStaleTrailingTurn(state.Turns)
+	}
 	state.InFlight = computeInFlight(state.Turns)
 	return state, nil
+}
+
+// finalizeStaleTrailingTurn closes off any trailing turn that was
+// in-flight at the time of the last snapshot write. Server-as-truth
+// keeps the runner in process memory only — once the server (or its
+// runner) restarts, no events will ever arrive to mark the turn done.
+// Without this, the frontend hydrates the half-finished turn and
+// spins forever on "Claude is thinking..." with a timer that never
+// stops. Mutates in place.
+//
+// Caller is expected to have decided staleness from the SNAPSHOT
+// (not from the merged Done flag, which is force-true via
+// claudehistory.Parse).
+func finalizeStaleTrailingTurn(turns []ClaudeTurn) {
+	n := len(turns)
+	if n == 0 {
+		return
+	}
+	last := &turns[n-1]
+	last.Done = true
+	last.IsError = true
+	now := time.Now().UTC()
+	last.FinishedAt = &now
+	last.Blocks = append(last.Blocks, AssistantBlock{
+		Kind: "text",
+		Text: "Server restarted while this turn was running. The runner was killed; reply was not delivered.",
+	})
 }
 
 // loadSnapshot tries to read + validate the snapshot file. Returns

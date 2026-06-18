@@ -79,6 +79,125 @@ func TestLoad_VersionMismatch_FallsBack(t *testing.T) {
 	}
 }
 
+// Regression: when the server restarts mid-turn (or its runner dies
+// without firing a result event), the snapshot's trailing turn has
+// done=false. After restart, Load must NOT return it as in-flight —
+// the runner is gone and no events will ever arrive. Finalize it as
+// an error so the frontend immediately shows a clean state instead
+// of an eternal "Claude is thinking..." spinner.
+func TestLoad_StaleInFlightTurn_Finalized(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := tAt(7, 0, 0)
+	snap := snapshotFile{
+		Version:   snapshotVersion,
+		SessionID: "sess1",
+		WrittenAt: tAt(7, 5, 0),
+		Turns: []ClaudeTurn{{
+			ID:        "u1",
+			Prompt:    "long task",
+			StartedAt: startedAt,
+			Blocks:    []AssistantBlock{{Kind: "text", Text: "working on it"}},
+			Done:      false,
+		}},
+	}
+	writeJSON(t, filepath.Join(dir, "claude.json"), snap)
+
+	got, err := Load(filepath.Join(dir, "claude.json"), filepath.Join(dir, "missing.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Turns) != 1 {
+		t.Fatalf("turns: %d", len(got.Turns))
+	}
+	last := got.Turns[0]
+	if !last.Done {
+		t.Error("trailing turn should be finalized as done")
+	}
+	if !last.IsError {
+		t.Error("trailing turn should be marked isError after restart")
+	}
+	if last.FinishedAt == nil {
+		t.Error("trailing turn should have a finishedAt")
+	}
+	// Existing text block preserved; an error note is appended so the
+	// user sees what happened instead of a half-finished reply.
+	if len(last.Blocks) < 2 {
+		t.Errorf("expected the original blocks plus an error note: %+v", last.Blocks)
+	} else {
+		errBlock := last.Blocks[len(last.Blocks)-1]
+		if errBlock.Kind != "text" || errBlock.Text == "" {
+			t.Errorf("last block should be a non-empty text note: %+v", errBlock)
+		}
+	}
+	if got.InFlight {
+		t.Error("InFlight must be false after stale finalize")
+	}
+}
+
+// claudehistory.Parse always returns done=true. The trailing-turn
+// stale detector must read done from the snapshot, not from the
+// merged result — otherwise jsonl's optimism hides the runner death.
+func TestLoad_StaleTrailingTurn_FinalizedDespiteJsonlDoneTrue(t *testing.T) {
+	dir := t.TempDir()
+	snap := snapshotFile{
+		Version: snapshotVersion, SessionID: "sess1",
+		WrittenAt: tAt(7, 5, 0),
+		Turns: []ClaudeTurn{{
+			ID:        "u1",
+			Prompt:    "hi",
+			StartedAt: tAt(7, 0, 0),
+			Blocks:    []AssistantBlock{{Kind: "text", Text: "working"}},
+			Done:      false, // ← snapshot says it's still in flight
+		}},
+	}
+	writeJSON(t, filepath.Join(dir, "claude.json"), snap)
+
+	jsonl := filepath.Join(dir, "transcript.jsonl")
+	must(t, os.WriteFile(jsonl, []byte(
+		`{"type":"user","message":{"role":"user","content":"hi"},"uuid":"u1","timestamp":"2026-06-18T07:00:00.000Z"}`+"\n"+
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}`+"\n",
+	), 0o600))
+
+	got, err := Load(filepath.Join(dir, "claude.json"), jsonl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := got.Turns[0]
+	if !last.IsError {
+		t.Error("trailing turn should be flagged isError after restart even with jsonl present")
+	}
+	if last.FinishedAt == nil {
+		t.Error("trailing turn should have finishedAt")
+	}
+}
+
+func TestLoad_DoneTrailingTurn_Untouched(t *testing.T) {
+	dir := t.TempDir()
+	snap := snapshotFile{
+		Version: snapshotVersion, SessionID: "sess1",
+		WrittenAt: tAt(7, 5, 0),
+		Turns: []ClaudeTurn{{
+			ID:        "u1",
+			Prompt:    "ok",
+			StartedAt: tAt(7, 0, 0),
+			Blocks:    []AssistantBlock{{Kind: "text", Text: "all good"}},
+			Done:      true,
+		}},
+	}
+	writeJSON(t, filepath.Join(dir, "claude.json"), snap)
+	got, err := Load(filepath.Join(dir, "claude.json"), filepath.Join(dir, "missing.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := got.Turns[0]
+	if last.IsError {
+		t.Error("already-done turn should not be flagged as error")
+	}
+	if len(last.Blocks) != 1 {
+		t.Errorf("blocks shouldn't be augmented for done turns: %+v", last.Blocks)
+	}
+}
+
 func TestMergeTurns_FieldLevelOverride(t *testing.T) {
 	jsonl := []ClaudeTurn{{
 		ID:     "u1",
