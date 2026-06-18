@@ -344,3 +344,50 @@ describe('applyClaudeEvent: multi-message turn block ordering', () => {
     expect(s.turns[0].thinking).toEqual(['thought A', 'thought B'])
   })
 })
+
+describe('reduceClaudeMsg: turn_started reconciliation', () => {
+  it('replaces a placeholder turn matched by clientNonce', () => {
+    const sid = 'sess1'
+    const perSession = new Map<string, any>()
+    let s = beginClaudeTurn(emptyClaudeState(), 'hi', { clientNonce: 'nonce-1' })
+    perSession.set(sid, {
+      running: null, messages: [], messagesLoaded: false,
+      mode: 'claude', renderer: 'ui', claude: s,
+    })
+    const next = reduceClaudeMsg(perSession, {
+      type: 'turn_started',
+      sessionID: sid,
+      clientNonce: 'nonce-1',
+      turnId: 'server-turn-id-xyz',
+      timestamp: '2026-06-18T07:00:00Z',
+    } as any)!
+    const turn = next.get(sid)!.claude!.turns[0]
+    expect(turn.id).toBe('server-turn-id-xyz')
+    expect(turn.startedAt).toBe('2026-06-18T07:00:00Z')
+    expect(turn.prompt).toBe('hi') // user-typed prompt preserved
+  })
+})
+
+describe('reduceClaudeMsg: tool_decision_applied', () => {
+  it('sets the matching tool block decision to the server value', () => {
+    const sid = 'sess1'
+    const perSession = new Map<string, any>()
+    let s = beginClaudeTurn(emptyClaudeState(), 'use a tool')
+    s = applyClaudeEvent(s, 'tool_use_start', {
+      index: 0, tool_use_id: 'tu_1', name: 'Bash',
+    }, '2026-06-18T07:00:00Z')
+    perSession.set(sid, {
+      running: null, messages: [], messagesLoaded: false,
+      mode: 'claude', renderer: 'ui', claude: s,
+    })
+    const next = reduceClaudeMsg(perSession, {
+      type: 'tool_decision_applied',
+      sessionID: sid,
+      toolUseId: 'tu_1',
+      decision: 'deny',
+    } as any)!
+    const block = next.get(sid)!.claude!.turns[0].blocks[0]
+    expect(block.kind).toBe('tool')
+    if (block.kind === 'tool') expect(block.tool.decision).toBe('deny')
+  })
+})

@@ -69,13 +69,27 @@ export type ServerMsg =
   | { type: 'user_prompt'; sessionID: string; text: string }
   | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
+  | {
+      type: 'turn_started'
+      sessionID: string
+      clientNonce: string
+      turnId: string
+      timestamp: string
+    }
+  | {
+      type: 'tool_decision_applied'
+      sessionID: string
+      toolUseId: string
+      decision: 'allow' | 'deny'
+      timestamp?: string
+    }
 
 export type ClientMsg =
   | { type: 'run'; sessionID: string; command: string }
   | { type: 'enter_claude'; sessionID: string; renderer?: ClaudeRenderer; bypassPermissions?: boolean; templateId?: string }
   | { type: 'exit_claude'; sessionID: string }
   | { type: 'stdin'; sessionID: string; data: string }
-  | { type: 'claude_prompt'; sessionID: string; text: string; renderTemplate?: string; templates?: string[] }
+  | { type: 'claude_prompt'; sessionID: string; text: string; renderTemplate?: string; templates?: string[]; clientNonce?: string }
   | { type: 'tool_decision'; sessionID: string; toolUseId: string; decision: 'allow' | 'deny'; reason?: string }
   | { type: 'interrupt'; sessionID: string }
   | { type: 'ping' }

@@ -143,6 +143,28 @@ export function reduceClaudeMsg(
       // most-recent turn so UserPromptBubble can offer a "show full
       // prompt" toggle.
       return mutateClaude(prev, m.sessionID, (c) => attachExpandedPromptToLastTurn(c, m.text))
+    case 'turn_started':
+      // Swap the optimistic placeholder turn id (pending:<nonce>) for
+      // the server's authoritative turnId, and accept the server's
+      // startedAt so all connected tabs converge on the same value.
+      return mutateClaude(prev, m.sessionID, (c) => ({
+        ...c,
+        turns: c.turns.map((t) =>
+          t.id === `pending:${m.clientNonce}`
+            ? { ...t, id: m.turnId, startedAt: m.timestamp }
+            : t
+        ),
+      }))
+    case 'tool_decision_applied':
+      // Overwrite the optimistically-set decision on the matching tool
+      // block so other connected tabs converge on the server value.
+      return mutateClaude(prev, m.sessionID, (c) => ({
+        ...c,
+        turns: c.turns.map((t) => ({
+          ...t,
+          blocks: patchToolBlock(t.blocks, m.toolUseId, (tool) => ({ ...tool, decision: m.decision })),
+        })),
+      }))
     default:
       return null
   }
@@ -430,13 +452,20 @@ function patchToolBlock(
   return changed ? next : blocks
 }
 
+interface BeginOpts {
+  clientNonce?: string
+}
+
 // beginClaudeTurn registers a fresh turn for the user's outgoing
 // prompt. Called from useSessions when claude_prompt is sent.
-export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState {
+// When `opts.clientNonce` is provided the placeholder turn id is set
+// to `pending:<nonce>` so that the server-broadcast `turn_started`
+// frame can swap it for the authoritative turnId.
+export function beginClaudeTurn(prev: ClaudeState, prompt: string, opts: BeginOpts = {}): ClaudeState {
   const turn: ClaudeTurn = {
-    id: randomId(),
+    id: opts.clientNonce ? `pending:${opts.clientNonce}` : randomId(),
     prompt,
-    startedAt: new Date().toISOString(),
+    startedAt: new Date().toISOString(), // placeholder; reconciled by turn_started
     blocks: [],
     done: false,
   }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ShellSocket, ServerMsg, ConnState, ConnInfo, DiskUsage } from '../../lib/ws'
+import { randomId } from '../../lib/randomId'
 import {
   Session,
   listSessions,
@@ -321,11 +322,12 @@ export function useSessions(token: string) {
       // text is empty (server-rendered template), use optimisticLabel
       // so the user sees something other than a blank prompt bubble.
       const label = text || opts?.optimisticLabel || ''
+      const clientNonce = randomId()
       setPerSession((prev) => {
         const next = new Map(prev)
         const cur = next.get(sid) ?? emptyPerSessionState()
         const c = cur.claude ?? emptyClaudeState()
-        next.set(sid, { ...cur, claude: beginClaudeTurn(c, label) })
+        next.set(sid, { ...cur, claude: beginClaudeTurn(c, label, { clientNonce }) })
         return next
       })
       socket.send({
@@ -334,6 +336,7 @@ export function useSessions(token: string) {
         text,
         renderTemplate: opts?.renderTemplate,
         templates: opts?.templates,
+        clientNonce,
       })
     },
     [socket],
