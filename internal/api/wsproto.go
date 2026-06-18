@@ -89,6 +89,14 @@ type OutMsg struct {
 	// without enumerating fields here.
 	Payload any `json:"payload,omitempty"`
 
+	// Timestamp is the server's Apply-time wall clock (RFC 3339 UTC)
+	// for claude_event / tool_decision_applied / turn_started frames.
+	// Frontend reducer reads it into corresponding state fields
+	// (Turn.startedAt, Tool.startedAt, Tool.finishedAt, etc.) so
+	// timestamps are bit-identical between live streaming and
+	// post-refresh hydrate.
+	Timestamp string `json:"timestamp,omitempty"`
+
 	// ToolUseID identifies the pending tool-approval the client is
 	// looking at (tool_approval_request frame).
 	ToolUseID string `json:"toolUseId,omitempty"`

@@ -621,14 +621,17 @@ func dispatchClaudeStreamEvent(env claudeEventEnvelope, claudeUUID string, mgr *
 	if err := st.Apply(ev); err != nil {
 		slog.Warn("ws: apply event", "sid", env.sessionID, "kind", env.kind, "err", err)
 	}
-	// Re-marshal payload so the wire format carries the server
-	// timestamp inside payload.
+	// Re-marshal payload to a stable RawMessage. The server-side
+	// timestamp travels in the top-level Timestamp field so the
+	// frontend reducer can read it directly without diving into the
+	// payload variant.
 	out, _ := json.Marshal(ev.Payload)
 	_ = write(OutMsg{
 		Type:      "claude_event",
 		SessionID: env.sessionID,
 		EventKind: string(env.kind),
 		Payload:   json.RawMessage(out),
+		Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
 	})
 }
 
@@ -663,6 +666,7 @@ func dispatchToolDecision(sessionID, toolUseID, decision, reason string, mgr *cl
 		SessionID: sessionID,
 		ToolUseID: toolUseID,
 		Decision:  decision,
+		Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
 	})
 }
 
@@ -692,6 +696,7 @@ func dispatchClaudePromptBegin(sessionID, clientNonce, prompt string, mgr *claud
 		SessionID:   sessionID,
 		ClientNonce: clientNonce,
 		TurnID:      turnID,
+		Timestamp:   now.Format(time.RFC3339Nano),
 	})
 	return turnID
 }
