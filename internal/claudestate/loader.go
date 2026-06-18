@@ -178,13 +178,87 @@ func parseTimeOrNil(s string) *time.Time {
 	return &t
 }
 
-// mergeTurns is a stub for Task 11; in this task it just prefers the
-// snapshot. Real merge rules in the next commit.
+// mergeTurns implements the spec's merge rules:
+//   - jsonl is the ordering / skeleton truth source (Prompt, StartedAt,
+//     ExpandedPrompt, Thinking, block sequence, text content, tool
+//     skeleton: Name, Input, Result, IsError).
+//   - snapshot provides extended fields: Turn.FinishedAt, IsError,
+//     TotalCostUsd, Usage, Done (for the trailing turn);
+//     Tool.StartedAt, FinishedAt, Decision, BgTaskID.
+//   - Turns present in snapshot but absent from jsonl are dropped.
+//   - Tool blocks present in snapshot but absent from jsonl are dropped.
 func mergeTurns(jsonl, snap []ClaudeTurn) []ClaudeTurn {
-	if len(snap) > 0 {
-		return snap
+	if len(jsonl) == 0 {
+		return jsonl
 	}
-	return jsonl
+	snapByID := make(map[string]ClaudeTurn, len(snap))
+	for _, t := range snap {
+		snapByID[t.ID] = t
+	}
+	out := make([]ClaudeTurn, len(jsonl))
+	for i, jt := range jsonl {
+		st, ok := snapByID[jt.ID]
+		if !ok {
+			out[i] = jt
+			continue
+		}
+		out[i] = mergeOneTurn(jt, st)
+	}
+	return out
+}
+
+func mergeOneTurn(jt, st ClaudeTurn) ClaudeTurn {
+	// jsonl skeleton.
+	out := jt
+	// snapshot per-turn extensions.
+	if st.FinishedAt != nil {
+		ft := *st.FinishedAt
+		out.FinishedAt = &ft
+	}
+	out.IsError = st.IsError
+	if st.TotalCostUsd != nil {
+		c := *st.TotalCostUsd
+		out.TotalCostUsd = &c
+	}
+	if st.Usage != nil {
+		u := *st.Usage
+		out.Usage = &u
+	}
+	// For the trailing turn, the snapshot's Done wins (it may legitimately
+	// be false while jsonl forces it true). For all other turns the jsonl's
+	// "true" is correct because there is by definition a successor row.
+	out.Done = st.Done || jt.Done
+	out.Blocks = mergeBlocks(jt.Blocks, st.Blocks)
+	return out
+}
+
+func mergeBlocks(jsonl, snap []AssistantBlock) []AssistantBlock {
+	snapToolByID := map[string]ClaudeToolCall{}
+	for _, b := range snap {
+		if b.Kind == "tool" && b.Tool != nil {
+			snapToolByID[b.Tool.ToolUseID] = *b.Tool
+		}
+	}
+	out := make([]AssistantBlock, len(jsonl))
+	for i, b := range jsonl {
+		if b.Kind == "text" {
+			out[i] = b
+			continue
+		}
+		if b.Tool == nil {
+			out[i] = b
+			continue
+		}
+		merged := *b.Tool
+		if sn, ok := snapToolByID[b.Tool.ToolUseID]; ok {
+			merged.StartedAt = sn.StartedAt
+			merged.FinishedAt = sn.FinishedAt
+			merged.Decision = sn.Decision
+			merged.BgTaskID = sn.BgTaskID
+		}
+		out[i] = AssistantBlock{Kind: "tool", Tool: &merged}
+	}
+	return out
 }
 
 // computeInFlight derives the InFlight flag from the trailing turn.

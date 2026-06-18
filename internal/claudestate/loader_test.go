@@ -79,6 +79,108 @@ func TestLoad_VersionMismatch_FallsBack(t *testing.T) {
 	}
 }
 
+func TestMergeTurns_FieldLevelOverride(t *testing.T) {
+	jsonl := []ClaudeTurn{{
+		ID:     "u1",
+		Prompt: "from jsonl",
+		Blocks: []AssistantBlock{
+			{Kind: "text", Text: "hello"},
+			{Kind: "tool", Tool: &ClaudeToolCall{
+				ToolUseID: "tu_1", Name: "Bash", Decision: "allow",
+				Result: "ok",
+			}},
+		},
+		StartedAt: tAt(7, 0, 0),
+		Done:      true,
+	}}
+	cost := 0.05
+	snap := []ClaudeTurn{{
+		ID:           "u1",
+		Prompt:       "should-not-override",
+		FinishedAt:   timePtr(tAt(7, 0, 5)),
+		TotalCostUsd: &cost,
+		IsError:      false,
+		Blocks: []AssistantBlock{
+			{Kind: "tool", Tool: &ClaudeToolCall{
+				ToolUseID:  "tu_1",
+				Decision:   "deny",
+				StartedAt:  timePtr(tAt(7, 0, 1)),
+				FinishedAt: timePtr(tAt(7, 0, 3)),
+				BgTaskID:   "task_x",
+			}},
+		},
+		Done: true,
+	}}
+
+	merged := mergeTurns(jsonl, snap)
+	if len(merged) != 1 {
+		t.Fatalf("len: %d", len(merged))
+	}
+	got := merged[0]
+	// jsonl is authoritative for skeleton text.
+	if got.Prompt != "from jsonl" {
+		t.Errorf("Prompt: %q (should come from jsonl)", got.Prompt)
+	}
+	if got.Blocks[0].Kind != "text" || got.Blocks[0].Text != "hello" {
+		t.Errorf("text block lost: %+v", got.Blocks[0])
+	}
+	// snapshot is authoritative for tool extension fields.
+	tool := got.Blocks[1].Tool
+	if tool.Decision != "deny" {
+		t.Errorf("decision: %q (should come from snapshot)", tool.Decision)
+	}
+	if tool.StartedAt == nil || !tool.StartedAt.Equal(tAt(7, 0, 1)) {
+		t.Errorf("StartedAt: %v", tool.StartedAt)
+	}
+	if tool.FinishedAt == nil || !tool.FinishedAt.Equal(tAt(7, 0, 3)) {
+		t.Errorf("FinishedAt: %v", tool.FinishedAt)
+	}
+	if tool.BgTaskID != "task_x" {
+		t.Errorf("BgTaskID: %q", tool.BgTaskID)
+	}
+	// jsonl is authoritative for tool skeleton (Name, Result).
+	if tool.Name != "Bash" || tool.Result != "ok" {
+		t.Errorf("tool skeleton overwritten: %+v", tool)
+	}
+	// snapshot wins on per-turn extension fields.
+	if got.TotalCostUsd == nil || *got.TotalCostUsd != 0.05 {
+		t.Errorf("cost: %v", got.TotalCostUsd)
+	}
+	if got.FinishedAt == nil || !got.FinishedAt.Equal(tAt(7, 0, 5)) {
+		t.Errorf("FinishedAt: %v", got.FinishedAt)
+	}
+}
+
+func TestMergeTurns_SnapshotExtraTurnsDropped(t *testing.T) {
+	jsonl := []ClaudeTurn{{ID: "u1", Prompt: "from jsonl"}}
+	snap := []ClaudeTurn{
+		{ID: "u1", Prompt: "x"},
+		{ID: "u2", Prompt: "ghost"},
+	}
+	merged := mergeTurns(jsonl, snap)
+	if len(merged) != 1 {
+		t.Errorf("ghost turn not dropped: %+v", merged)
+	}
+}
+
+func TestMergeTurns_SnapshotExtraToolDropped(t *testing.T) {
+	jsonl := []ClaudeTurn{{
+		ID:     "u1",
+		Blocks: []AssistantBlock{{Kind: "tool", Tool: &ClaudeToolCall{ToolUseID: "tu_1", Name: "Bash"}}},
+	}}
+	snap := []ClaudeTurn{{
+		ID: "u1",
+		Blocks: []AssistantBlock{
+			{Kind: "tool", Tool: &ClaudeToolCall{ToolUseID: "tu_1", Decision: "deny"}},
+			{Kind: "tool", Tool: &ClaudeToolCall{ToolUseID: "tu_GHOST", Decision: "allow"}},
+		},
+	}}
+	merged := mergeTurns(jsonl, snap)
+	if len(merged[0].Blocks) != 1 {
+		t.Errorf("ghost tool not dropped: %+v", merged[0].Blocks)
+	}
+}
+
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	b, err := json.Marshal(v)
