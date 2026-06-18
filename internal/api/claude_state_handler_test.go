@@ -18,7 +18,7 @@ import (
 // stub locator that always says "not found"
 type stubLocator struct{}
 
-func (stubLocator) Locate(string) (string, error) { return "", os.ErrNotExist }
+func (stubLocator) Locate(sessionID, claudeUUID string) (string, error) { return "", os.ErrNotExist }
 
 func TestClaudeStateHandler_HappyPath(t *testing.T) {
 	dir := t.TempDir()
