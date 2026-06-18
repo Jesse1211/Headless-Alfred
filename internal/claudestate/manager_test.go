@@ -86,7 +86,7 @@ type fakeJsonlLocator struct {
 	delay time.Duration
 }
 
-func (f *fakeJsonlLocator) Locate(claudeUUID string) (string, error) {
+func (f *fakeJsonlLocator) Locate(sessionID, claudeUUID string) (string, error) {
 	f.calls.Add(1)
 	if f.delay > 0 {
 		time.Sleep(f.delay)

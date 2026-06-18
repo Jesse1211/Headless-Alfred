@@ -16,9 +16,11 @@ import (
 // detail into its tests. The production wiring (Plan 2 Task 4)
 // adapts claudehistory.Locator into this interface.
 type JsonlLocator interface {
-	// Locate returns the jsonl file path for a given Claude session
-	// uuid, or an error if not found.
-	Locate(claudeUUID string) (string, error)
+	// Locate returns the jsonl file path for a Claude session.
+	// sessionID is the Alfred session id (used by the upstream
+	// claudehistory.Locator as a cache key); claudeUUID is the
+	// Claude CLI's per-conversation uuid embedded in the file name.
+	Locate(sessionID, claudeUUID string) (string, error)
 }
 
 // SessionManager is the process-wide registry of in-memory
@@ -112,7 +114,7 @@ func (m *SessionManager) buildSession(sessionID, claudeUUID string) (*SessionSta
 	snapPath := SnapshotPath(m.dataDir, sessionID)
 	jsonlPath := ""
 	if claudeUUID != "" {
-		if p, err := m.locator.Locate(claudeUUID); err == nil {
+		if p, err := m.locator.Locate(sessionID, claudeUUID); err == nil {
 			jsonlPath = p
 		}
 	}
