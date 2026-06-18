@@ -55,7 +55,7 @@ func TestRefreshParity_GoldenPath(t *testing.T) {
 		{Kind: EventTextDelta, Timestamp: tAt(7, 0, 4),
 			Payload: &TextDeltaPayload{Index: 0, Text: "done"}},
 		{Kind: EventMessageDelta, Timestamp: tAt(7, 0, 5),
-			Payload: &MessageDeltaPayload{Usage: TokenUsage{InputTokens: 100, OutputTokens: 5}}},
+			Payload: &MessageDeltaPayload{Usage: MessageDeltaUsage{InputTokens: 100, OutputTokens: 5}}},
 		{Kind: EventResult, Timestamp: tAt(7, 0, 5),
 			Payload: &ResultPayload{IsError: false, TotalCostUsd: 0.001}},
 	} {

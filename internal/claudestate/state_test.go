@@ -1,6 +1,7 @@
 package claudestate
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -211,11 +212,76 @@ func TestApply_ToolUseEnd_PatchesInput(t *testing.T) {
 	})
 }
 
+// Regression for the deploy-time bug where token usage was always 0
+// after refresh: the dispatch path marshals the parsed event payload
+// (snake_case wire fields) then re-unmarshals into MessageDeltaPayload.
+// If our payload struct uses camelCase tags, decode silently produces
+// a zero-value Usage and the snapshot stores 0 in → 0 out forever.
+func TestApply_MessageDelta_DecodesSnakeCaseWire(t *testing.T) {
+	wireJSON := []byte(`{
+		"kind": "message_delta",
+		"timestamp": "2026-06-18T07:00:00Z",
+		"payload": {
+			"usage": {
+				"input_tokens": 1234,
+				"output_tokens": 567,
+				"cache_read_input_tokens": 100,
+				"cache_creation_input_tokens": 50
+			}
+		}
+	}`)
+	var ev Event
+	if err := json.Unmarshal(wireJSON, &ev); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(ev))
+	s.View(func(st *ClaudeState) {
+		u := st.Turns[0].Usage
+		if u == nil {
+			t.Fatal("usage nil")
+		}
+		if u.InputTokens != 1234 || u.OutputTokens != 567 {
+			t.Errorf("usage = %+v want input=1234 output=567", u)
+		}
+		if u.CacheReadInputTokens != 100 || u.CacheCreationInputTokens != 50 {
+			t.Errorf("cache fields lost: %+v", u)
+		}
+	})
+}
+
+// Same regression for result: total_cost_usd / is_error snake_case
+// from stream-json must decode into our ResultPayload.
+func TestApply_Result_DecodesSnakeCaseWire(t *testing.T) {
+	wireJSON := []byte(`{
+		"kind": "result",
+		"timestamp": "2026-06-18T07:00:00Z",
+		"payload": {
+			"is_error": false,
+			"total_cost_usd": 0.0123,
+			"result": "ok"
+		}
+	}`)
+	var ev Event
+	if err := json.Unmarshal(wireJSON, &ev); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(ev))
+	s.View(func(st *ClaudeState) {
+		if st.Turns[0].TotalCostUsd == nil || *st.Turns[0].TotalCostUsd != 0.0123 {
+			t.Errorf("cost = %v want 0.0123", st.Turns[0].TotalCostUsd)
+		}
+	})
+}
+
 func TestApply_MessageDelta_StoresUsage(t *testing.T) {
 	s := NewSessionState("sess1", "uuid-1")
 	s.BeginTurn("u1", "go", tAt(7, 0, 0))
 	must(t, s.Apply(Event{Kind: EventMessageDelta, Timestamp: tAt(7, 0, 1),
-		Payload: &MessageDeltaPayload{Usage: TokenUsage{InputTokens: 100, OutputTokens: 50}}}))
+		Payload: &MessageDeltaPayload{Usage: MessageDeltaUsage{InputTokens: 100, OutputTokens: 50}}}))
 	s.View(func(st *ClaudeState) {
 		if st.Turns[0].Usage == nil || st.Turns[0].Usage.InputTokens != 100 {
 			t.Errorf("usage: %+v", st.Turns[0].Usage)

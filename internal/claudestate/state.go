@@ -312,8 +312,12 @@ func (s *SessionState) applyMessageDelta(p *MessageDeltaPayload) {
 	if turn == nil {
 		return
 	}
-	u := p.Usage
-	turn.Usage = &u
+	turn.Usage = &TokenUsage{
+		InputTokens:              p.Usage.InputTokens,
+		OutputTokens:             p.Usage.OutputTokens,
+		CacheReadInputTokens:     p.Usage.CacheReadInputTokens,
+		CacheCreationInputTokens: p.Usage.CacheCreationInputTokens,
+	}
 }
 
 func (s *SessionState) applyResult(p *ResultPayload, ts time.Time) {

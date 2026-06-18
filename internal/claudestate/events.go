@@ -142,6 +142,19 @@ func (e Event) MarshalJSON() ([]byte, error) {
 }
 
 // ---- payload struct definitions -----------------------------------
+//
+// The first eleven payload types decode JSON produced by
+// internal/claude (Claude CLI stream-json + hook events). The wire
+// format there is snake_case (input_tokens, is_error, tool_use_id, ...)
+// — these structs must match field-for-field so the dispatch path's
+// marshal→unmarshal round-trip preserves data. The frontend reducer's
+// narrowing helpers (asXxx in claudeReducer.ts) already accept
+// snake_case wire payloads, so this is consistent end-to-end.
+//
+// The remaining four payload types (ToolDecision, TurnStarted,
+// ToolDecisionApplied, ClaudeError, ClaudeRunEnded) are server-
+// originated frames; the frontend reducer consumes them as camelCase
+// via OutMsg fields and the WS protocol mirror in lib/ws.ts.
 
 type TextDeltaPayload struct {
 	Index int    `json:"index"`
@@ -155,60 +168,70 @@ type ThinkingDeltaPayload struct {
 
 type ToolUseStartPayload struct {
 	Index     int    `json:"index"`
-	ToolUseID string `json:"toolUseId"`
+	ToolUseID string `json:"tool_use_id"`
 	Name      string `json:"name"`
 }
 
 type ToolUseEndPayload struct {
-	ToolUseID string `json:"toolUseId"`
+	ToolUseID string `json:"tool_use_id"`
 	Input     any    `json:"input,omitempty"`
 }
 
 type ToolResultPayload struct {
-	ToolUseID string `json:"toolUseId"`
+	ToolUseID string `json:"tool_use_id"`
 	Content   string `json:"content"`
-	IsError   bool   `json:"isError"`
+	IsError   bool   `json:"is_error"`
+}
+
+// MessageDeltaUsage mirrors internal/claude.MessageUsage's wire shape
+// (snake_case). The reducer copies into the camelCase TokenUsage that
+// lives on ClaudeTurn.
+type MessageDeltaUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 type MessageDeltaPayload struct {
-	Usage TokenUsage `json:"usage"`
+	Usage MessageDeltaUsage `json:"usage"`
 }
 
 type ResultPayload struct {
-	IsError      bool    `json:"isError"`
-	TotalCostUsd float64 `json:"totalCostUsd"`
+	IsError      bool    `json:"is_error"`
+	TotalCostUsd float64 `json:"total_cost_usd"`
 	Result       string  `json:"result,omitempty"`
 }
 
 type TaskStartedPayload struct {
-	TaskID      string `json:"taskId"`
-	ToolUseID   string `json:"toolUseId"`
+	TaskID      string `json:"task_id"`
+	ToolUseID   string `json:"tool_use_id"`
 	Description string `json:"description"`
-	TaskType    string `json:"taskType"`
+	TaskType    string `json:"task_type"`
 }
 
 type TaskNotificationPayload struct {
-	TaskID    string `json:"taskId"`
-	ToolUseID string `json:"toolUseId"`
+	TaskID    string `json:"task_id"`
+	ToolUseID string `json:"tool_use_id"`
 	Status    string `json:"status"`
 	Summary   string `json:"summary"`
 }
 
 type TaskUpdatedPayload struct {
-	TaskID string         `json:"taskId"`
+	TaskID string         `json:"task_id"`
 	Patch  map[string]any `json:"patch"`
 }
 
 type HookStartedPayload struct {
-	HookID    string `json:"hookId"`
-	HookEvent string `json:"hookEvent"`
-	HookName  string `json:"hookName,omitempty"`
+	HookID    string `json:"hook_id"`
+	HookEvent string `json:"hook_event"`
+	HookName  string `json:"hook_name,omitempty"`
 }
 
 type HookResponsePayload struct {
-	HookID    string `json:"hookId"`
-	HookEvent string `json:"hookEvent"`
-	ExitCode  int    `json:"exitCode"`
+	HookID    string `json:"hook_id"`
+	HookEvent string `json:"hook_event"`
+	ExitCode  int    `json:"exit_code"`
 	Outcome   string `json:"outcome,omitempty"`
 }
 
