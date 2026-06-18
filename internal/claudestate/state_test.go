@@ -195,3 +195,74 @@ func tAt(h, m, sec int) time.Time {
 func blockText(st *ClaudeState, turnIdx, blockIdx int) string {
 	return st.Turns[turnIdx].Blocks[blockIdx].Text
 }
+
+func TestApply_ToolUseEnd_PatchesInput(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(Event{Kind: EventToolUseStart, Timestamp: tAt(7, 0, 1),
+		Payload: &ToolUseStartPayload{Index: 0, ToolUseID: "tu_1", Name: "Bash"}}))
+	must(t, s.Apply(Event{Kind: EventToolUseEnd, Timestamp: tAt(7, 0, 2),
+		Payload: &ToolUseEndPayload{ToolUseID: "tu_1", Input: map[string]any{"command": "ls"}}}))
+	s.View(func(st *ClaudeState) {
+		in, _ := st.Turns[0].Blocks[0].Tool.Input.(map[string]any)
+		if in["command"] != "ls" {
+			t.Errorf("input: %+v", st.Turns[0].Blocks[0].Tool.Input)
+		}
+	})
+}
+
+func TestApply_MessageDelta_StoresUsage(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(Event{Kind: EventMessageDelta, Timestamp: tAt(7, 0, 1),
+		Payload: &MessageDeltaPayload{Usage: TokenUsage{InputTokens: 100, OutputTokens: 50}}}))
+	s.View(func(st *ClaudeState) {
+		if st.Turns[0].Usage == nil || st.Turns[0].Usage.InputTokens != 100 {
+			t.Errorf("usage: %+v", st.Turns[0].Usage)
+		}
+	})
+}
+
+func TestApply_Result_FinalizesTurn(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(Event{Kind: EventTextDelta, Timestamp: tAt(7, 0, 1),
+		Payload: &TextDeltaPayload{Index: 0, Text: "hi"}}))
+	must(t, s.Apply(Event{Kind: EventResult, Timestamp: tAt(7, 0, 5),
+		Payload: &ResultPayload{IsError: false, TotalCostUsd: 0.001}}))
+	s.View(func(st *ClaudeState) {
+		if !st.Turns[0].Done {
+			t.Error("not Done")
+		}
+		if st.Turns[0].FinishedAt == nil || !st.Turns[0].FinishedAt.Equal(tAt(7, 0, 5)) {
+			t.Errorf("FinishedAt = %v", st.Turns[0].FinishedAt)
+		}
+		if st.Turns[0].TotalCostUsd == nil || *st.Turns[0].TotalCostUsd != 0.001 {
+			t.Errorf("cost = %v", st.Turns[0].TotalCostUsd)
+		}
+		if st.InFlight {
+			t.Error("InFlight still true")
+		}
+	})
+}
+
+func TestApply_ClaudeRunEnded_FinalizesInFlightAsError(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "go", tAt(7, 0, 0))
+	must(t, s.Apply(Event{Kind: EventClaudeRunEnded, Timestamp: tAt(7, 0, 9),
+		Payload: &ClaudeRunEndedPayload{Message: "killed"}}))
+	s.View(func(st *ClaudeState) {
+		tt := st.Turns[0]
+		if !tt.Done || !tt.IsError {
+			t.Errorf("Done=%v IsError=%v", tt.Done, tt.IsError)
+		}
+		if tt.FinishedAt == nil || !tt.FinishedAt.Equal(tAt(7, 0, 9)) {
+			t.Errorf("FinishedAt = %v", tt.FinishedAt)
+		}
+		// Synthetic text block surfaces the kill reason so the UI is
+		// not blank when the runner died before any text arrived.
+		if len(tt.Blocks) != 1 || tt.Blocks[0].Kind != "text" || tt.Blocks[0].Text != "killed" {
+			t.Errorf("synthetic message: %+v", tt.Blocks)
+		}
+	})
+}

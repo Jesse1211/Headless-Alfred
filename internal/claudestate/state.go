@@ -127,9 +127,40 @@ func (s *SessionState) Apply(ev Event) error {
 			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
 		}
 		s.applyToolResult(p, ev.Timestamp)
+	case EventToolUseEnd:
+		p, ok := ev.Payload.(*ToolUseEndPayload)
+		if !ok {
+			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		}
+		s.applyToolUseEnd(p)
+	case EventMessageDelta:
+		p, ok := ev.Payload.(*MessageDeltaPayload)
+		if !ok {
+			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		}
+		s.applyMessageDelta(p)
+	case EventResult:
+		p, ok := ev.Payload.(*ResultPayload)
+		if !ok {
+			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		}
+		s.applyResult(p, ev.Timestamp)
+	case EventClaudeRunEnded:
+		p, ok := ev.Payload.(*ClaudeRunEndedPayload)
+		if !ok {
+			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		}
+		s.finalizeInFlight(p.Message, ev.Timestamp)
+	case EventClaudeError:
+		p, ok := ev.Payload.(*ClaudeErrorPayload)
+		if !ok {
+			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		}
+		s.state.LastError = &ClaudeError{Code: p.Code, Message: p.Message}
+		s.finalizeInFlight(p.Message, ev.Timestamp)
 	default:
-		// Remaining kinds wired in Task 7 (lifecycle). Until then they're
-		// a no-op so integration tests can submit them without crashing.
+		// Unknown event kind; silently no-op so future versions
+		// don't crash on older runners.
 	}
 	return nil
 }
@@ -211,6 +242,66 @@ func (s *SessionState) applyMessageStart() {
 	// folds back into the previous message's blocks.
 	_ = s.indexFor(turn)
 	s.resetBlockIndex()
+}
+
+func (s *SessionState) applyToolUseEnd(p *ToolUseEndPayload) {
+	turn := s.lastTurn()
+	if turn == nil || p.ToolUseID == "" {
+		return
+	}
+	for i := range turn.Blocks {
+		b := &turn.Blocks[i]
+		if b.Kind == "tool" && b.Tool != nil && b.Tool.ToolUseID == p.ToolUseID {
+			b.Tool.Input = p.Input
+			return
+		}
+	}
+}
+
+func (s *SessionState) applyMessageDelta(p *MessageDeltaPayload) {
+	turn := s.lastTurn()
+	if turn == nil {
+		return
+	}
+	u := p.Usage
+	turn.Usage = &u
+}
+
+func (s *SessionState) applyResult(p *ResultPayload, ts time.Time) {
+	turn := s.lastTurn()
+	s.state.InFlight = false
+	if turn == nil {
+		return
+	}
+	turn.Done = true
+	turn.IsError = p.IsError
+	turn.FinishedAt = timePtr(ts)
+	if p.TotalCostUsd != 0 {
+		c := p.TotalCostUsd
+		turn.TotalCostUsd = &c
+	}
+	if len(turn.Blocks) == 0 && p.Result != "" {
+		turn.Blocks = []AssistantBlock{{Kind: "text", Text: p.Result}}
+	}
+}
+
+// finalizeInFlight closes off an unfinished trailing turn as an
+// error. Called by claude_run_ended and claude_error so the composer
+// unlocks even when no result event arrived.
+func (s *SessionState) finalizeInFlight(reason string, ts time.Time) {
+	turn := s.lastTurn()
+	s.state.InFlight = false
+	s.state.Pending = nil
+	s.state.PendingQuestions = nil
+	if turn == nil || turn.Done {
+		return
+	}
+	turn.Done = true
+	turn.IsError = true
+	turn.FinishedAt = timePtr(ts)
+	if len(turn.Blocks) == 0 && reason != "" {
+		turn.Blocks = []AssistantBlock{{Kind: "text", Text: reason}}
+	}
 }
 
 // ---- internal turn bookkeeping ----
