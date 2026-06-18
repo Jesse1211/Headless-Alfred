@@ -153,13 +153,10 @@ func decodeJSONRaw(raw []byte) any {
 	return v
 }
 
-func parseTimeOrZero(s string) (out time.Time) {
-	if s == "" {
-		return
-	}
+func parseTimeOrZero(s string) time.Time {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
-		return
+		return time.Time{}
 	}
 	return t
 }
@@ -263,8 +260,6 @@ func mergeBlocks(jsonl, snap []AssistantBlock) []AssistantBlock {
 
 // computeInFlight derives the InFlight flag from the trailing turn.
 func computeInFlight(turns []ClaudeTurn) bool {
-	if n := len(turns); n > 0 && !turns[n-1].Done {
-		return true
-	}
-	return false
+	n := len(turns)
+	return n > 0 && !turns[n-1].Done
 }
