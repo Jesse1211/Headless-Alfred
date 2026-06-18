@@ -67,6 +67,23 @@ func (s *SessionState) View(fn func(*ClaudeState)) {
 	fn(&s.state)
 }
 
+// AttachPersister installs p so subsequent Apply calls signal
+// dirty. SessionManager (Plan 2) wires this immediately after
+// NewSessionState. Test code can leave it unset to keep tests
+// hermetic.
+func (s *SessionState) AttachPersister(p *Persister) {
+	s.persister = p
+}
+
+// markDirty fires the Persister dirty bit. Called from Apply and
+// BeginTurn after every mutation. Cheap (single channel send) so
+// we don't bother filtering on "did state actually change."
+func (s *SessionState) markDirty() {
+	if s.persister != nil {
+		s.persister.MarkDirty()
+	}
+}
+
 // Close flushes the Persister (if attached) and stops its goroutine.
 // Safe to call when persister is nil (test path).
 func (s *SessionState) Close(ctx context.Context) error {
@@ -81,6 +98,7 @@ func (s *SessionState) Close(ctx context.Context) error {
 // user's outgoing prompt before any stream events arrive.
 func (s *SessionState) BeginTurn(id, prompt string, startedAt time.Time) {
 	s.mu.Lock()
+	defer s.markDirty()
 	defer s.mu.Unlock()
 	s.state.Turns = append(s.state.Turns, ClaudeTurn{
 		ID:        id,
@@ -98,6 +116,7 @@ func (s *SessionState) BeginTurn(id, prompt string, startedAt time.Time) {
 // stays linear.
 func (s *SessionState) Apply(ev Event) error {
 	s.mu.Lock()
+	defer s.markDirty()
 	defer s.mu.Unlock()
 
 	switch ev.Kind {
