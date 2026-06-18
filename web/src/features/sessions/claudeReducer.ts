@@ -87,7 +87,7 @@ export function reduceClaudeMsg(
       return next
     }
     case 'claude_event':
-      return mutateClaude(prev, m.sessionID, (c) => applyClaudeEvent(c, m.eventKind, m.payload))
+      return mutateClaude(prev, m.sessionID, (c) => applyClaudeEvent(c, m.eventKind, m.payload, m.timestamp))
     case 'tool_approval_request': {
       const c = prev.get(m.sessionID)?.claude ?? emptyClaudeState()
       // Dedup against BOTH queues — a re-emitted toolUseId could
@@ -122,6 +122,7 @@ export function reduceClaudeMsg(
         finalizeInFlightTurn(
           { ...c, lastError: { code: m.code, message: m.message } },
           m.message || m.code,
+          m.timestamp,
         ),
       )
     case 'claude_run_ended': {
@@ -133,7 +134,7 @@ export function reduceClaudeMsg(
       const cur = prev.get(m.sessionID)
       if (!cur || !cur.claude) return prev
       const next = new Map(prev)
-      next.set(m.sessionID, { ...cur, claude: finalizeInFlightTurn(cur.claude, m.message) })
+      next.set(m.sessionID, { ...cur, claude: finalizeInFlightTurn(cur.claude, m.message, m.timestamp) })
       return next
     }
     case 'user_prompt':
@@ -170,6 +171,7 @@ export function applyClaudeEvent(
   prev: ClaudeState,
   kind: string,
   payload: unknown,
+  frameTs?: string,
 ): ClaudeState {
   const turns = [...prev.turns]
   const lastIdx = turns.length - 1
@@ -261,7 +263,7 @@ export function applyClaudeEvent(
           toolUseId: p.toolUseId,
           name: p.name,
           decision: 'pending',
-          startedAt: new Date().toISOString(),
+          startedAt: asTimestamp(frameTs),
         },
       })
       last.blocks = blocks
@@ -283,7 +285,7 @@ export function applyClaudeEvent(
         ...t,
         result: p.content,
         isError: p.isError,
-        finishedAt: new Date().toISOString(),
+        finishedAt: asTimestamp(frameTs),
       }))
       turns[lastIdx] = last
       return { ...prev, turns }
@@ -301,7 +303,7 @@ export function applyClaudeEvent(
       last.done = true
       last.isError = p.isError
       last.totalCostUsd = p.totalCostUsd
-      last.finishedAt = new Date().toISOString()
+      last.finishedAt = asTimestamp(frameTs)
       // If the turn has no assistant text yet (auth failure, etc.),
       // surface the result string as a synthetic final text block so
       // the user sees something.
@@ -321,7 +323,7 @@ export function applyClaudeEvent(
           toolUseId: p.toolUseId,
           description: p.description,
           taskType: p.taskType,
-          startedAt: new Date().toISOString(),
+          startedAt: asTimestamp(frameTs),
           status: 'in_progress' as const,
           notificationCount: 0,
         },
@@ -349,7 +351,7 @@ export function applyClaudeEvent(
           // freezes regardless of which arrives first.
           status: p.status === 'completed' ? 'completed' as const : cur.status,
           finishedAt: p.status === 'completed' && !cur.finishedAt
-            ? new Date().toISOString()
+            ? asTimestamp(frameTs)
             : cur.finishedAt,
         },
       }
@@ -368,7 +370,7 @@ export function applyClaudeEvent(
           status,
           finishedAt: p.endTime
             ? new Date(p.endTime).toISOString()
-            : new Date().toISOString(),
+            : asTimestamp(frameTs),
         },
       }
       return { ...prev, bgTasks }
@@ -380,7 +382,7 @@ export function applyClaudeEvent(
         ...prev.subagents,
         [p.hookId]: {
           hookId: p.hookId,
-          startedAt: new Date().toISOString(),
+          startedAt: asTimestamp(frameTs),
         },
       }
       return { ...prev, subagents }
@@ -399,7 +401,7 @@ export function applyClaudeEvent(
       const [oldestId, oldest] = entries[0]
       const subagents = {
         ...prev.subagents,
-        [oldestId]: { ...oldest, finishedAt: new Date().toISOString() },
+        [oldestId]: { ...oldest, finishedAt: asTimestamp(frameTs) },
       }
       return { ...prev, subagents }
     }
@@ -448,7 +450,7 @@ export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState 
 // per-session error frames as a backstop against the runner dying
 // or the backend rejecting a prompt after beginClaudeTurn already
 // fired optimistically.
-export function finalizeInFlightTurn(prev: ClaudeState, reason?: string): ClaudeState {
+export function finalizeInFlightTurn(prev: ClaudeState, reason?: string, ts?: string): ClaudeState {
   const turns = [...prev.turns]
   const lastIdx = turns.length - 1
   if (lastIdx >= 0 && !turns[lastIdx].done) {
@@ -456,7 +458,7 @@ export function finalizeInFlightTurn(prev: ClaudeState, reason?: string): Claude
       ...turns[lastIdx],
       done: true,
       isError: true,
-      finishedAt: new Date().toISOString(),
+      finishedAt: ts ?? new Date().toISOString(),
     }
     // If the turn produced nothing visible yet (auth failure / runner
     // died / 5xx before any block streamed), surface `reason` as a
@@ -525,6 +527,14 @@ export function parseAskUserQuestionInput(input: unknown): ClaudeQuestion[] {
     })
   }
   return out
+}
+
+// asTimestamp picks the best wall-clock string available for an
+// event-derived state field. Server-stamped events always include
+// `frameTs`; only the local-only backstops (runner death, init) need
+// to fall back to client time.
+function asTimestamp(frameTs: string | undefined): string {
+  return frameTs ?? new Date().toISOString()
 }
 
 // ---- payload narrowing ---------------------------------------------------
