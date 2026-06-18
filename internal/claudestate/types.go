@@ -1,0 +1,163 @@
+// Package claudestate holds the in-memory Claude UI state for one
+// session plus the snapshot persistence machinery. It is the
+// authoritative server-side model — anything rendered in the Claude
+// chat UI is derived from one of its fields.
+//
+// Wire format: every public field has an explicit `json:"camelCase"`
+// tag matching the TypeScript ClaudeState mirror in
+// web/src/features/sessions/types.ts. The HTTP /claude-state endpoint,
+// the on-disk snapshot.json, and the WS broadcast frames all use these
+// identical names — no naming translation between layers.
+package claudestate
+
+import "time"
+
+// ClaudeState is the full Claude UI state for one Alfred session.
+// Persisted: only `Turns`. Everything else is either derived
+// (InFlight), transient (Pending, LastError), or an external-resource
+// reference (BgTasks, Subagents) that the server only trusts while it
+// is observing the resource live. The Loader rebuilds derived fields
+// after hydration; transient and external slots come up empty.
+type ClaudeState struct {
+	Turns            []ClaudeTurn             `json:"turns"`
+	InFlight         bool                     `json:"inFlight"`
+	Pending          []ClaudeToolApproval     `json:"pending"`
+	PendingQuestions []ClaudeQuestion         `json:"pendingQuestions"`
+	LastError        *ClaudeError             `json:"lastError,omitempty"`
+	BgTasks          map[string]BgTask        `json:"bgTasks"`
+	Subagents        map[string]SubagentEntry `json:"subagents"`
+	TurnsLoaded      bool                     `json:"turnsLoaded"`
+}
+
+// ClaudeTurn is one round of the conversation. Field order in JSON
+// mirrors the TS interface declaration order for diff readability.
+type ClaudeTurn struct {
+	ID             string `json:"id"`
+	Prompt         string `json:"prompt"`
+	ExpandedPrompt string `json:"expandedPrompt,omitempty"`
+	StartedAt      time.Time `json:"startedAt"`
+	// FinishedAt is nil until the turn ends. The frontend TypeScript
+	// mirror is `finishedAt?: string`, so a nil pointer omits the key
+	// from the wire (matches `undefined` in TS) instead of emitting the
+	// zero ISO string "0001-01-01T00:00:00Z" that time.Time would
+	// otherwise produce.
+	FinishedAt   *time.Time       `json:"finishedAt,omitempty"`
+	Blocks       []AssistantBlock `json:"blocks"`
+	Thinking     []string         `json:"thinking,omitempty"`
+	Done         bool             `json:"done"`
+	IsError      bool             `json:"isError,omitempty"`
+	TotalCostUsd *float64         `json:"totalCostUsd,omitempty"`
+	Usage        *TokenUsage      `json:"usage,omitempty"`
+}
+
+// AssistantBlock is one item in a turn's reply timeline. Kind
+// discriminates the union: "text" → Text valid; "tool" → Tool valid.
+type AssistantBlock struct {
+	Kind string          `json:"kind"`
+	Text string          `json:"text,omitempty"`
+	Tool *ClaudeToolCall `json:"tool,omitempty"`
+}
+
+// ClaudeToolCall is one tool invocation inside a turn. StartedAt /
+// FinishedAt / Decision / BgTaskID are server-stamped extensions that
+// the Claude CLI's jsonl does not record — they live only in our
+// snapshot.
+type ClaudeToolCall struct {
+	ToolUseID string `json:"toolUseId"`
+	Name      string `json:"name"`
+	Input     any    `json:"input,omitempty"`
+	Decision  string `json:"decision"` // "allow" | "deny" | "pending"
+	Result    string `json:"result,omitempty"`
+	IsError   bool   `json:"isError,omitempty"`
+	// StartedAt/FinishedAt are pointers so a zero value omits the JSON
+	// key (matching the TS mirror's optional fields). A nil StartedAt
+	// means the snapshot didn't capture the tool's start (e.g. tool
+	// blocks rebuilt from jsonl only, no live reducer involvement).
+	StartedAt  *time.Time `json:"startedAt,omitempty"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	BgTaskID   string     `json:"bgTaskId,omitempty"`
+}
+
+// TokenUsage mirrors the assistant message.usage shape from Claude.
+type TokenUsage struct {
+	InputTokens              int `json:"inputTokens"`
+	OutputTokens             int `json:"outputTokens"`
+	CacheReadInputTokens     int `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int `json:"cacheCreationInputTokens"`
+}
+
+// ClaudeToolApproval is a pending tool-use awaiting user decision.
+// Not persisted to snapshot; server re-pushes from in-memory queue
+// after reconnect.
+type ClaudeToolApproval struct {
+	ToolUseID string `json:"toolUseId"`
+	Tool      string `json:"tool"`
+	Input     any    `json:"input,omitempty"`
+}
+
+// ClaudeQuestion is a pending AskUserQuestion invocation. Same
+// transience as ClaudeToolApproval.
+type ClaudeQuestion struct {
+	ToolUseID string            `json:"toolUseId"`
+	Questions []ClaudeQuestionQ `json:"questions"`
+}
+
+// ClaudeQuestionQ is one question inside an AskUserQuestion.
+type ClaudeQuestionQ struct {
+	Question    string                 `json:"question"`
+	Header      string                 `json:"header"`
+	MultiSelect bool                   `json:"multiSelect"`
+	Options     []ClaudeQuestionOption `json:"options"`
+}
+
+// ClaudeQuestionOption is one selectable answer.
+type ClaudeQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// ClaudeError is the last error surfaced to the user. Transient.
+type ClaudeError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// BgTask tracks one CLI background task (Monitor's detached bash).
+// External-resource reference — not persisted.
+type BgTask struct {
+	TaskID            string     `json:"taskId"`
+	ToolUseID         string     `json:"toolUseId"`
+	Description       string     `json:"description"`
+	TaskType          string     `json:"taskType"`
+	StartedAt         time.Time  `json:"startedAt"`
+	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
+	Status            string     `json:"status"` // "in_progress" | "completed" | "failed"
+	LastEventSummary  string     `json:"lastEventSummary,omitempty"`
+	NotificationCount int        `json:"notificationCount"`
+}
+
+// SubagentEntry tracks one in-flight subagent. Same transience as
+// BgTask.
+type SubagentEntry struct {
+	HookID     string     `json:"hookId"`
+	AgentType  string     `json:"agentType,omitempty"`
+	StartedAt  time.Time  `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+}
+
+// EmptyClaudeState returns a zero-value state with maps initialized.
+// Use this instead of `ClaudeState{}` so JSON marshals nil slices as
+// `[]` instead of `null` (the frontend reducer expects arrays).
+func EmptyClaudeState() ClaudeState {
+	return ClaudeState{
+		Turns:            []ClaudeTurn{},
+		Pending:          []ClaudeToolApproval{},
+		PendingQuestions: []ClaudeQuestion{},
+		BgTasks:          map[string]BgTask{},
+		Subagents:        map[string]SubagentEntry{},
+	}
+}
+
+// timePtr boxes a time.Time so it can land in *time.Time fields.
+// Convenience for reducer code: turn.FinishedAt = timePtr(ts).
+func timePtr(t time.Time) *time.Time { return &t }
