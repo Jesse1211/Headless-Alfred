@@ -154,6 +154,46 @@ func (m *SessionManager) Snapshot(sessionID string) (ClaudeState, bool) {
 	return out, true
 }
 
+// FinalizeAllInFlight walks every loaded SessionState and, for those
+// with InFlight=true, runs Apply with a ClaudeError to close out the
+// trailing turn cleanly. Called from main.go during graceful shutdown
+// so the on-disk snapshot already reflects "this turn ended" by the
+// time the next server boots — saves the next Loader.Load from
+// relying on the finalizeStaleTrailingTurn fallback to repair zombie
+// turns.
+//
+// Idempotent. Safe to call when no sessions are loaded.
+func (m *SessionManager) FinalizeAllInFlight(reason string) {
+	m.mu.RLock()
+	sessions := make([]*SessionState, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.mu.RUnlock()
+
+	now := time.Now().UTC()
+	for _, s := range sessions {
+		var inFlight bool
+		s.View(func(st *ClaudeState) {
+			inFlight = st.InFlight
+		})
+		if !inFlight {
+			continue
+		}
+		err := s.Apply(Event{
+			Kind:      EventClaudeError,
+			Timestamp: now,
+			Payload: &ClaudeErrorPayload{
+				Code:    "server_shutdown",
+				Message: reason,
+			},
+		})
+		if err != nil {
+			slog.Warn("claudestate: finalize on shutdown", "sessionID", s.SessionID(), "err", err)
+		}
+	}
+}
+
 // DeleteSession removes one session's in-memory state and flushes
 // its Persister. Called when the upstream session is deleted via
 // the sessions REST API — without this hook the SessionState (and

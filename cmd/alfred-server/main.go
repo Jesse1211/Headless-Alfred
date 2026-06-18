@@ -247,6 +247,13 @@ func main() {
 		}
 	}
 
+	// Close out any in-flight Claude turns BEFORE the HTTP server drains
+	// — Apply marks the turn done+isError and signals the Persister
+	// (debounced), so the snapshot the next boot reads already reflects
+	// the truth instead of "this turn was in flight forever". The
+	// deferred csMgr.Shutdown then performs the final synchronous flush.
+	csMgr.FinalizeAllInFlight("server shutting down; runner was killed")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)

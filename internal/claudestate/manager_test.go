@@ -121,6 +121,50 @@ func TestSessionManager_DeleteSession_UnknownIsNoop(t *testing.T) {
 	}
 }
 
+// FinalizeAllInFlight closes out any zombie turn before shutdown so
+// the on-disk snapshot reflects the truth. Without this we'd rely
+// solely on the next-boot finalizeStaleTrailingTurn fallback —
+// which works, but means the snapshot lives in a "lying" state on
+// disk between boots.
+func TestSessionManager_FinalizeAllInFlight_ClosesInFlightTurns(t *testing.T) {
+	dir := t.TempDir()
+	m := NewSessionManager(dir, &fakeJsonlLocator{})
+	defer m.Shutdown(context.Background())
+
+	a, _ := m.GetOrLoad("sess-with-inflight", "uuid-1")
+	a.BeginTurn("u1", "hi", time.Now().UTC())
+
+	b, _ := m.GetOrLoad("sess-idle", "uuid-2")
+	_ = b // intentionally no BeginTurn; should be left alone
+
+	m.FinalizeAllInFlight("server shutting down")
+
+	a.View(func(s *ClaudeState) {
+		if s.InFlight {
+			t.Error("expected InFlight=false after FinalizeAllInFlight")
+		}
+		if !s.Turns[0].Done {
+			t.Error("expected trailing turn Done=true")
+		}
+		if !s.Turns[0].IsError {
+			t.Error("expected trailing turn IsError=true")
+		}
+		if s.LastError == nil || s.LastError.Code != "server_shutdown" {
+			t.Errorf("expected LastError.Code=server_shutdown, got %+v", s.LastError)
+		}
+	})
+
+	// Idle session must not gain a turn.
+	b.View(func(s *ClaudeState) {
+		if len(s.Turns) != 0 {
+			t.Errorf("idle session got mutated: %d turns", len(s.Turns))
+		}
+		if s.LastError != nil {
+			t.Errorf("idle session got LastError: %+v", s.LastError)
+		}
+	})
+}
+
 // ---- fakes ----
 
 type fakeJsonlLocator struct {
