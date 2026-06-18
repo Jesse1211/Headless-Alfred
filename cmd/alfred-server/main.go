@@ -186,7 +186,7 @@ func main() {
 
 	csMgr := claudestate.NewSessionManager(
 		dataDir,
-		api.NewJsonlLocatorAdapter(claudehistory.NewLocator()),
+		claudehistory.NewLocator(),
 	)
 	defer func() {
 		if err := csMgr.Shutdown(context.Background()); err != nil {

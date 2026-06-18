@@ -1,7 +1,6 @@
 package api
 
 import (
-	"github.com/jesseliu/headless-alfred/internal/claudehistory"
 	"github.com/jesseliu/headless-alfred/internal/session"
 )
 
@@ -34,24 +33,3 @@ func (r *SessionMetaResolver) ClaudeUUIDFor(sessionID string) (string, error) {
 	return r.mgr.GetClaudeSessionID(sessionID), nil
 }
 
-// JsonlLocatorAdapter wraps claudehistory.Locator to satisfy the
-// claudestate.JsonlLocator interface. Trivial passthrough — they
-// already share the same Locate(sessionID, uuid) signature.
-type JsonlLocatorAdapter struct {
-	inner *claudehistory.Locator
-}
-
-// NewJsonlLocatorAdapter wires the adapter. Panics on a nil locator
-// (programmer error at the boundary).
-func NewJsonlLocatorAdapter(inner *claudehistory.Locator) *JsonlLocatorAdapter {
-	if inner == nil {
-		panic("api.NewJsonlLocatorAdapter: nil locator")
-	}
-	return &JsonlLocatorAdapter{inner: inner}
-}
-
-// Locate delegates to the upstream claudehistory.Locator using both
-// sessionID (cache key) and claudeUUID (file-name component).
-func (a *JsonlLocatorAdapter) Locate(sessionID, claudeUUID string) (string, error) {
-	return a.inner.Locate(sessionID, claudeUUID)
-}
