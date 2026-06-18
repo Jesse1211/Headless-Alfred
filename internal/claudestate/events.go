@@ -44,6 +44,14 @@ const (
 
 	// Catch-all for stream-json kinds we don't care about.
 	EventUnknown EventKind = "unknown"
+
+	// Stream-json metadata kinds the claudestate reducer ignores —
+	// declared so Event.UnmarshalJSON can route them to the no-payload
+	// branch instead of erroring out and producing log spam at the
+	// WS dispatch boundary. (system carries model/session metadata,
+	// rate_limit advisory info; neither needs to mutate ClaudeState.)
+	EventSystem    EventKind = "system"
+	EventRateLimit EventKind = "rate_limit"
 )
 
 // Event is the input to SessionState.Apply. Timestamp is the
@@ -113,8 +121,11 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		pl = &ClaudeErrorPayload{}
 	case EventClaudeRunEnded:
 		pl = &ClaudeRunEndedPayload{}
-	case EventMessageStart, EventMessageStop, EventTextBlockEnd, EventUnknown:
-		// No payload of interest.
+	case EventMessageStart, EventMessageStop, EventTextBlockEnd, EventUnknown,
+		EventSystem, EventRateLimit:
+		// No payload of interest — reducer ignores these (metadata /
+		// advisory frames). Declared explicitly so dispatch doesn't
+		// hit the default error branch and produce WARN log spam.
 		e.Payload = nil
 		return nil
 	default:
