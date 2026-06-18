@@ -41,6 +41,11 @@ function writeSelectedTemplates(sid: string, sel: Set<string>): void {
 interface Props {
   state: ClaudeState
   disabled: boolean
+  // disconnected: true when the WS isn't open (connecting / reconnecting /
+  // closed). Renders a red banner just above the composer so the user
+  // knows their last action may not have reached the server and any
+  // in-flight "Claude is thinking..." timer is now lying.
+  disconnected?: boolean
   // sessionID is used to scope the per-session template-selection
   // localStorage key. Required so two open sessions don't share
   // a checkbox state.
@@ -62,7 +67,7 @@ interface Props {
 // Renders assistant text as markdown (via react-markdown + remark-gfm),
 // surfaces tool calls inline, and floats pending approval cards at the bottom.
 export function ClaudeChatView({
-  state, disabled, sessionID, templates, onPrompt, onToolDecision, onQuestionAnswer, onInterrupt,
+  state, disabled, disconnected, sessionID, templates, onPrompt, onToolDecision, onQuestionAnswer, onInterrupt,
 }: Props) {
   const [draft, setDraft] = useState('')
   // Per-session, persisted-across-reloads selection. Read once on
@@ -151,6 +156,11 @@ export function ClaudeChatView({
       )}
 
       <div className="claude-chat__composer">
+        {disconnected && (
+          <div className="claude-chat__disconnected" role="status">
+            ⚠ Disconnected from server — reconnecting. The current turn may be stale.
+          </div>
+        )}
         {draft.startsWith('/') && (
           <div className="claude-chat__slash-hint">
             Slash command — sent to Claude CLI ({(draft.trim().split(/\s+/)[0]) || '/'}).

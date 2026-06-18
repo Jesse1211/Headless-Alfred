@@ -86,6 +86,21 @@
   font-size: 13px;
 }
 
+/* Sits at the top of the composer area — same red palette as
+ * lastError, but anchored to the composer so the user sees it
+ * exactly where they're trying to type. */
+.claude-chat__disconnected {
+  background: rgba(220, 100, 100, 0.15);
+  border: 1px solid rgba(220, 100, 100, 0.5);
+  color: #f0a0a0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 8px;
+  text-align: center;
+  font-weight: 500;
+}
+
 .claude-turn {
   display: flex;
   flex-direction: column;

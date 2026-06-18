@@ -61,6 +61,32 @@ export function useSessions(token: string) {
   const sessionsRef = useRef(sessions)
   sessionsRef.current = sessions
 
+  // Re-hydrate every session's Claude state when WS transitions back
+  // to 'open'. After a reconnect the in-memory ClaudeState may be
+  // stale — the most common case is a turn that was in-flight when
+  // the server died; Loader's stale-trailing-turn finalize now closes
+  // it out as an error, but the frontend only sees that after a
+  // fresh /claude-state fetch. Clearing turnsLoaded forces
+  // useClaudeStateLoader to re-run.
+  const prevConnRef = useRef<ConnState>('connecting')
+  useEffect(() => {
+    const prev = prevConnRef.current
+    prevConnRef.current = connState
+    if (connState === 'open' && prev !== 'open' && prev !== 'connecting') {
+      setPerSession((cur) => {
+        const next = new Map<string, PerSessionState>()
+        cur.forEach((ps, sid) => {
+          if (ps.claude && ps.claude.turnsLoaded) {
+            next.set(sid, { ...ps, claude: { ...ps.claude, turnsLoaded: false } })
+          } else {
+            next.set(sid, ps)
+          }
+        })
+        return next
+      })
+    }
+  }, [connState])
+
   // pty_data dispatch — claude-mode raw PTY bytes go straight to xterm
   // without round-tripping through React state. ClaudeTerminal calls
   // registerPtyHandler(sid, cb) on mount, returns the unregister fn.

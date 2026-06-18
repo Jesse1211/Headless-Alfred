@@ -315,6 +315,7 @@ export function WorkspacePage({ token, onLogout }: Props) {
             key={selected.id}
             state={ps.claude ?? emptyClaudeState()}
             disabled={s.connState !== 'open'}
+            disconnected={s.connState !== 'open'}
             sessionID={selected.id}
             templates={availableTemplates}
             onPrompt={(text, templates) =>
