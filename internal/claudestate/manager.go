@@ -154,6 +154,36 @@ func (m *SessionManager) Snapshot(sessionID string) (ClaudeState, bool) {
 	return out, true
 }
 
+// DeleteSession removes one session's in-memory state and flushes
+// its Persister. Called when the upstream session is deleted via
+// the sessions REST API — without this hook the SessionState (and
+// its Persister goroutine, which holds an exclusive flock on a
+// snapshot file the store has already removed) leaks until process
+// shutdown. Safe to call for a session that was never loaded:
+// returns nil. Errors from the final Close are returned but the
+// map entry is removed regardless so callers can't get stuck on a
+// poisoned session.
+func (m *SessionManager) DeleteSession(ctx context.Context, sessionID string) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	s, ok := m.sessions[sessionID]
+	if ok {
+		delete(m.sessions, sessionID)
+	}
+	m.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	if err := s.Close(ctx); err != nil {
+		slog.Error("claudestate: close on delete", "sessionID", sessionID, "err", err)
+		return err
+	}
+	return nil
+}
+
 // Shutdown closes every SessionState, flushing pending writes. Idempotent.
 func (m *SessionManager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()

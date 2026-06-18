@@ -396,6 +396,15 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			duCopy := du
 			_ = write(OutMsg{Type: TypeDiskUsage, DiskUsage: &duCopy})
 		case sid := <-closedCh:
+			// Session was deleted via REST or by another tab. Kill any
+			// in-flight `claude -p` we were holding for it so the runner
+			// subprocess doesn't outlive its owning session (and keep
+			// burning tokens). runClientLoop's defer takeAll() would
+			// only catch this on WS disconnect — here we want
+			// per-session cleanup the moment the session goes away.
+			if st, ok := claudeRunStates.take(sid); ok {
+				stopRun(st)
+			}
 			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
 			_ = write(OutMsg{Type: "session_renamed", SessionID: rn.ID, Name: rn.Name})

@@ -194,6 +194,19 @@ func main() {
 		}
 	}()
 
+	// Couple session deletion to claudestate cleanup. Without this the
+	// SessionState in csMgr's map (and its Persister goroutine, which
+	// holds a flock on the snapshot file the store just removed) leaks
+	// until process shutdown — and stale entries keep responding to
+	// GetOrLoad with their pre-delete state.
+	mgr.AddCloseListener(func(sid string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := csMgr.DeleteSession(ctx, sid); err != nil {
+			logger.Warn("claudestate delete-session on close", "session", sid, "err", err)
+		}
+	})
+
 	router := api.NewRouter(api.Deps{
 		Manager:            mgr,
 		Auth:               a,

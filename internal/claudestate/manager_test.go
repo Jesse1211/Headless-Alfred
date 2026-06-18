@@ -79,6 +79,48 @@ func TestSessionManager_Shutdown_FlushesAndCloses(t *testing.T) {
 	}
 }
 
+// DeleteSession removes the in-memory entry, flushes the persister,
+// and makes a subsequent GetOrLoad construct a fresh SessionState
+// (not return the stale one). Without this hook the SessionState
+// leaks until process shutdown — and worse, its Persister keeps a
+// flock on a snapshot file the store has already deleted.
+func TestSessionManager_DeleteSession_FreesEntry(t *testing.T) {
+	dir := t.TempDir()
+	m := NewSessionManager(dir, &fakeJsonlLocator{})
+	defer m.Shutdown(context.Background())
+
+	a, err := m.GetOrLoad("sess1", "uuid-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BeginTurn("u1", "hi", time.Now().UTC())
+
+	if err := m.DeleteSession(context.Background(), "sess1"); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+
+	// Subsequent GetOrLoad must allocate a fresh instance — the old
+	// one has been Closed.
+	b, err := m.GetOrLoad("sess1", "uuid-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Error("expected a fresh *SessionState after DeleteSession; got the cached one back")
+	}
+}
+
+// Deleting a session that was never GetOrLoad'd is a no-op.
+func TestSessionManager_DeleteSession_UnknownIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	m := NewSessionManager(dir, &fakeJsonlLocator{})
+	defer m.Shutdown(context.Background())
+
+	if err := m.DeleteSession(context.Background(), "never-loaded"); err != nil {
+		t.Errorf("DeleteSession on unknown session returned %v, want nil", err)
+	}
+}
+
 // ---- fakes ----
 
 type fakeJsonlLocator struct {
