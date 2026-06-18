@@ -1,7 +1,7 @@
 // Shared fetch wrapper. Reads token from localStorage; on 401 fires a hook
 // the auth feature can register to flush local state and route back to login.
 
-import type { ClaudeTurn } from '../features/sessions/types'
+import type { ClaudeState, ClaudeTurn } from '../features/sessions/types'
 
 let on401: (() => void) | null = null
 
@@ -289,11 +289,23 @@ export async function getTemplate(id: string): Promise<string> {
   return res.text()
 }
 
+// getClaudeState fetches the server-authoritative ClaudeState for a
+// session — full snapshot of in-memory state including turn cost,
+// per-tool elapsed, and decisions. Replaces getClaudeHistory; the old
+// endpoint stays one release cycle with Deprecation headers for safety.
+export async function getClaudeState(sessionID: string): Promise<ClaudeState> {
+  const res = await request(`/api/sessions/${encodeURIComponent(sessionID)}/claude-state`)
+  return res.json()
+}
+
 // getClaudeHistory fetches the reconstructed Claude UI chat history
 // for a session from the backend's jsonl-restore endpoint. Returns
 // [] when the session has no jsonl yet (user hasn't entered Claude,
 // or the file has been moved/deleted) — empty is a valid state, not
 // an error.
+//
+// @deprecated — use getClaudeState. This endpoint emits RFC 9745
+// Deprecation/Sunset headers and will be removed in a follow-up release.
 export async function getClaudeHistory(
   sessionID: string,
   opts: { limit?: number; before?: string } = {},
