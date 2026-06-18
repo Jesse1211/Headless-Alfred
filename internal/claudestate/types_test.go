@@ -63,3 +63,49 @@ func TestClaudeTurn_JSONRoundTrip(t *testing.T) {
 		t.Errorf("cost lost: %v", out.TotalCostUsd)
 	}
 }
+
+func TestClaudeState_DeepCopy_Independent(t *testing.T) {
+	cost := 0.5
+	src := ClaudeState{
+		Turns: []ClaudeTurn{{
+			ID:     "u1",
+			Prompt: "hi",
+			Blocks: []AssistantBlock{
+				{Kind: "text", Text: "hello"},
+				{Kind: "tool", Tool: &ClaudeToolCall{ToolUseID: "tu_1", Name: "Bash"}},
+			},
+			TotalCostUsd: &cost,
+			Usage:        &TokenUsage{InputTokens: 1},
+		}},
+		BgTasks: map[string]BgTask{"t1": {TaskID: "t1"}},
+	}
+
+	dst := src.DeepCopy()
+
+	// Mutate dst — src must be unaffected.
+	dst.Turns[0].Prompt = "changed"
+	dst.Turns[0].Blocks[0].Text = "changed"
+	dst.Turns[0].Blocks[1].Tool.Name = "Read"
+	*dst.Turns[0].TotalCostUsd = 9.99
+	dst.Turns[0].Usage.InputTokens = 99
+	dst.BgTasks["t1"] = BgTask{TaskID: "mutated"}
+
+	if src.Turns[0].Prompt != "hi" {
+		t.Errorf("src prompt mutated: %q", src.Turns[0].Prompt)
+	}
+	if src.Turns[0].Blocks[0].Text != "hello" {
+		t.Errorf("src text mutated: %q", src.Turns[0].Blocks[0].Text)
+	}
+	if src.Turns[0].Blocks[1].Tool.Name != "Bash" {
+		t.Errorf("src tool mutated: %q", src.Turns[0].Blocks[1].Tool.Name)
+	}
+	if *src.Turns[0].TotalCostUsd != 0.5 {
+		t.Errorf("src cost mutated: %v", *src.Turns[0].TotalCostUsd)
+	}
+	if src.Turns[0].Usage.InputTokens != 1 {
+		t.Errorf("src usage mutated: %v", src.Turns[0].Usage.InputTokens)
+	}
+	if src.BgTasks["t1"].TaskID != "t1" {
+		t.Errorf("src bgTasks mutated: %+v", src.BgTasks["t1"])
+	}
+}

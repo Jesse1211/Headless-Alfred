@@ -161,3 +161,93 @@ func EmptyClaudeState() ClaudeState {
 // timePtr boxes a time.Time so it can land in *time.Time fields.
 // Convenience for reducer code: turn.FinishedAt = timePtr(ts).
 func timePtr(t time.Time) *time.Time { return &t }
+
+// DeepCopy returns a fully-independent copy of the state. Hand-written
+// per-struct (not via reflect or JSON round-trip) so it stays fast and
+// preserves typed nil pointers / unexported intent. Called by the
+// HTTP snapshot handler and the Persister's writeSnapshot to capture
+// state under the read lock without holding it during marshal.
+func (s ClaudeState) DeepCopy() ClaudeState {
+	out := ClaudeState{
+		Turns:            make([]ClaudeTurn, len(s.Turns)),
+		Pending:          append([]ClaudeToolApproval(nil), s.Pending...),
+		PendingQuestions: append([]ClaudeQuestion(nil), s.PendingQuestions...),
+		InFlight:         s.InFlight,
+		TurnsLoaded:      s.TurnsLoaded,
+	}
+	for i, t := range s.Turns {
+		out.Turns[i] = t.DeepCopy()
+	}
+	if s.LastError != nil {
+		e := *s.LastError
+		out.LastError = &e
+	}
+	if s.BgTasks != nil {
+		out.BgTasks = make(map[string]BgTask, len(s.BgTasks))
+		for k, v := range s.BgTasks {
+			cp := v
+			if v.FinishedAt != nil {
+				ft := *v.FinishedAt
+				cp.FinishedAt = &ft
+			}
+			out.BgTasks[k] = cp
+		}
+	}
+	if s.Subagents != nil {
+		out.Subagents = make(map[string]SubagentEntry, len(s.Subagents))
+		for k, v := range s.Subagents {
+			cp := v
+			if v.FinishedAt != nil {
+				ft := *v.FinishedAt
+				cp.FinishedAt = &ft
+			}
+			out.Subagents[k] = cp
+		}
+	}
+	return out
+}
+
+// DeepCopy returns an independent copy of the turn.
+func (t ClaudeTurn) DeepCopy() ClaudeTurn {
+	out := t
+	out.Blocks = make([]AssistantBlock, len(t.Blocks))
+	for i, b := range t.Blocks {
+		out.Blocks[i] = b.DeepCopy()
+	}
+	if t.Thinking != nil {
+		out.Thinking = append([]string(nil), t.Thinking...)
+	}
+	if t.FinishedAt != nil {
+		v := *t.FinishedAt
+		out.FinishedAt = &v
+	}
+	if t.TotalCostUsd != nil {
+		v := *t.TotalCostUsd
+		out.TotalCostUsd = &v
+	}
+	if t.Usage != nil {
+		u := *t.Usage
+		out.Usage = &u
+	}
+	return out
+}
+
+// DeepCopy returns an independent copy of the block. Tool pointer is
+// cloned so caller mutations to one block don't leak. The Tool's
+// time pointers are likewise cloned.
+func (b AssistantBlock) DeepCopy() AssistantBlock {
+	out := AssistantBlock{Kind: b.Kind, Text: b.Text}
+	if b.Tool != nil {
+		t := *b.Tool
+		if b.Tool.StartedAt != nil {
+			ts := *b.Tool.StartedAt
+			t.StartedAt = &ts
+		}
+		if b.Tool.FinishedAt != nil {
+			tf := *b.Tool.FinishedAt
+			t.FinishedAt = &tf
+		}
+		out.Tool = &t
+	}
+	return out
+}
