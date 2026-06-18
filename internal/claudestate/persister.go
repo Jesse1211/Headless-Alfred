@@ -61,9 +61,7 @@ func NewPersister(path string, state *SessionState, debounce time.Duration) (*Pe
 		return nil, fmt.Errorf("claudestate: snapshot held by another process: %w", err)
 	}
 	// Best-effort orphan tmp cleanup from a previous crash.
-	if _, err := os.Stat(path + ".tmp"); err == nil {
-		_ = os.Remove(path + ".tmp")
-	}
+	_ = os.Remove(path + ".tmp")
 	return &Persister{
 		path:      path,
 		tmpPath:   path + ".tmp",
