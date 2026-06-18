@@ -98,3 +98,27 @@ func mustNoErr(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+func TestWS_ClaudePrompt_EmitsTurnStarted(t *testing.T) {
+	dir := t.TempDir()
+	mgr := claudestate.NewSessionManager(dir, stubLocator{})
+	defer mgr.Shutdown(context.Background())
+	_, _ = mgr.GetOrLoad("sess1", "uuid-1")
+
+	cap := &writerCapture{}
+	turnID := dispatchClaudePromptBegin("sess1", "client-nonce-abc", "hi there", mgr, cap.write)
+
+	if len(cap.frames) != 1 {
+		t.Fatalf("frames: %d", len(cap.frames))
+	}
+	f := cap.frames[0]
+	if f.Type != "turn_started" {
+		t.Errorf("type: %q", f.Type)
+	}
+	if f.ClientNonce != "client-nonce-abc" {
+		t.Errorf("nonce: %q", f.ClientNonce)
+	}
+	if f.TurnID == "" || turnID == "" || f.TurnID != turnID {
+		t.Errorf("turnID inconsistent: frame=%q returned=%q", f.TurnID, turnID)
+	}
+}

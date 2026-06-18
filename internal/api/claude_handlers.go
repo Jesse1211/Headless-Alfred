@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/claudestate"
 	"github.com/jesseliu/headless-alfred/internal/recap"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -379,7 +380,7 @@ func handleStdin(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 // streams the parsed events back via claude_event frames. Only valid
 // when the session is in claude mode with renderer=ui. Refuses if a
 // prompt is already in flight (one at a time per session).
-func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, out chan<- claudeEventEnvelope, runStates *claudeRunStateMap, write func(OutMsg) error) {
+func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, out chan<- claudeEventEnvelope, runStates *claudeRunStateMap, csMgr *claudestate.SessionManager, write func(OutMsg) error) {
 	if !requireSessionID(msg, "claude_prompt", write) {
 		return
 	}
@@ -503,6 +504,10 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	// turn and UserPromptBubble renders it under a "Show full prompt"
 	// toggle — transparency for the token bill.
 	_ = write(OutMsg{Type: "user_prompt", SessionID: msg.SessionID, Text: finalText})
+	// Register the optimistic turn server-side and announce it back to
+	// the originating client so the frontend can reconcile its
+	// placeholder turn by clientNonce.
+	dispatchClaudePromptBegin(msg.SessionID, msg.ClientNonce, finalText, csMgr, write)
 	pr, err := runner.Prompt(ctx, claude.PromptOptions{
 		SessionUUID:       convoID,
 		CWD:               cwd,

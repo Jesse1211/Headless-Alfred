@@ -482,7 +482,7 @@ func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner 
 	case "stdin":
 		handleStdin(msg, m, write)
 	case "claude_prompt":
-		handleClaudePrompt(msg, m, runner, claudeEvents, runStates, write)
+		handleClaudePrompt(msg, m, runner, claudeEvents, runStates, csMgr, write)
 	case "tool_decision":
 		handleToolDecision(msg, bridge, write)
 		dispatchToolDecision(msg.SessionID, msg.ToolUseID, msg.Decision, msg.Reason, csMgr, write)
@@ -664,6 +664,36 @@ func dispatchToolDecision(sessionID, toolUseID, decision, reason string, mgr *cl
 		ToolUseID: toolUseID,
 		Decision:  decision,
 	})
+}
+
+// dispatchClaudePromptBegin creates a server-side turn id, registers
+// the turn via BeginTurn on the SessionManager, and emits the
+// turn_started frame so the frontend's optimistic placeholder can be
+// reconciled. Returns the new turn id (or "" on failure).
+//
+// Use it from handleClaudePrompt AFTER the final prompt text has been
+// composed (template-rendered, summary-suffixed, etc.) so the turn's
+// `prompt` field reflects what the user will actually see in the
+// "You" bubble.
+func dispatchClaudePromptBegin(sessionID, clientNonce, prompt string, mgr *claudestate.SessionManager, write func(OutMsg) error) string {
+	if mgr == nil {
+		return ""
+	}
+	st, err := mgr.GetOrLoad(sessionID, "")
+	if err != nil {
+		slog.Warn("ws: get state for prompt", "sid", sessionID, "err", err)
+		return ""
+	}
+	turnID := ulid.Make().String()
+	now := time.Now().UTC()
+	st.BeginTurn(turnID, prompt, now)
+	_ = write(OutMsg{
+		Type:        "turn_started",
+		SessionID:   sessionID,
+		ClientNonce: clientNonce,
+		TurnID:      turnID,
+	})
+	return turnID
 }
 
 // buildEventFromEnvelope turns a raw envelope (kind string + payload)

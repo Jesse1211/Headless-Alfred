@@ -37,6 +37,10 @@ type InMsg struct {
 	ToolUseID          string `json:"toolUseId,omitempty"`          // tool_decision target
 	Decision           string `json:"decision,omitempty"`           // "allow" | "deny" on tool_decision
 	Reason             string `json:"reason,omitempty"`             // optional deny reason
+	// ClientNonce is set by the frontend on claude_prompt frames to
+	// pair the optimistic placeholder turn with the server-side turn
+	// the broadcast turn_started frame announces. Opaque to the server.
+	ClientNonce string `json:"clientNonce,omitempty"`
 }
 
 // OutMsg is a server → client WS frame.
@@ -88,6 +92,16 @@ type OutMsg struct {
 	// ToolUseID identifies the pending tool-approval the client is
 	// looking at (tool_approval_request frame).
 	ToolUseID string `json:"toolUseId,omitempty"`
+
+	// ClientNonce echoes back the value the client sent on claude_prompt
+	// so the optimistic UI can match placeholder turns to the
+	// server-side turn announced via turn_started.
+	ClientNonce string `json:"clientNonce,omitempty"`
+
+	// TurnID is the server-generated id for a newly-started Claude turn.
+	// Set on turn_started frames; the frontend reducer swaps in this id
+	// for the placeholder it generated locally.
+	TurnID string `json:"turnId,omitempty"`
 
 	// Tool / ToolInput describe what the user is being asked to
 	// approve (tool_approval_request frame).
