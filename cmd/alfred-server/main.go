@@ -18,6 +18,8 @@ import (
 	"github.com/jesseliu/headless-alfred/internal/api"
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/claudehistory"
+	"github.com/jesseliu/headless-alfred/internal/claudestate"
 	"github.com/jesseliu/headless-alfred/internal/recap"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
@@ -182,15 +184,26 @@ func main() {
 		defer recapWatcher.Stop()
 	}
 
+	csMgr := claudestate.NewSessionManager(
+		dataDir,
+		api.NewJsonlLocatorAdapter(claudehistory.NewLocator()),
+	)
+	defer func() {
+		if err := csMgr.Shutdown(context.Background()); err != nil {
+			logger.Error("claudestate shutdown", "err", err)
+		}
+	}()
+
 	router := api.NewRouter(api.Deps{
-		Manager:       mgr,
-		Auth:          a,
-		RateLimiter:   rl,
-		Ready:         ready.Load,
-		Bridge:        bridge,
-		Dispatcher:    dispatcher,
-		RecapUpdates:  recapUpdates,
-		PVCLimitBytes: pvcLimit,
+		Manager:            mgr,
+		Auth:               a,
+		RateLimiter:        rl,
+		Ready:              ready.Load,
+		Bridge:             bridge,
+		Dispatcher:         dispatcher,
+		RecapUpdates:       recapUpdates,
+		PVCLimitBytes:      pvcLimit,
+		ClaudeStateManager: csMgr,
 	})
 
 	srv := &http.Server{
