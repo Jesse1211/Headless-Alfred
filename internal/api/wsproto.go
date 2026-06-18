@@ -94,6 +94,11 @@ type OutMsg struct {
 	Tool      string `json:"tool,omitempty"`
 	ToolInput any    `json:"toolInput,omitempty"`
 
+	// Decision carries the resolved "allow" | "deny" on a
+	// tool_decision_applied frame — the confirmed resolution after
+	// the server has applied it to in-memory state.
+	Decision string `json:"decision,omitempty"`
+
 	// Date carries the YYYY-MM-DD date of the recap file that was
 	// written (recap_updated frame).
 	Date string `json:"date,omitempty"`

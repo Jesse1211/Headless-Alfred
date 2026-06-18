@@ -15,6 +15,7 @@ import (
 
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/claudestate"
 	"github.com/jesseliu/headless-alfred/internal/notes"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell"
@@ -49,7 +50,16 @@ var upgrader = websocket.Upgrader{
 // don't use claude UI; callers that want claude UI must pass both.
 // broadcaster is nil-safe: pass newRecapBroadcaster(nil) or a real
 // broadcaster — the connection loop behaves correctly either way.
-func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *claude.Dispatcher, broadcaster *recapBroadcaster, disk *diskBroadcaster) http.Handler {
+// csMgr may be nil — the dispatch helpers degrade to passthrough when nil.
+func WSHandler(
+	m *session.Manager,
+	a auth.Auth,
+	bridge *claude.Bridge,
+	disp *claude.Dispatcher,
+	broadcaster *recapBroadcaster,
+	disk *diskBroadcaster,
+	csMgr *claudestate.SessionManager,
+) http.Handler {
 	runner := claude.NewRunner()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := r.URL.Query().Get("token")
@@ -62,11 +72,11 @@ func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *cla
 			slog.Error("ws upgrade", "err", err)
 			return
 		}
-		runClientLoop(conn, m, bridge, disp, runner, broadcaster, disk)
+		runClientLoop(conn, m, bridge, disp, runner, broadcaster, disk, csMgr)
 	})
 }
 
-func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner, broadcaster *recapBroadcaster, disk *diskBroadcaster) {
+func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner, broadcaster *recapBroadcaster, disk *diskBroadcaster, csMgr *claudestate.SessionManager) {
 	defer conn.Close()
 	conn.SetReadLimit(maxInboundMessage)
 	_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
@@ -264,7 +274,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			if !ok {
 				return
 			}
-			handleInbound(msg, m, bridge, runner, claudeEvents, claudeRunStates, write)
+			handleInbound(msg, m, bridge, runner, claudeEvents, claudeRunStates, csMgr, write)
 		case ev, ok := <-events:
 			if !ok {
 				return
@@ -314,13 +324,10 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			})
 		case fwd := <-claudeEvents:
 			// One stream-json event from an in-flight claude -p
-			// invocation. Push as a claude_event frame.
-			_ = write(OutMsg{
-				Type:      "claude_event",
-				SessionID: fwd.sessionID,
-				EventKind: string(fwd.kind),
-				Payload:   fwd.payload,
-			})
+			// invocation. Route through Apply so server state is the
+			// source of truth, then push as a claude_event frame.
+			cuid := m.GetClaudeSessionID(fwd.sessionID)
+			dispatchClaudeStreamEvent(fwd, cuid, csMgr, write)
 		case sid, ok := <-summaryUpdates:
 			if !ok {
 				continue
@@ -458,7 +465,7 @@ type namedRename struct {
 	Name string
 }
 
-func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner *claude.Runner, claudeEvents chan<- claudeEventEnvelope, runStates *claudeRunStateMap, write func(OutMsg) error) {
+func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner *claude.Runner, claudeEvents chan<- claudeEventEnvelope, runStates *claudeRunStateMap, csMgr *claudestate.SessionManager, write func(OutMsg) error) {
 	switch msg.Type {
 	case "ping":
 		_ = write(OutMsg{Type: "pong"})
@@ -478,6 +485,7 @@ func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner 
 		handleClaudePrompt(msg, m, runner, claudeEvents, runStates, write)
 	case "tool_decision":
 		handleToolDecision(msg, bridge, write)
+		dispatchToolDecision(msg.SessionID, msg.ToolUseID, msg.Decision, msg.Reason, csMgr, write)
 	case "interrupt":
 		// Don't take() — keep the state in the map so the reaper
 		// goroutine can clean up after the SIGINT'd process exits.
@@ -575,4 +583,118 @@ func writeEventToClient(ev FanInEvent, write func(OutMsg) error) {
 			FinishedAt: e.FinishedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
+}
+
+// dispatchClaudeStreamEvent routes one Claude stream-json event
+// through the SessionManager's Apply so server state is the truth
+// source, then emits a claude_event frame to the client. The
+// server's Apply-time wall clock travels INSIDE the Payload (as
+// the Timestamp field of claudestate.Event) — the frontend reducer
+// reads it from there into state fields like StartedAt.
+//
+// claudeUUID is passed in so the first GetOrLoad can attach a jsonl
+// path; subsequent calls for the same session ignore it.
+func dispatchClaudeStreamEvent(env claudeEventEnvelope, claudeUUID string, mgr *claudestate.SessionManager, write func(OutMsg) error) {
+	// Defensive: tests can pass nil to assert the legacy passthrough.
+	// In production main.go wires a non-nil manager.
+	if mgr == nil {
+		_ = write(OutMsg{
+			Type:      "claude_event",
+			SessionID: env.sessionID,
+			EventKind: string(env.kind),
+			Payload:   env.payload,
+		})
+		return
+	}
+	st, err := mgr.GetOrLoad(env.sessionID, claudeUUID)
+	if err != nil {
+		slog.Warn("ws: get state for stream event", "sid", env.sessionID, "err", err)
+		_ = write(OutMsg{Type: "claude_event", SessionID: env.sessionID, EventKind: string(env.kind), Payload: env.payload})
+		return
+	}
+	ev, err := buildEventFromEnvelope(env)
+	if err != nil {
+		slog.Warn("ws: build event", "sid", env.sessionID, "err", err)
+		_ = write(OutMsg{Type: "claude_event", SessionID: env.sessionID, EventKind: string(env.kind), Payload: env.payload})
+		return
+	}
+	if err := st.Apply(ev); err != nil {
+		slog.Warn("ws: apply event", "sid", env.sessionID, "kind", env.kind, "err", err)
+	}
+	// Re-marshal payload so the wire format carries the server
+	// timestamp inside payload.
+	out, _ := json.Marshal(ev.Payload)
+	_ = write(OutMsg{
+		Type:      "claude_event",
+		SessionID: env.sessionID,
+		EventKind: string(env.kind),
+		Payload:   json.RawMessage(out),
+	})
+}
+
+// dispatchToolDecision applies the user's tool decision to in-memory
+// state and emits a tool_decision_applied frame. The bridge resolution
+// (telling the PreToolUse hook to allow or deny) still happens through
+// the existing bridge path — this helper only owns the state side.
+func dispatchToolDecision(sessionID, toolUseID, decision, reason string, mgr *claudestate.SessionManager, write func(OutMsg) error) {
+	if mgr == nil {
+		return
+	}
+	st, err := mgr.GetOrLoad(sessionID, "")
+	if err != nil {
+		slog.Warn("ws: get state for decision", "sid", sessionID, "err", err)
+		return
+	}
+	ev := claudestate.Event{
+		Kind:      claudestate.EventToolDecision,
+		Timestamp: time.Now().UTC(),
+		Payload: &claudestate.ToolDecisionPayload{
+			ToolUseID: toolUseID,
+			Decision:  decision,
+			Reason:    reason,
+		},
+	}
+	if err := st.Apply(ev); err != nil {
+		slog.Warn("ws: apply decision", "sid", sessionID, "err", err)
+		return
+	}
+	_ = write(OutMsg{
+		Type:      "tool_decision_applied",
+		SessionID: sessionID,
+		ToolUseID: toolUseID,
+		Decision:  decision,
+	})
+}
+
+// buildEventFromEnvelope turns a raw envelope (kind string + payload)
+// into a typed claudestate.Event. The timestamp is generated here —
+// it's the server's Apply-time moment.
+func buildEventFromEnvelope(env claudeEventEnvelope) (claudestate.Event, error) {
+	now := time.Now().UTC()
+	// Marshal the raw payload (which is either json.RawMessage or a
+	// concrete payload struct from the parser) then unmarshal into a
+	// claudestate.Event so the kind-dispatched UnmarshalJSON allocates
+	// the right concrete payload type.
+	payloadBytes, err := json.Marshal(env.payload)
+	if err != nil {
+		return claudestate.Event{}, err
+	}
+	wire := struct {
+		Kind      claudestate.EventKind `json:"kind"`
+		Timestamp time.Time             `json:"timestamp"`
+		Payload   json.RawMessage       `json:"payload"`
+	}{
+		Kind:      claudestate.EventKind(env.kind),
+		Timestamp: now,
+		Payload:   payloadBytes,
+	}
+	envBytes, err := json.Marshal(wire)
+	if err != nil {
+		return claudestate.Event{}, err
+	}
+	var ev claudestate.Event
+	if err := json.Unmarshal(envBytes, &ev); err != nil {
+		return claudestate.Event{}, err
+	}
+	return ev, nil
 }

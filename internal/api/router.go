@@ -67,7 +67,7 @@ func NewRouter(d Deps) http.Handler {
 	// rewritten) accumulate slowly, and the alert thresholds are
 	// coarse (80% / 95%). Could be wired off via Deps later if needed.
 	disk := newDiskBroadcaster(d.Manager.DataDir(), d.PVCLimitBytes, 60*time.Second)
-	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher, broadcaster, disk).ServeHTTP)
+	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher, broadcaster, disk, d.ClaudeStateManager).ServeHTTP)
 
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(d.Auth))
