@@ -20,8 +20,9 @@ type SessionState struct {
 	sessionID  string
 	claudeUUID string
 
-	mu    sync.RWMutex
-	state ClaudeState
+	mu       sync.RWMutex
+	state    ClaudeState
+	curIndex *perTurnIndex // transient; not serialized
 
 	persister *Persister // nil until AttachPersister is called
 }
@@ -100,12 +101,20 @@ func (s *SessionState) Apply(ev Event) error {
 	defer s.mu.Unlock()
 
 	switch ev.Kind {
+	case EventMessageStart:
+		s.applyMessageStart()
 	case EventTextDelta:
 		p, ok := ev.Payload.(*TextDeltaPayload)
 		if !ok {
 			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
 		}
 		s.applyTextDelta(p)
+	case EventThinkingDelta:
+		p, ok := ev.Payload.(*ThinkingDeltaPayload)
+		if !ok {
+			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		}
+		s.applyThinkingDelta(p)
 	case EventToolUseStart:
 		p, ok := ev.Payload.(*ToolUseStartPayload)
 		if !ok {
@@ -119,30 +128,26 @@ func (s *SessionState) Apply(ev Event) error {
 		}
 		s.applyToolResult(p, ev.Timestamp)
 	default:
-		// Remaining kinds wired in Task 6 (message_start) and Task 7
-		// (lifecycle). Until then they're a no-op so integration tests
-		// can submit them without crashing.
+		// Remaining kinds wired in Task 7 (lifecycle). Until then they're
+		// a no-op so integration tests can submit them without crashing.
 	}
 	return nil
 }
 
 // applyTextDelta appends text to the block at `index` within the
-// current turn. Holds the write lock; caller is responsible for
-// acquiring it.
-//
-// At Task 5 we use a naive "find a text block at or after position
-// index" lookup that's correct for single-message turns. Task 6
-// replaces this with a real per-turn index map keyed off
-// message_start resets.
+// current turn. Uses the per-turn index map to track content-block
+// index → position mapping, accounting for message_start resets.
 func (s *SessionState) applyTextDelta(p *TextDeltaPayload) {
 	turn := s.lastTurn()
 	if turn == nil || turn.Done {
 		return
 	}
-	pos, ok := lookupBlockPos(turn, p.Index, "text")
+	idx := s.indexFor(turn)
+	pos, ok := idx.blocks[p.Index]
 	if !ok || turn.Blocks[pos].Kind != "text" {
 		turn.Blocks = append(turn.Blocks, AssistantBlock{Kind: "text"})
 		pos = len(turn.Blocks) - 1
+		idx.blocks[p.Index] = pos
 	}
 	turn.Blocks[pos].Text += p.Text
 }
@@ -152,6 +157,7 @@ func (s *SessionState) applyToolUseStart(p *ToolUseStartPayload, ts time.Time) {
 	if turn == nil || turn.Done || p.ToolUseID == "" {
 		return
 	}
+	idx := s.indexFor(turn)
 	turn.Blocks = append(turn.Blocks, AssistantBlock{
 		Kind: "tool",
 		Tool: &ClaudeToolCall{
@@ -161,6 +167,7 @@ func (s *SessionState) applyToolUseStart(p *ToolUseStartPayload, ts time.Time) {
 			StartedAt: timePtr(ts),
 		},
 	})
+	idx.blocks[p.Index] = len(turn.Blocks) - 1
 }
 
 func (s *SessionState) applyToolResult(p *ToolResultPayload, ts time.Time) {
@@ -179,6 +186,33 @@ func (s *SessionState) applyToolResult(p *ToolResultPayload, ts time.Time) {
 	}
 }
 
+func (s *SessionState) applyThinkingDelta(p *ThinkingDeltaPayload) {
+	turn := s.lastTurn()
+	if turn == nil || turn.Done {
+		return
+	}
+	idx := s.indexFor(turn)
+	pos, ok := idx.thinking[p.Index]
+	if !ok {
+		turn.Thinking = append(turn.Thinking, "")
+		pos = len(turn.Thinking) - 1
+		idx.thinking[p.Index] = pos
+	}
+	turn.Thinking[pos] += p.Text
+}
+
+func (s *SessionState) applyMessageStart() {
+	turn := s.lastTurn()
+	if turn == nil || turn.Done {
+		return
+	}
+	// Make sure the per-turn map exists (so the reset has something to
+	// reset) then wipe it. Without this, the next message's index=0
+	// folds back into the previous message's blocks.
+	_ = s.indexFor(turn)
+	s.resetBlockIndex()
+}
+
 // ---- internal turn bookkeeping ----
 
 // lastTurn returns a pointer to the current in-progress turn (or nil).
@@ -191,14 +225,36 @@ func (s *SessionState) lastTurn() *ClaudeTurn {
 	return &s.state.Turns[n-1]
 }
 
-// lookupBlockPos is a Task-5 stub: scan the blocks slice for one
-// matching kind at-or-after the index. Task 6 replaces this with a
-// real index map keyed off message_start resets.
-func lookupBlockPos(turn *ClaudeTurn, index int, want string) (int, bool) {
-	for i, b := range turn.Blocks {
-		if b.Kind == want && i >= index {
-			return i, true
+// perTurnIndex tracks the per-message content-block index → array
+// position mapping for the current in-progress turn. Reset on each
+// EventMessageStart. The map is keyed by Apply-time turn ID so a
+// turn spanning many messages keeps cumulative blocks but each
+// message's index space is fresh.
+type perTurnIndex struct {
+	turnID   string
+	blocks   map[int]int // content-block index → position in Turn.Blocks
+	thinking map[int]int // content-block index → position in Turn.Thinking
+}
+
+// indexFor returns (and lazily creates) the index map for the active
+// turn. Called under write lock. When the active turn changes (next
+// turn began), a fresh map replaces the old one.
+func (s *SessionState) indexFor(turn *ClaudeTurn) *perTurnIndex {
+	if s.curIndex == nil || s.curIndex.turnID != turn.ID {
+		s.curIndex = &perTurnIndex{
+			turnID:   turn.ID,
+			blocks:   map[int]int{},
+			thinking: map[int]int{},
 		}
 	}
-	return -1, false
+	return s.curIndex
+}
+
+// resetBlockIndex empties the per-turn maps. Called on message_start
+// so the next message's index=0 maps to a fresh block position.
+func (s *SessionState) resetBlockIndex() {
+	if s.curIndex != nil {
+		s.curIndex.blocks = map[int]int{}
+		s.curIndex.thinking = map[int]int{}
+	}
 }

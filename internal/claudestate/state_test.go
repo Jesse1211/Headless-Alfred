@@ -96,6 +96,89 @@ func TestApply_ToolResult_PatchesByID(t *testing.T) {
 	})
 }
 
+// Multi-message-turn block ordering regression. Anthropic stream-json
+// resets content-block `index` to 0 on each message_start. A single
+// Alfred turn often spans multiple assistant messages (text → tool_use
+// → tool_result → next assistant message). The reducer must reset its
+// per-turn index map on message_start so the next message's index=0
+// opens a fresh block — otherwise text folds into the prior message's
+// block and tools sink to the array tail.
+func TestApply_MultiMessage_KeepsInterleavedOrder(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "do a thing", tAt(7, 0, 0))
+
+	// Message 1
+	must(t, s.Apply(Event{Kind: EventMessageStart, Timestamp: tAt(7, 0, 1)}))
+	must(t, s.Apply(Event{Kind: EventTextDelta, Timestamp: tAt(7, 0, 2),
+		Payload: &TextDeltaPayload{Index: 0, Text: "first reply "}}))
+	must(t, s.Apply(Event{Kind: EventToolUseStart, Timestamp: tAt(7, 0, 3),
+		Payload: &ToolUseStartPayload{Index: 1, ToolUseID: "tu_1", Name: "Bash"}}))
+	must(t, s.Apply(Event{Kind: EventToolResult, Timestamp: tAt(7, 0, 4),
+		Payload: &ToolResultPayload{ToolUseID: "tu_1", Content: "ok"}}))
+	// Message 2 — index counter resets server-side.
+	must(t, s.Apply(Event{Kind: EventMessageStart, Timestamp: tAt(7, 0, 5)}))
+	must(t, s.Apply(Event{Kind: EventTextDelta, Timestamp: tAt(7, 0, 6),
+		Payload: &TextDeltaPayload{Index: 0, Text: "second reply "}}))
+	must(t, s.Apply(Event{Kind: EventToolUseStart, Timestamp: tAt(7, 0, 7),
+		Payload: &ToolUseStartPayload{Index: 1, ToolUseID: "tu_2", Name: "Read"}}))
+
+	s.View(func(st *ClaudeState) {
+		got := blockSummary(st.Turns[0].Blocks)
+		want := []string{
+			"text:first reply ",
+			"tool:tu_1",
+			"text:second reply ",
+			"tool:tu_2",
+		}
+		if !equalStrSlice(got, want) {
+			t.Errorf("blocks order:\n got  %v\n want %v", got, want)
+		}
+	})
+}
+
+func TestApply_MultiMessage_KeepsThinkingBlocksSeparate(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "think hard", tAt(7, 0, 0))
+
+	must(t, s.Apply(Event{Kind: EventMessageStart, Timestamp: tAt(7, 0, 1)}))
+	must(t, s.Apply(Event{Kind: EventThinkingDelta, Timestamp: tAt(7, 0, 2),
+		Payload: &ThinkingDeltaPayload{Index: 0, Text: "thought A"}}))
+	must(t, s.Apply(Event{Kind: EventMessageStart, Timestamp: tAt(7, 0, 3)}))
+	must(t, s.Apply(Event{Kind: EventThinkingDelta, Timestamp: tAt(7, 0, 4),
+		Payload: &ThinkingDeltaPayload{Index: 0, Text: "thought B"}}))
+
+	s.View(func(st *ClaudeState) {
+		want := []string{"thought A", "thought B"}
+		if !equalStrSlice(st.Turns[0].Thinking, want) {
+			t.Errorf("thinking: got %v want %v", st.Turns[0].Thinking, want)
+		}
+	})
+}
+
+func blockSummary(blocks []AssistantBlock) []string {
+	out := make([]string, len(blocks))
+	for i, b := range blocks {
+		if b.Kind == "tool" {
+			out[i] = "tool:" + b.Tool.ToolUseID
+		} else {
+			out[i] = "text:" + b.Text
+		}
+	}
+	return out
+}
+
+func equalStrSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ---- helpers ----
 
 func must(t *testing.T, err error) {
