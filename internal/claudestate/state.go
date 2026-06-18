@@ -340,8 +340,16 @@ func (s *SessionState) applyResult(p *ResultPayload, ts time.Time) {
 func (s *SessionState) finalizeInFlight(reason string, ts time.Time) {
 	turn := s.lastTurn()
 	s.state.InFlight = false
-	s.state.Pending = nil
-	s.state.PendingQuestions = nil
+	// Clear but keep non-nil slices — the JSON wire format must
+	// stay `[]` not `null` (frontend reads .length).
+	s.state.Pending = s.state.Pending[:0]
+	s.state.PendingQuestions = s.state.PendingQuestions[:0]
+	if s.state.Pending == nil {
+		s.state.Pending = []ClaudeToolApproval{}
+	}
+	if s.state.PendingQuestions == nil {
+		s.state.PendingQuestions = []ClaudeQuestion{}
+	}
 	if turn == nil || turn.Done {
 		return
 	}

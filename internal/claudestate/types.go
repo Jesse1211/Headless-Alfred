@@ -168,41 +168,42 @@ func timePtr(t time.Time) *time.Time { return &t }
 // HTTP snapshot handler and the Persister's writeSnapshot to capture
 // state under the read lock without holding it during marshal.
 func (s ClaudeState) DeepCopy() ClaudeState {
+	// Collections must round-trip non-nil so the JSON wire format
+	// stays `[]` / `{}` (not `null`) — the frontend dereferences
+	// .length / .keys on them.
 	out := ClaudeState{
 		Turns:            make([]ClaudeTurn, len(s.Turns)),
-		Pending:          append([]ClaudeToolApproval(nil), s.Pending...),
-		PendingQuestions: append([]ClaudeQuestion(nil), s.PendingQuestions...),
+		Pending:          make([]ClaudeToolApproval, len(s.Pending)),
+		PendingQuestions: make([]ClaudeQuestion, len(s.PendingQuestions)),
+		BgTasks:          make(map[string]BgTask, len(s.BgTasks)),
+		Subagents:        make(map[string]SubagentEntry, len(s.Subagents)),
 		InFlight:         s.InFlight,
 		TurnsLoaded:      s.TurnsLoaded,
 	}
 	for i, t := range s.Turns {
 		out.Turns[i] = t.DeepCopy()
 	}
+	copy(out.Pending, s.Pending)
+	copy(out.PendingQuestions, s.PendingQuestions)
 	if s.LastError != nil {
 		e := *s.LastError
 		out.LastError = &e
 	}
-	if s.BgTasks != nil {
-		out.BgTasks = make(map[string]BgTask, len(s.BgTasks))
-		for k, v := range s.BgTasks {
-			cp := v
-			if v.FinishedAt != nil {
-				ft := *v.FinishedAt
-				cp.FinishedAt = &ft
-			}
-			out.BgTasks[k] = cp
+	for k, v := range s.BgTasks {
+		cp := v
+		if v.FinishedAt != nil {
+			ft := *v.FinishedAt
+			cp.FinishedAt = &ft
 		}
+		out.BgTasks[k] = cp
 	}
-	if s.Subagents != nil {
-		out.Subagents = make(map[string]SubagentEntry, len(s.Subagents))
-		for k, v := range s.Subagents {
-			cp := v
-			if v.FinishedAt != nil {
-				ft := *v.FinishedAt
-				cp.FinishedAt = &ft
-			}
-			out.Subagents[k] = cp
+	for k, v := range s.Subagents {
+		cp := v
+		if v.FinishedAt != nil {
+			ft := *v.FinishedAt
+			cp.FinishedAt = &ft
 		}
+		out.Subagents[k] = cp
 	}
 	return out
 }

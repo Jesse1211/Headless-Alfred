@@ -64,6 +64,30 @@ func TestClaudeTurn_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+// DeepCopy must never produce nil collections — they JSON-serialize
+// to `null` and the frontend reducer dereferences `.length` on them.
+// Regression for crash: "Cannot read properties of null (reading 'length')"
+// in sessionStatus.ts:34 when pending/pendingQuestions were nil.
+func TestClaudeState_DeepCopy_CollectionsNeverNil(t *testing.T) {
+	src := ClaudeState{} // all-nil zero value
+	dst := src.DeepCopy()
+	if dst.Pending == nil {
+		t.Error("Pending must be non-nil after DeepCopy of zero state")
+	}
+	if dst.PendingQuestions == nil {
+		t.Error("PendingQuestions must be non-nil")
+	}
+	if dst.BgTasks == nil {
+		t.Error("BgTasks must be non-nil")
+	}
+	if dst.Subagents == nil {
+		t.Error("Subagents must be non-nil")
+	}
+	if dst.Turns == nil {
+		t.Error("Turns must be non-nil")
+	}
+}
+
 func TestClaudeState_DeepCopy_Independent(t *testing.T) {
 	cost := 0.5
 	src := ClaudeState{
