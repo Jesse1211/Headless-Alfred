@@ -1,0 +1,258 @@
+/* BackgroundTasksPanel — floating card, minimal styling matching codebase variables */
+
+.bg-tasks-panel {
+  position: absolute;
+  top: 44px;
+  right: 12px;
+  width: 440px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated, #1a1d24);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--text, #eaeaea);
+  font-size: 13px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  overflow: hidden;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.bg-tasks-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.bg-tasks-panel__header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.bg-tasks-panel__header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.bg-tasks-panel__main-status {
+  color: var(--text-muted, #9aa3b2);
+}
+
+.bg-tasks-panel__status-indicator--running {
+  color: #7ed492;
+}
+
+.bg-tasks-panel__status-indicator--idle {
+  color: var(--text-muted, #9aa3b2);
+}
+
+.bg-tasks-panel__live {
+  color: var(--text-muted, #9aa3b2);
+}
+
+/* Mirror .claude-chat__disconnected palette */
+.bg-tasks-panel__disconnected {
+  background: rgba(220, 100, 100, 0.15);
+  border: 1px solid rgba(220, 100, 100, 0.5);
+  color: #f0a0a0;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.bg-tasks-panel__toggle {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #9aa3b2);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.bg-tasks-panel__toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text, #eaeaea);
+}
+
+/* ── Body ───────────────────────────────────────────────────────────────── */
+
+.bg-tasks-panel__body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.bg-tasks-panel__skeleton {
+  padding: 20px 14px;
+  color: var(--text-muted, #9aa3b2);
+  font-style: italic;
+  font-size: 12px;
+}
+
+.bg-tasks-panel__empty {
+  padding: 16px 14px;
+  color: var(--text-muted, #9aa3b2);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* ── Group ──────────────────────────────────────────────────────────────── */
+
+.bg-tasks-panel__group {
+  padding: 8px 0 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.bg-tasks-panel__group:last-child {
+  border-bottom: none;
+}
+
+.bg-tasks-panel__group-title {
+  padding: 0 14px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, #9aa3b2);
+}
+
+.bg-tasks-panel__fade-hint {
+  padding: 4px 14px 2px;
+  font-size: 10px;
+  color: var(--text-muted, #9aa3b2);
+  opacity: 0.6;
+}
+
+/* ── Row ────────────────────────────────────────────────────────────────── */
+
+.bg-tasks-panel__row {
+  padding: 4px 14px 4px;
+}
+
+.bg-tasks-panel__row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bg-tasks-panel__row-title {
+  font-size: 12px;
+  color: var(--text, #eaeaea);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bg-tasks-panel__elapsed {
+  font-size: 11px;
+  color: var(--text-muted, #9aa3b2);
+  white-space: nowrap;
+}
+
+.bg-tasks-panel__row-summary {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted, #9aa3b2);
+  padding-left: 2px;
+}
+
+/* ── Chip ───────────────────────────────────────────────────────────────── */
+
+.bg-tasks-panel__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bg-tasks-panel__chip--in_progress {
+  background: rgba(122, 162, 247, 0.18);
+  color: #7aa2f7;
+  border: 1px solid rgba(122, 162, 247, 0.3);
+}
+
+.bg-tasks-panel__chip--completed,
+.bg-tasks-panel__chip--stopped {
+  background: rgba(126, 212, 146, 0.15);
+  color: #7ed492;
+  border: 1px solid rgba(126, 212, 146, 0.25);
+}
+
+.bg-tasks-panel__chip--killed {
+  background: rgba(150, 150, 150, 0.12);
+  color: #9aa3b2;
+  border: 1px solid rgba(150, 150, 150, 0.2);
+}
+
+.bg-tasks-panel__chip--failed {
+  background: rgba(220, 100, 100, 0.12);
+  color: #e88c8c;
+  border: 1px solid rgba(220, 100, 100, 0.25);
+}
+
+/* ── Log view ───────────────────────────────────────────────────────────── */
+
+.bg-tasks-panel__log-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-muted, #9aa3b2);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.bg-tasks-panel__log-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text, #eaeaea);
+}
+
+.bg-tasks-panel__log-body {
+  margin-top: 6px;
+}
+
+.bg-tasks-panel__log-pre {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text, #eaeaea);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 0;
+}
+
+.bg-tasks-panel__log-unavailable {
+  font-size: 11px;
+  color: var(--text-muted, #9aa3b2);
+  font-style: italic;
+  padding: 4px 2px;
+  display: block;
+}
