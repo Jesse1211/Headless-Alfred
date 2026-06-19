@@ -9,6 +9,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/oklog/ulid/v2 v2.1.1
 	golang.org/x/sync v0.21.0
+	golang.org/x/text v0.38.0
 )
 
 require golang.org/x/sys v0.4.0 // indirect
