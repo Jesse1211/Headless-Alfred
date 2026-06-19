@@ -1,6 +1,35 @@
 # UI mode Background Tasks — Server-Managed via tmux — Design
 
 **Date:** 2026-06-19
+**Status:** ⚠️ **SUPERSEDED 2026-06-19** by `DESIGN.md` at repo root.
+
+## SUPERSEDED BY
+
+During brainstorming the canonical `DESIGN.md` at repo root, a manual
+`claude -p` spike revealed that Claude CLI is the **sole owner** of
+background-bash lifecycle: it spawns them as its own children (not
+detached), assigns its own `task_id`, writes their stdout to a fixed
+path under `/tmp/claude-<uid>/`, and **actively SIGKILLs every
+in-progress task when the parent `claude -p` exits** (emitting
+`task_updated.status="killed"`). The detached-bash + tmux-ownership
+model this spec was built around is impossible: the CLI does not let go.
+
+The replacement design (root `DESIGN.md`) pivots to **observer-only**:
+alfred-server reads the CLI's existing output files, displays the
+fact that CLI kills tasks at turn end, and never tries to extend
+their lifetime. Nine sections of this spec (claudeuiwindow package,
+tmux session containerization, SIGHUP wrapping, updatedInput
+rewriting, pipe-pane demux, ResumeOpenTurns, the three spikes, the
+two new invariants) are abandoned. The Refresh Parity Audit table
+and the BgTasks-rebuild-from-jsonl mechanism survive.
+
+This file is kept for archaeological context: anyone reading
+git-blame on the production code should be able to find why we did
+NOT go down the tmux-container route.
+
+---
+
+**Date:** 2026-06-19
 **Status:** Approved (brainstorm phase)
 **Branch:** TBD (post-spec branch name)
 
