@@ -1,5 +1,23 @@
 # UI Background Tasks — Plan 1: Refactor + Spikes
 
+> ⚠️ **SUPERSEDED 2026-06-19** — DO NOT USE.
+>
+> A `claude -p` spike on 2026-06-19 confirmed Claude CLI is the sole
+> owner of bg-task lifecycle (it SIGKILLs all in-flight tasks on
+> turn end). The tmux-containerization + SIGHUP-wrapping +
+> updatedInput-rewriting + pipe-pane-demux mechanics this plan
+> orchestrated all become moot — see SUPERSEDED header in
+> `docs/superpowers/specs/2026-06-19-ui-mode-background-tasks-design.md`.
+>
+> The canonical execution plan is now **`DESIGN.md` at repo root**
+> (feature-factory format, 16 tasks). Plan 1's Part A (refactor)
+> survived; Part B (the three spikes) was cancelled.
+>
+> Kept for archaeological context only. Do not implement from this
+> file.
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land the low-risk frontend refactor that unblocks the upcoming UI background-tasks panel, and execute the three pre-implementation spikes whose answers shape Plan 2 (the backend rewrite).
