@@ -473,15 +473,21 @@ func (s *SessionState) applyTaskUpdated(p *TaskUpdatedPayload, ts time.Time) {
 	if !ok {
 		return
 	}
-	if status, _ := p.Patch["status"].(string); status == "completed" || status == "failed" {
-		bt.Status = status
-		if et, ok := p.Patch["end_time"].(float64); ok && et > 0 {
-			bt.FinishedAt = timePtr(time.Unix(0, int64(et)*int64(time.Millisecond)).UTC())
-		} else {
-			bt.FinishedAt = timePtr(ts)
-		}
-		s.state.BgTasks[p.TaskID] = bt
+	status, _ := p.Patch["status"].(string)
+	if status != "completed" && status != "failed" &&
+		status != "killed" && status != "stopped" {
+		return
 	}
+	bt.Status = status
+	if et, ok := p.Patch["end_time"].(float64); ok && et > 0 {
+		bt.FinishedAt = timePtr(time.Unix(0, int64(et)*int64(time.Millisecond)).UTC())
+	} else {
+		bt.FinishedAt = timePtr(ts)
+	}
+	if status == "killed" {
+		bt.LastEventSummary = "killed by Claude on turn end"
+	}
+	s.state.BgTasks[p.TaskID] = bt
 }
 
 // ---- hook lifecycle reducers ----

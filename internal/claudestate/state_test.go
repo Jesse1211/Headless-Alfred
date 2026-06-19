@@ -197,6 +197,105 @@ func blockText(st *ClaudeState, turnIdx, blockIdx int) string {
 	return st.Turns[turnIdx].Blocks[blockIdx].Text
 }
 
+// TestApplyTaskUpdated_KilledSetsStatusAndSummary verifies that applying a
+// task_updated event with status="killed" sets BgTask.Status, stamps
+// BgTask.LastEventSummary to "killed by Claude on turn end", and uses the
+// end_time field (in ms) to set FinishedAt rather than the ts fallback.
+func TestApplyTaskUpdated_KilledSetsStatusAndSummary(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "monitor", tAt(7, 0, 0))
+
+	// Seed a BgTask in in_progress state.
+	must(t, s.Apply(Event{Kind: EventToolUseStart, Timestamp: tAt(7, 0, 1),
+		Payload: &ToolUseStartPayload{Index: 0, ToolUseID: "tu_mon", Name: "Monitor"}}))
+	must(t, s.Apply(Event{Kind: EventTaskStarted, Timestamp: tAt(7, 0, 2),
+		Payload: &TaskStartedPayload{
+			TaskID: "task_k", ToolUseID: "tu_mon",
+			Description: "tail logs", TaskType: "local_bash",
+		}}))
+
+	// end_time in ms: 2026-06-18T07:00:10.000Z expressed as Unix ms.
+	endTimeMS := float64(time.Date(2026, 6, 18, 7, 0, 10, 0, time.UTC).UnixMilli())
+	must(t, s.Apply(Event{Kind: EventTaskUpdated, Timestamp: tAt(7, 0, 15),
+		Payload: &TaskUpdatedPayload{
+			TaskID: "task_k",
+			Patch:  map[string]any{"status": "killed", "end_time": endTimeMS},
+		}}))
+
+	s.View(func(st *ClaudeState) {
+		bt, ok := st.BgTasks["task_k"]
+		if !ok {
+			t.Fatal("BgTask not found")
+		}
+		if bt.Status != "killed" {
+			t.Errorf("Status = %q, want killed", bt.Status)
+		}
+		if bt.LastEventSummary != "killed by Claude on turn end" {
+			t.Errorf("LastEventSummary = %q, want %q", bt.LastEventSummary, "killed by Claude on turn end")
+		}
+		wantFinished := time.Date(2026, 6, 18, 7, 0, 10, 0, time.UTC)
+		if bt.FinishedAt == nil {
+			t.Fatal("FinishedAt is nil")
+		}
+		if !bt.FinishedAt.Equal(wantFinished) {
+			t.Errorf("FinishedAt = %v, want %v (end_time epoch, not ts fallback)", bt.FinishedAt, wantFinished)
+		}
+	})
+}
+
+// TestApplyTaskUpdated_StoppedSetsStatus verifies that applying a task_updated
+// event with status="stopped" (and no end_time) sets BgTask.Status to "stopped",
+// uses the ts fallback for FinishedAt, and does NOT overwrite a pre-existing
+// LastEventSummary.
+func TestApplyTaskUpdated_StoppedSetsStatus(t *testing.T) {
+	s := NewSessionState("sess1", "uuid-1")
+	s.BeginTurn("u1", "monitor", tAt(7, 0, 0))
+
+	// Seed a BgTask in in_progress state.
+	must(t, s.Apply(Event{Kind: EventToolUseStart, Timestamp: tAt(7, 0, 1),
+		Payload: &ToolUseStartPayload{Index: 0, ToolUseID: "tu_mon2", Name: "Monitor"}}))
+	must(t, s.Apply(Event{Kind: EventTaskStarted, Timestamp: tAt(7, 0, 2),
+		Payload: &TaskStartedPayload{
+			TaskID: "task_s", ToolUseID: "tu_mon2",
+			Description: "watch output", TaskType: "local_bash",
+		}}))
+
+	// Inject a pre-existing LastEventSummary by applying a task_notification.
+	must(t, s.Apply(Event{Kind: EventTaskNotification, Timestamp: tAt(7, 0, 5),
+		Payload: &TaskNotificationPayload{
+			TaskID: "task_s", ToolUseID: "tu_mon2",
+			Status: "in_progress", Summary: "tail line N",
+		}}))
+
+	// Apply stopped with no end_time; ts fallback should be tAt(7, 0, 20).
+	stopTS := tAt(7, 0, 20)
+	must(t, s.Apply(Event{Kind: EventTaskUpdated, Timestamp: stopTS,
+		Payload: &TaskUpdatedPayload{
+			TaskID: "task_s",
+			Patch:  map[string]any{"status": "stopped"},
+		}}))
+
+	s.View(func(st *ClaudeState) {
+		bt, ok := st.BgTasks["task_s"]
+		if !ok {
+			t.Fatal("BgTask not found")
+		}
+		if bt.Status != "stopped" {
+			t.Errorf("Status = %q, want stopped", bt.Status)
+		}
+		// LastEventSummary must NOT be overwritten by the stopped handler.
+		if bt.LastEventSummary != "tail line N" {
+			t.Errorf("LastEventSummary = %q, want %q (must not be overwritten)", bt.LastEventSummary, "tail line N")
+		}
+		if bt.FinishedAt == nil {
+			t.Fatal("FinishedAt is nil")
+		}
+		if !bt.FinishedAt.Equal(stopTS) {
+			t.Errorf("FinishedAt = %v, want %v (ts fallback)", bt.FinishedAt, stopTS)
+		}
+	})
+}
+
 func TestApply_ToolUseEnd_PatchesInput(t *testing.T) {
 	s := NewSessionState("sess1", "uuid-1")
 	s.BeginTurn("u1", "go", tAt(7, 0, 0))
