@@ -80,3 +80,76 @@ code, pre {
   right: auto;
   left: 0;
 }
+
+.claude-tool__elapsed {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85em;
+  margin-left: 6px;
+  opacity: 0.7;
+}
+.claude-tool__elapsed.is-slow {
+  color: #c97a00;
+  opacity: 1;
+}
+.claude-tool__elapsed.is-stuck {
+  color: #c0392b;
+  font-weight: 600;
+  opacity: 1;
+}
+
+.claude-tool__bg {
+  margin-left: 8px;
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+.claude-tool__bg code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.claude-tool__check {
+  color: #2c9c4a;
+  font-weight: 700;
+  margin-left: 4px;
+}
+.claude-tool__last-event {
+  margin-top: 6px;
+  font-size: 0.85em;
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.turn-phase-chip {
+  display: inline-block;
+  font-size: 0.75em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.07);
+  margin-left: 8px;
+  font-weight: 500;
+}
+.turn-phase-chip--done {
+  background: rgba(44, 156, 74, 0.15);
+  color: #2c9c4a;
+}
+.turn-phase-chip--initializing,
+.turn-phase-chip--thinking {
+  background: rgba(0, 0, 0, 0.07);
+}
+.turn-stats {
+  margin-top: 8px;
+  font-size: 0.8em;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 0.75em;
+  background: rgba(201, 122, 0, 0.18);
+  color: #c97a00;
+  font-variant-numeric: tabular-nums;
+}

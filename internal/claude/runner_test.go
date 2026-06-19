@@ -5,9 +5,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestRunnerArgsIncludeHookEvents(t *testing.T) {
+	// The runner's argv must include --include-hook-events so the
+	// CLI emits task_started / task_updated / hook_started /
+	// hook_response system events alongside normal stream-json.
+	got := buildPromptArgs(PromptOptions{})
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--include-hook-events") {
+		t.Fatalf("expected --include-hook-events in args, got %q", joined)
+	}
+}
 
 // TestRunner_Prompt_HappyPath spawns a fake `claude` shell script
 // that prints our fixture to stdout, exits 0. The Runner should

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/claudestate"
 	"github.com/jesseliu/headless-alfred/internal/recap"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/store"
@@ -109,14 +110,24 @@ func (s *claudeRunStateMap) take(sid string) (*claudeRunState, bool) {
 	return st, ok
 }
 
-// takeAll removes and returns every state. Used on WS disconnect
-// to stop in-flight runners.
-func (s *claudeRunStateMap) takeAll() []*claudeRunState {
+// claudeRunStateEntry pairs a sessionID with its run state — used by
+// takeAll so disconnect cleanup can both kill the runner AND tell
+// server state about it (Apply EventClaudeRunEnded). Without the
+// session id we'd kill the process but leave InFlight=true forever.
+type claudeRunStateEntry struct {
+	sessionID string
+	state     *claudeRunState
+}
+
+// takeAll removes and returns every state along with its sessionID.
+// Used on WS disconnect to stop in-flight runners AND signal Apply
+// so the trailing turn doesn't get stuck at Done=false.
+func (s *claudeRunStateMap) takeAll() []claudeRunStateEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*claudeRunState, 0, len(s.m))
-	for _, st := range s.m {
-		out = append(out, st)
+	out := make([]claudeRunStateEntry, 0, len(s.m))
+	for sid, st := range s.m {
+		out = append(out, claudeRunStateEntry{sessionID: sid, state: st})
 	}
 	s.m = map[string]*claudeRunState{}
 	return out
@@ -194,6 +205,16 @@ func claudeEventPayload(ev claude.Event) any {
 		return nil
 	case claude.KindResult:
 		return ev.Result
+	case claude.KindTaskStarted:
+		return ev.TaskStarted
+	case claude.KindTaskNotification:
+		return ev.TaskNotification
+	case claude.KindTaskUpdated:
+		return ev.TaskUpdated
+	case claude.KindHookStarted:
+		return ev.HookStarted
+	case claude.KindHookResponse:
+		return ev.HookResponse
 	case claude.KindUnknown:
 		return ev.Unknown
 	}
@@ -369,7 +390,7 @@ func handleStdin(msg InMsg, m *session.Manager, write func(OutMsg) error) {
 // streams the parsed events back via claude_event frames. Only valid
 // when the session is in claude mode with renderer=ui. Refuses if a
 // prompt is already in flight (one at a time per session).
-func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, out chan<- claudeEventEnvelope, runStates *claudeRunStateMap, write func(OutMsg) error) {
+func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, out chan<- claudeEventEnvelope, runStates *claudeRunStateMap, csMgr *claudestate.SessionManager, write func(OutMsg) error) {
 	if !requireSessionID(msg, "claude_prompt", write) {
 		return
 	}
@@ -493,6 +514,10 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	// turn and UserPromptBubble renders it under a "Show full prompt"
 	// toggle — transparency for the token bill.
 	_ = write(OutMsg{Type: "user_prompt", SessionID: msg.SessionID, Text: finalText})
+	// Register the optimistic turn server-side and announce it back to
+	// the originating client so the frontend can reconcile its
+	// placeholder turn by clientNonce.
+	dispatchClaudePromptBegin(msg.SessionID, msg.ClientNonce, finalText, csMgr, write)
 	pr, err := runner.Prompt(ctx, claude.PromptOptions{
 		SessionUUID:       convoID,
 		CWD:               cwd,
@@ -501,7 +526,15 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 	})
 	if err != nil {
 		cancel()
-		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "claude_spawn_failed", Message: err.Error()})
+		// BeginTurn already registered an optimistic in-flight turn via
+		// dispatchClaudePromptBegin above. Without a compensating
+		// finalize, that turn stays Done=false forever and the
+		// composer never unlocks (only a server restart's
+		// finalizeStaleTrailingTurn would recover it). Route a
+		// synthesized ClaudeError through Apply so InFlight clears and
+		// the turn closes as an error block — same finalize path the
+		// runner-died case uses.
+		dispatchClaudeError(msg.SessionID, "claude_spawn_failed", err.Error(), csMgr, write)
 		return
 	}
 	runStates.set(msg.SessionID, &claudeRunState{cancel: cancel, stop: pr.Stop})
@@ -541,11 +574,13 @@ func handleClaudePrompt(msg InMsg, m *session.Manager, runner *claude.Runner, ou
 			if waitErr != nil {
 				endMsg = waitErr.Error()
 			}
-			_ = write(OutMsg{
-				Type:      "claude_run_ended",
-				SessionID: msg.SessionID,
-				Message:   endMsg,
-			})
+			// Route through Apply so server state's InFlight clears
+			// and the trailing turn is marked Done — without this the
+			// frame would go out (possibly to a dead conn) but server
+			// state would persist InFlight=true forever, and the next
+			// reconnect's /claude-state hydrate would still show
+			// "Claude is thinking…".
+			dispatchClaudeRunEnded(msg.SessionID, endMsg, csMgr, write)
 		}
 	}()
 }

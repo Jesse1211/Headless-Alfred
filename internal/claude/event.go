@@ -26,38 +26,51 @@ type Event struct {
 	Kind EventKind
 
 	// Variant payloads. Exactly one is non-nil per Event.
-	System        *SystemEvent
-	RateLimit     *RateLimitEvent
-	TextDelta     *TextDeltaEvent
-	TextBlockEnd  *TextBlockEndEvent
-	ThinkingDelta *ThinkingDeltaEvent
-	ToolUseStart  *ToolUseStartEvent
-	ToolUseEnd    *ToolUseEndEvent
-	ToolResult    *ToolResultEvent
-	MessageStart  *MessageStartEvent
-	MessageDelta  *MessageDeltaEvent
-	MessageStop   *MessageStopEvent
-	Result        *ResultEvent
-	Unknown       *UnknownEvent
+	System           *SystemEvent
+	RateLimit        *RateLimitEvent
+	TextDelta        *TextDeltaEvent
+	TextBlockEnd     *TextBlockEndEvent
+	ThinkingDelta    *ThinkingDeltaEvent
+	ToolUseStart     *ToolUseStartEvent
+	ToolUseEnd       *ToolUseEndEvent
+	ToolResult       *ToolResultEvent
+	MessageStart     *MessageStartEvent
+	MessageDelta     *MessageDeltaEvent
+	MessageStop      *MessageStopEvent
+	Result           *ResultEvent
+	TaskStarted      *TaskStartedEvent
+	TaskNotification *TaskNotificationEvent
+	TaskUpdated      *TaskUpdatedEvent
+	HookStarted      *HookStartedEvent
+	HookResponse     *HookResponseEvent
+	Unknown          *UnknownEvent
 }
 
 // EventKind tags the Event union. Stable enough to use in WS frames.
 type EventKind string
 
 const (
-	KindSystem       EventKind = "system"
-	KindRateLimit    EventKind = "rate_limit"
+	KindSystem        EventKind = "system"
+	KindRateLimit     EventKind = "rate_limit"
 	KindTextDelta     EventKind = "text_delta"
 	KindTextBlockEnd  EventKind = "text_block_end"
 	KindThinkingDelta EventKind = "thinking_delta"
-	KindToolUseStart EventKind = "tool_use_start"
-	KindToolUseEnd   EventKind = "tool_use_end"
-	KindToolResult   EventKind = "tool_result"
-	KindMessageStart EventKind = "message_start"
-	KindMessageDelta EventKind = "message_delta"
-	KindMessageStop  EventKind = "message_stop"
-	KindResult       EventKind = "result"
-	KindUnknown      EventKind = "unknown"
+	KindToolUseStart  EventKind = "tool_use_start"
+	KindToolUseEnd    EventKind = "tool_use_end"
+	KindToolResult    EventKind = "tool_result"
+	KindMessageStart  EventKind = "message_start"
+	KindMessageDelta  EventKind = "message_delta"
+	KindMessageStop   EventKind = "message_stop"
+	KindResult        EventKind = "result"
+	// v0.4: CLI task + hook lifecycle. Emitted only when claude -p
+	// is invoked with --include-hook-events (which buildPromptArgs
+	// always does as of v0.4).
+	KindTaskStarted      EventKind = "task_started"
+	KindTaskNotification EventKind = "task_notification"
+	KindTaskUpdated      EventKind = "task_updated"
+	KindHookStarted      EventKind = "hook_started"
+	KindHookResponse     EventKind = "hook_response"
+	KindUnknown          EventKind = "unknown"
 )
 
 // SystemEvent — the CLI's init / status records. We pass cwd, model,
@@ -176,4 +189,70 @@ type ResultEvent struct {
 type UnknownEvent struct {
 	Type    string          `json:"type"`
 	RawLine json.RawMessage `json:"-"`
+}
+
+// TaskStartedEvent — the CLI just dispatched a long-running task
+// (typically Monitor's background bash process). task_id is the CLI's
+// internal id; tool_use_id pairs it back to the assistant's
+// tool_use block so the UI can attach this task to the right
+// Monitor card. task_type observed in production: "local_bash".
+type TaskStartedEvent struct {
+	TaskID      string `json:"task_id"`
+	ToolUseID   string `json:"tool_use_id"`
+	Description string `json:"description"`
+	TaskType    string `json:"task_type"`
+	SessionID   string `json:"session_id,omitempty"`
+}
+
+// TaskNotificationEvent — one event from a running task's stdout
+// stream. status is "in_progress" while running, "completed" on the
+// terminal notification. Summary is a short human-readable label
+// (e.g. `Monitor "echo ..." event`).
+type TaskNotificationEvent struct {
+	TaskID    string `json:"task_id"`
+	ToolUseID string `json:"tool_use_id"`
+	Status    string `json:"status"`
+	Summary   string `json:"summary"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// TaskUpdatedEvent — the GROUND-TRUTH completion signal for a task.
+// Patch.Status == "completed" means the task ended. EndTime is a
+// Unix millis epoch (pass through unchanged to the UI; reducer
+// converts).
+type TaskUpdatedEvent struct {
+	TaskID    string         `json:"task_id"`
+	Patch     TaskPatchField `json:"patch"`
+	SessionID string         `json:"session_id,omitempty"`
+}
+
+// TaskPatchField is the inner shape of TaskUpdatedEvent.Patch.
+// Kept as a separate struct so JSON tags survive round-tripping
+// through the WS envelope (any -> json.Marshal preserves field
+// names).
+type TaskPatchField struct {
+	Status  string `json:"status"`
+	EndTime int64  `json:"end_time"`
+}
+
+// HookStartedEvent — a hook script is about to run. hook_event
+// names the lifecycle slot ("PreToolUse" | "PostToolUse" |
+// "SubagentStart" | "SubagentStop" | "Notification" | ...). hook_id
+// pairs this with the matching HookResponseEvent.
+type HookStartedEvent struct {
+	HookID    string `json:"hook_id"`
+	HookEvent string `json:"hook_event"`
+	HookName  string `json:"hook_name"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// HookResponseEvent — a hook script just exited. exit_code 0 +
+// outcome "success" is the happy path. The output blob is the raw
+// hook stdout (passed through verbatim; reducer treats as opaque).
+type HookResponseEvent struct {
+	HookID    string `json:"hook_id"`
+	HookEvent string `json:"hook_event"`
+	ExitCode  int    `json:"exit_code"`
+	Outcome   string `json:"outcome"`
+	SessionID string `json:"session_id,omitempty"`
 }

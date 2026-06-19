@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import type { ClaudeState, ClaudeToolCall, ClaudeTurn } from './types'
+import type { BgTask, ClaudeState, ClaudeToolCall, ClaudeTurn, SubagentEntry } from './types'
 import type { TemplateSummary } from '../../lib/api'
 import { ToolApprovalCard } from './ToolApprovalCard'
 import { AskUserQuestionCard } from './AskUserQuestionCard'
@@ -41,6 +41,11 @@ function writeSelectedTemplates(sid: string, sel: Set<string>): void {
 interface Props {
   state: ClaudeState
   disabled: boolean
+  // disconnected: true when the WS isn't open (connecting / reconnecting /
+  // closed). Renders a red banner just above the composer so the user
+  // knows their last action may not have reached the server and any
+  // in-flight "Claude is thinking..." timer is now lying.
+  disconnected?: boolean
   // sessionID is used to scope the per-session template-selection
   // localStorage key. Required so two open sessions don't share
   // a checkbox state.
@@ -62,7 +67,7 @@ interface Props {
 // Renders assistant text as markdown (via react-markdown + remark-gfm),
 // surfaces tool calls inline, and floats pending approval cards at the bottom.
 export function ClaudeChatView({
-  state, disabled, sessionID, templates, onPrompt, onToolDecision, onQuestionAnswer, onInterrupt,
+  state, disabled, disconnected, sessionID, templates, onPrompt, onToolDecision, onQuestionAnswer, onInterrupt,
 }: Props) {
   const [draft, setDraft] = useState('')
   // Per-session, persisted-across-reloads selection. Read once on
@@ -125,7 +130,7 @@ export function ClaudeChatView({
       ) : (
         <div className="claude-chat__scroll" ref={scrollRef}>
           {state.turns.map((t) => (
-            <TurnView key={t.id} turn={t} />
+            <TurnView key={t.id} turn={t} bgTasks={state.bgTasks} subagents={state.subagents} />
           ))}
           {state.pending.map((req) => (
             <ToolApprovalCard
@@ -151,6 +156,11 @@ export function ClaudeChatView({
       )}
 
       <div className="claude-chat__composer">
+        {disconnected && (
+          <div className="claude-chat__disconnected" role="status">
+            ⚠ Disconnected from server — reconnecting. The current turn may be stale.
+          </div>
+        )}
         {draft.startsWith('/') && (
           <div className="claude-chat__slash-hint">
             Slash command — sent to Claude CLI ({(draft.trim().split(/\s+/)[0]) || '/'}).
@@ -259,12 +269,16 @@ function UserPromptBubble({ turn }: { turn: ClaudeTurn }) {
   )
 }
 
-function TurnView({ turn }: { turn: ClaudeTurn }) {
+function TurnView({ turn, bgTasks, subagents }: {
+  turn: ClaudeTurn
+  bgTasks: Record<string, BgTask>
+  subagents: Record<string, SubagentEntry>
+}) {
   return (
     <div className="claude-turn">
       <UserPromptBubble turn={turn} />
       <div className={`claude-turn__assistant ${turn.isError ? 'is-error' : ''}`}>
-        <div className="claude-turn__label">Claude</div>
+        <div className="claude-turn__label">Claude<TurnPhaseChip turn={turn} /></div>
         {turn.thinking && turn.thinking.map((body, i) => (
           <ThinkingBlockView key={`think-${i}`} body={body} />
         ))}
@@ -295,24 +309,90 @@ function TurnView({ turn }: { turn: ClaudeTurn }) {
               )
             }
           }
-          return <ToolCallView key={block.tool.toolUseId} tool={block.tool} />
+          return (
+            <ToolCallView
+              key={block.tool.toolUseId}
+              tool={block.tool}
+              bgTask={block.tool.bgTaskId ? bgTasks[block.tool.bgTaskId] : undefined}
+            />
+          )
         })}
         {!turn.done && turn.blocks.length === 0 && (
           <div className="claude-turn__thinking">…</div>
         )}
-        {turn.done && turn.usage && (
+        {!turn.done && <LiveTurnElapsed turn={turn} />}
+        {turn.done && (turn.usage || turnDuration(turn) !== null) && (
           <div className="claude-turn__footer">
+            {turnDuration(turn) !== null && (
+              <span title="Time the turn took, end-to-end">
+                {formatElapsed(turnDuration(turn)!)}
+              </span>
+            )}
             {turn.totalCostUsd != null && (
               <span title="Total cost for this turn">${turn.totalCostUsd.toFixed(4)}</span>
             )}
-            <span title="Input → output tokens">
-              {turn.usage.inputTokens.toLocaleString()} in → {turn.usage.outputTokens.toLocaleString()} out
-            </span>
+            {turn.usage && (
+              <span title="Input → output tokens">
+                {turn.usage.inputTokens.toLocaleString()} in → {turn.usage.outputTokens.toLocaleString()} out
+              </span>
+            )}
           </div>
         )}
+        <TurnStatsLine turn={turn} bgTasks={bgTasks} subagents={subagents} />
       </div>
     </div>
   )
+}
+
+function turnPhase(turn: ClaudeTurn): string {
+  if (turn.done) return 'Done'
+  if (turn.blocks.length === 0) return 'Initializing'
+  // The last block determines the phase: if it's a still-running tool, "Calling X"; otherwise "Thinking".
+  const last = turn.blocks[turn.blocks.length - 1]
+  if (last.kind === 'tool' && !last.tool.finishedAt) return `Calling ${last.tool.name}`
+  return 'Thinking'
+}
+
+function TurnPhaseChip({ turn }: { turn: ClaudeTurn }) {
+  const phase = turnPhase(turn)
+  return <span className={`turn-phase-chip turn-phase-chip--${phase.toLowerCase().replace(/\s+/g, '-')}`}>{phase}</span>
+}
+
+export function TurnStatsLine({ turn, bgTasks, subagents }: {
+  turn: ClaudeTurn
+  bgTasks: Record<string, BgTask>
+  subagents: Record<string, SubagentEntry>
+}) {
+  const toolCount = turn.blocks.filter((b) => b.kind === 'tool').length
+  const bgTaskBlocks = turn.blocks.filter(
+    (b) => b.kind === 'tool' && b.tool.bgTaskId,
+  ) as Array<{ kind: 'tool'; tool: ClaudeToolCall }>
+  const bgTaskTotal = bgTaskBlocks.length
+  const bgTaskRunning = bgTaskBlocks
+    .map((b) => bgTasks[b.tool.bgTaskId!])
+    .filter((t): t is BgTask => !!t && t.status === 'in_progress').length
+
+  const agentBlocks = turn.blocks.filter(
+    (b) => b.kind === 'tool' && b.tool.name === 'Agent',
+  )
+  const subagentTotal = agentBlocks.length
+  const subagentsList = Object.values(subagents)
+  const subagentRunning = subagentsList.filter((s) => !s.finishedAt).length
+  const subagentDone = subagentsList.filter((s) => !!s.finishedAt).length
+
+  const parts: string[] = []
+  if (toolCount > 0) {
+    parts.push(`${toolCount} tool call${toolCount === 1 ? '' : 's'}`)
+  }
+  if (bgTaskTotal > 0) {
+    parts.push(`${bgTaskTotal} background task${bgTaskTotal === 1 ? '' : 's'} (${bgTaskRunning > 0 ? 'running' : 'done'})`)
+  }
+  if (subagentTotal > 0 || subagentRunning > 0 || subagentDone > 0) {
+    const total = Math.max(subagentTotal, subagentRunning + subagentDone)
+    parts.push(`${total} subagent${total === 1 ? '' : 's'} (${subagentRunning > 0 ? 'blocking' : 'done'})`)
+  }
+  if (parts.length === 0) return null
+  return <div className="turn-stats">{parts.join(' · ')}</div>
 }
 
 // AssistantMarkdown is the markdown renderer shared by the
@@ -469,9 +549,82 @@ function ThinkingBlockView({ body }: { body: string }) {
   )
 }
 
-function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
+// useElapsed returns the number of seconds between `startedAt` and
+// either `finishedAt` (if set) or now (re-rendered every second).
+// Returns 0 when startedAt is undefined (e.g. restored from history
+// without lifecycle events) — callers should hide the elapsed
+// display when that's the case.
+function useElapsed(startedAt: string | undefined, finishedAt: string | undefined): number {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (!startedAt || finishedAt) return
+    const id = window.setInterval(() => setTick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [startedAt, finishedAt])
+  if (!startedAt) return 0
+  const end = finishedAt ? Date.parse(finishedAt) : Date.now()
+  const start = Date.parse(startedAt)
+  return Math.max(0, Math.floor((end - start) / 1000))
+  // tick is referenced implicitly via re-render; suppress unused warn
+  void tick
+}
+
+// LiveTurnElapsed renders a one-second-tick counter while the turn is
+// streaming, in the same row position the final duration shows up in
+// once the turn is done. Pinned at the bottom of the assistant area so
+// the user can see "Claude has been replying for 14s" without watching
+// the spinner. Reuses useElapsed (now-driven when finishedAt is
+// undefined); the parent gates rendering to !turn.done.
+function LiveTurnElapsed({ turn }: { turn: ClaudeTurn }) {
+  const secs = useElapsed(turn.startedAt, turn.finishedAt)
+  if (!turn.startedAt) return null
+  return (
+    <div className="claude-turn__footer claude-turn__footer--live" aria-live="polite">
+      <span title="Time elapsed since the turn began">
+        {formatElapsed(secs)}
+      </span>
+    </div>
+  )
+}
+
+// turnDuration returns the turn's end-to-end elapsed seconds, or null
+// if either timestamp is missing / invalid. Restored history may not
+// have finishedAt for the trailing turn (no successor user-line ts to
+// bracket against), in which case the footer hides the duration.
+function turnDuration(turn: ClaudeTurn): number | null {
+  if (!turn.startedAt || !turn.finishedAt) return null
+  const start = Date.parse(turn.startedAt)
+  const end = Date.parse(turn.finishedAt)
+  if (isNaN(start) || isNaN(end) || end < start) return null
+  return Math.max(0, Math.floor((end - start) / 1000))
+}
+
+// formatElapsed: seconds → "47s" / "2m14s" / "1h03m"
+function formatElapsed(secs: number): string {
+  if (secs < 60) return `${secs}s`
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60)
+    const s = secs % 60
+    return `${m}m${s.toString().padStart(2, '0')}s`
+  }
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  return `${h}h${m.toString().padStart(2, '0')}m`
+}
+
+function ToolCallView({ tool, bgTask }: { tool: ClaudeToolCall; bgTask?: BgTask }) {
   const [expanded, setExpanded] = useState(false)
   const status = toolStatus(tool)
+  const elapsedSecs = useElapsed(tool.startedAt, tool.finishedAt)
+  const showElapsed = tool.startedAt !== undefined
+  const elapsedClass =
+    elapsedSecs >= 300 ? 'is-stuck' :
+    elapsedSecs >= 30  ? 'is-slow'  : ''
+  // For Monitor: prefer the bgTask's elapsed (which spans the whole
+  // background task lifetime, not just the tool_use_id's brief life)
+  // and append a count + ✓ marker when completed.
+  const isMonitorWithTask = tool.name === 'Monitor' && bgTask !== undefined
+  const bgElapsedSecs = useElapsed(bgTask?.startedAt, bgTask?.finishedAt)
   const preview = toolPreview(tool)
   const hasDetails = tool.input != null || (tool.result != null && tool.result !== '')
   return (
@@ -487,6 +640,21 @@ function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
         <code className="claude-tool__name">{tool.name}</code>
         {preview && <span className="claude-tool__preview">({preview})</span>}
         <span className="claude-tool__status">{status}</span>
+        {showElapsed && (
+          <span className={`claude-tool__elapsed ${elapsedClass}`}>
+            {formatElapsed(elapsedSecs)}
+          </span>
+        )}
+        {isMonitorWithTask && (
+          <span className="claude-tool__bg">
+            {' · task '}<code>{bgTask!.taskId}</code>
+            {' · '}{formatElapsed(bgElapsedSecs)}
+            {bgTask!.notificationCount > 0 && (
+              <> {' · '} {bgTask!.notificationCount} events</>
+            )}
+            {bgTask!.status === 'completed' && <span className="claude-tool__check">{' ✓'}</span>}
+          </span>
+        )}
       </button>
       {expanded && hasDetails && (
         <div className="claude-tool__body">
@@ -495,6 +663,11 @@ function ToolCallView({ tool }: { tool: ClaudeToolCall }) {
           )}
           {tool.result != null && tool.result !== '' && (
             <pre className="claude-tool__result">{tool.result}</pre>
+          )}
+          {bgTask?.lastEventSummary && (
+            <div className="claude-tool__last-event">
+              Latest: {bgTask.lastEventSummary}
+            </div>
           )}
         </div>
       )}

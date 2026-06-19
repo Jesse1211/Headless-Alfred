@@ -18,6 +18,9 @@ import (
 	"github.com/jesseliu/headless-alfred/internal/api"
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/claudebgtasks"
+	"github.com/jesseliu/headless-alfred/internal/claudehistory"
+	"github.com/jesseliu/headless-alfred/internal/claudestate"
 	"github.com/jesseliu/headless-alfred/internal/recap"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell/tmuxio"
@@ -61,6 +64,15 @@ func main() {
 		os.Exit(2)
 	} else if imported {
 		logger.Info("legacy data migrated into 'Imported' session")
+	}
+
+	// Bootstrap bg-task env vars before any claude runner is constructed.
+	// CLAUDE_CODE_TMPDIR tells the CLI where to write per-uid scratch;
+	// ALFRED_CLAUDE_BG_TASK_DIR is read by the path resolver to find
+	// bg-task output files. Both must be consistent (ADR-007).
+	if err := claudebgtasks.Bootstrap(dataDir); err != nil {
+		logger.Error("claudebgtasks bootstrap", "err", err)
+		os.Exit(2)
 	}
 
 	// Tmux socket lives next to sessions.json. Both are inside the PVC.
@@ -182,15 +194,39 @@ func main() {
 		defer recapWatcher.Stop()
 	}
 
+	csMgr := claudestate.NewSessionManager(
+		dataDir,
+		claudehistory.NewLocator(),
+	)
+	defer func() {
+		if err := csMgr.Shutdown(context.Background()); err != nil {
+			logger.Error("claudestate shutdown", "err", err)
+		}
+	}()
+
+	// Couple session deletion to claudestate cleanup. Without this the
+	// SessionState in csMgr's map (and its Persister goroutine, which
+	// holds a flock on the snapshot file the store just removed) leaks
+	// until process shutdown — and stale entries keep responding to
+	// GetOrLoad with their pre-delete state.
+	mgr.AddCloseListener(func(sid string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := csMgr.DeleteSession(ctx, sid); err != nil {
+			logger.Warn("claudestate delete-session on close", "session", sid, "err", err)
+		}
+	})
+
 	router := api.NewRouter(api.Deps{
-		Manager:       mgr,
-		Auth:          a,
-		RateLimiter:   rl,
-		Ready:         ready.Load,
-		Bridge:        bridge,
-		Dispatcher:    dispatcher,
-		RecapUpdates:  recapUpdates,
-		PVCLimitBytes: pvcLimit,
+		Manager:            mgr,
+		Auth:               a,
+		RateLimiter:        rl,
+		Ready:              ready.Load,
+		Bridge:             bridge,
+		Dispatcher:         dispatcher,
+		RecapUpdates:       recapUpdates,
+		PVCLimitBytes:      pvcLimit,
+		ClaudeStateManager: csMgr,
 	})
 
 	srv := &http.Server{
@@ -220,6 +256,16 @@ func main() {
 			logger.Error("listener failed", "err", err)
 		}
 	}
+
+	// Close out any in-flight Claude turns BEFORE the HTTP server drains
+	// — Apply marks the turn done+isError and signals the Persister
+	// (debounced), so the snapshot the next boot reads already reflects
+	// the truth instead of "this turn was in flight forever". The
+	// deferred csMgr.Shutdown then performs the final synchronous flush.
+	// Per CONTEXT.md invariant #1 the runner subprocess is NOT actively
+	// killed here — it's orphaned to init when the Go process exits.
+	// Phrase the user-visible reason accordingly.
+	csMgr.FinalizeAllInFlight("server shutting down; reply will not be delivered")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

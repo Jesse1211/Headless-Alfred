@@ -1,4 +1,4 @@
 {"type":"user","message":{"role":"user","content":"read foo"},"uuid":"u1","timestamp":"2026-06-15T10:00:00.000Z"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reading"},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/foo"}}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"the file contents","is_error":false}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"the file contents","is_error":false}]},"timestamp":"2026-06-15T10:00:05.000Z"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}

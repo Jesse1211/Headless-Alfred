@@ -212,3 +212,102 @@ func dropTrivia(in []Event) []EventKind {
 	}
 	return out
 }
+
+func TestParseLifecycleEvents(t *testing.T) {
+	data, err := os.ReadFile("testdata/lifecycle_events.jsonl")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var events []Event
+	for ev := range ParseStream(bytes.NewReader(data)) {
+		events = append(events, ev)
+	}
+	// Expect exactly 6 events from the fixture, in order:
+	// hook_started, hook_response, task_started, task_notification (in_progress),
+	// task_updated, task_notification (completed)
+	if len(events) != 6 {
+		t.Fatalf("expected 6 events, got %d", len(events))
+	}
+	want := []EventKind{
+		KindHookStarted, KindHookResponse,
+		KindTaskStarted, KindTaskNotification,
+		KindTaskUpdated, KindTaskNotification,
+	}
+	for i, w := range want {
+		if events[i].Kind != w {
+			t.Errorf("events[%d].Kind = %q, want %q", i, events[i].Kind, w)
+		}
+	}
+
+	// hook_started details
+	hs := events[0].HookStarted
+	if hs == nil {
+		t.Fatal("HookStarted nil")
+	}
+	if hs.HookEvent != "PreToolUse" {
+		t.Errorf("HookEvent = %q, want PreToolUse", hs.HookEvent)
+	}
+	if hs.HookID != "16dabf04-4dff-46c8-89b9-4960c33444d7" {
+		t.Errorf("HookID = %q", hs.HookID)
+	}
+
+	// hook_response details
+	hr := events[1].HookResponse
+	if hr == nil {
+		t.Fatal("HookResponse nil")
+	}
+	if hr.ExitCode != 0 || hr.Outcome != "success" {
+		t.Errorf("HookResponse exit=%d outcome=%q", hr.ExitCode, hr.Outcome)
+	}
+
+	// task_started details
+	ts := events[2].TaskStarted
+	if ts == nil {
+		t.Fatal("TaskStarted nil")
+	}
+	if ts.TaskID != "bgchxrc64" {
+		t.Errorf("TaskID = %q", ts.TaskID)
+	}
+	if ts.ToolUseID != "toolu_01X5pXsEBLzmJX2yAWsKQdcz" {
+		t.Errorf("ToolUseID = %q", ts.ToolUseID)
+	}
+	if ts.Description != "emit two lines with 4s sleep" {
+		t.Errorf("Description = %q", ts.Description)
+	}
+	if ts.TaskType != "local_bash" {
+		t.Errorf("TaskType = %q", ts.TaskType)
+	}
+
+	// task_notification (in_progress)
+	tn := events[3].TaskNotification
+	if tn == nil {
+		t.Fatal("TaskNotification[3] nil")
+	}
+	if tn.Status != "in_progress" {
+		t.Errorf("Status = %q, want in_progress", tn.Status)
+	}
+
+	// task_updated
+	tu := events[4].TaskUpdated
+	if tu == nil {
+		t.Fatal("TaskUpdated nil")
+	}
+	if tu.TaskID != "bgchxrc64" {
+		t.Errorf("TaskID = %q", tu.TaskID)
+	}
+	if tu.Patch.Status != "completed" {
+		t.Errorf("Patch.Status = %q", tu.Patch.Status)
+	}
+	if tu.Patch.EndTime != 1781706910801 {
+		t.Errorf("Patch.EndTime = %d", tu.Patch.EndTime)
+	}
+
+	// task_notification (completed)
+	tn2 := events[5].TaskNotification
+	if tn2 == nil {
+		t.Fatal("TaskNotification[5] nil")
+	}
+	if tn2.Status != "completed" {
+		t.Errorf("Status = %q, want completed", tn2.Status)
+	}
+}

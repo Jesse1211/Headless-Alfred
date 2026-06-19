@@ -162,6 +162,44 @@ func TestParse_UnknownTypesSkipped(t *testing.T) {
 	}
 }
 
+func TestParse_TurnEndedAt(t *testing.T) {
+	// Multi-turn fixture: turn N's EndedAt is the timestamp of the next
+	// user prompt (the closest ground-truth bracket we have, since
+	// assistant jsonl lines carry no timestamp). The trailing turn has
+	// no successor prompt and therefore no EndedAt — the frontend hides
+	// the duration display when this is the case.
+	turns, err := Parse(filepath.Join("testdata", "multi_turn.jsonl"), 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 3 {
+		t.Fatalf("want 3 turns, got %d", len(turns))
+	}
+	if turns[0].EndedAt != "2026-06-15T10:01:00.000Z" {
+		t.Errorf("turn0 endedAt = %q, want q2's ts", turns[0].EndedAt)
+	}
+	if turns[1].EndedAt != "2026-06-15T10:02:00.000Z" {
+		t.Errorf("turn1 endedAt = %q, want q3's ts", turns[1].EndedAt)
+	}
+	if turns[2].EndedAt != "" {
+		t.Errorf("trailing turn endedAt = %q, want empty", turns[2].EndedAt)
+	}
+
+	// Tool-result user lines also carry timestamps and bracket the turn.
+	// For a single-turn fixture with a tool_result user line, the
+	// turn's EndedAt should be that tool_result row's timestamp.
+	tt, err := Parse(filepath.Join("testdata", "tool_use.jsonl"), 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tt) != 1 {
+		t.Fatalf("want 1 turn, got %d", len(tt))
+	}
+	if tt[0].EndedAt != "2026-06-15T10:00:05.000Z" {
+		t.Errorf("turn endedAt = %q, want tool_result ts", tt[0].EndedAt)
+	}
+}
+
 func TestParse_MalformedMidReturnsPartial(t *testing.T) {
 	turns, err := Parse(filepath.Join("testdata", "malformed_mid.jsonl"), 100, "")
 	if err != nil {

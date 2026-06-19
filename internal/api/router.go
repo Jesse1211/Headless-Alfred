@@ -9,6 +9,7 @@ import (
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
 	"github.com/jesseliu/headless-alfred/internal/claudehistory"
+	"github.com/jesseliu/headless-alfred/internal/claudestate"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/static"
 )
@@ -44,6 +45,12 @@ type Deps struct {
 	// banner then shows "X.X GiB used (unknown limit)" instead of
 	// a percentage, and the threshold-based alert is suppressed.
 	PVCLimitBytes uint64
+
+	// ClaudeStateManager is the process-singleton state registry
+	// constructed in cmd/alfred-server/main.go (Task 8). The router
+	// shares it across the HTTP claude-state handler and the WS
+	// inbound event router.
+	ClaudeStateManager *claudestate.SessionManager
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -60,7 +67,7 @@ func NewRouter(d Deps) http.Handler {
 	// rewritten) accumulate slowly, and the alert thresholds are
 	// coarse (80% / 95%). Could be wired off via Deps later if needed.
 	disk := newDiskBroadcaster(d.Manager.DataDir(), d.PVCLimitBytes, 60*time.Second)
-	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher, broadcaster, disk).ServeHTTP)
+	r.Get("/ws", WSHandler(d.Manager, d.Auth, d.Bridge, d.Dispatcher, broadcaster, disk, d.ClaudeStateManager).ServeHTTP)
 
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(d.Auth))
@@ -91,6 +98,22 @@ func NewRouter(d Deps) http.Handler {
 		// Claude UI chat history (rebuilt from CLI jsonl).
 		r.Get("/api/sessions/{sid}/claude-history",
 			GetClaudeHistoryHandler(d.Manager, claudehistory.NewLocator()).ServeHTTP)
+
+		// Claude UI chat state (server-authoritative; persisted snapshot
+		// + jsonl merge). Replaces /claude-history.
+		r.Get("/api/sessions/{sid}/claude-state",
+			GetClaudeStateHandler(
+				d.ClaudeStateManager,
+				NewSessionMetaResolver(d.Manager),
+			).ServeHTTP)
+
+		// Bg-task log tail (T8). Serves the last N bytes of the CLI's
+		// per-task stdout file so the UI can display "View logs".
+		r.Get("/api/sessions/{sid}/bg-tasks/{taskId}/log",
+			GetBgTaskLogHandler(
+				NewSessionMetaResolver(d.Manager),
+				NewSessionCWDResolver(d.Manager),
+			).ServeHTTP)
 
 		// Recap (file content).
 		r.Get("/api/recaps", ListRecapsHandler(d.Manager.DataDir()).ServeHTTP)

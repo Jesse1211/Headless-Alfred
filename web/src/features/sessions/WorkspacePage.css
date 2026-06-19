@@ -90,6 +90,7 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  position: relative;
 }
 
 .workspace__header {
@@ -200,6 +201,44 @@
 .workspace__sidebar-icon-btn.is-active {
   color: var(--accent, #7aa2f7);
   border-color: var(--accent, #7aa2f7);
+}
+
+/* Background tasks badge button */
+.workspace__bg-tasks-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--text-muted, #9aa3b2);
+  font-size: 12px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+.workspace__bg-tasks-btn.is-active {
+  color: var(--text, #eaeaea);
+  border-color: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+}
+
+.workspace__bg-tasks-btn.is-active:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.workspace__bg-tasks-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Floating panel anchor — absolutely positioned below the header,
+   does NOT occupy a grid track (no change to gridTemplateColumns). */
+.workspace__bg-tasks-panel-anchor {
+  position: absolute;
+  top: 57px; /* header height ~57px; sits just below */
+  right: 20px;
+  width: 440px;
+  z-index: 200;
 }
 
 .workspace__banner {

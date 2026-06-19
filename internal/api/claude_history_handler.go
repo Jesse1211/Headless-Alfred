@@ -28,6 +28,14 @@ type claudeSessionIDLookup interface {
 // empty is a valid state for any session.
 func GetClaudeHistoryHandler(lookup claudeSessionIDLookup, locator *claudehistory.Locator) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// RFC 9745 Deprecation header. Plan 3 (frontend cutover) flips
+		// the UI to /claude-state; this endpoint stays one release
+		// cycle so older browser sessions don't break, then is removed.
+		w.Header().Set("Deprecation", "true")
+		w.Header().Set("Sunset", "Wed, 31 Dec 2026 00:00:00 GMT")
+		w.Header().Set("Link",
+			`</api/sessions/{sid}/claude-state>; rel="successor-version"`)
+
 		sid := chi.URLParam(r, "sid")
 
 		// Clamp limit to [1, 500]; default 100.

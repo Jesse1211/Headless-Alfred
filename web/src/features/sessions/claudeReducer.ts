@@ -73,13 +73,21 @@ export function reduceClaudeMsg(
         // is reset so the next enter triggers a fresh history fetch — the
         // underlying ClaudeSessionID may have rotated.
         claude: cur.claude
-          ? { ...cur.claude, inFlight: false, pending: [], pendingQuestions: [], turnsLoaded: false }
+          ? {
+              ...cur.claude,
+              inFlight: false,
+              pending: [],
+              pendingQuestions: [],
+              turnsLoaded: false,
+              bgTasks: {},
+              subagents: {},
+            }
           : undefined,
       })
       return next
     }
     case 'claude_event':
-      return mutateClaude(prev, m.sessionID, (c) => applyClaudeEvent(c, m.eventKind, m.payload))
+      return mutateClaude(prev, m.sessionID, (c) => applyClaudeEvent(c, m.eventKind, m.payload, m.timestamp))
     case 'tool_approval_request': {
       const c = prev.get(m.sessionID)?.claude ?? emptyClaudeState()
       // Dedup against BOTH queues — a re-emitted toolUseId could
@@ -114,6 +122,7 @@ export function reduceClaudeMsg(
         finalizeInFlightTurn(
           { ...c, lastError: { code: m.code, message: m.message } },
           m.message || m.code,
+          m.timestamp,
         ),
       )
     case 'claude_run_ended': {
@@ -125,7 +134,7 @@ export function reduceClaudeMsg(
       const cur = prev.get(m.sessionID)
       if (!cur || !cur.claude) return prev
       const next = new Map(prev)
-      next.set(m.sessionID, { ...cur, claude: finalizeInFlightTurn(cur.claude, m.message) })
+      next.set(m.sessionID, { ...cur, claude: finalizeInFlightTurn(cur.claude, m.message, m.timestamp) })
       return next
     }
     case 'user_prompt':
@@ -134,6 +143,56 @@ export function reduceClaudeMsg(
       // most-recent turn so UserPromptBubble can offer a "show full
       // prompt" toggle.
       return mutateClaude(prev, m.sessionID, (c) => attachExpandedPromptToLastTurn(c, m.text))
+    case 'turn_started':
+      // Swap the optimistic placeholder turn id (pending:<nonce>) for
+      // the server's authoritative turnId, and accept the server's
+      // startedAt so all connected tabs converge on the same value.
+      return mutateClaude(prev, m.sessionID, (c) => ({
+        ...c,
+        turns: c.turns.map((t) =>
+          t.id === `pending:${m.clientNonce}`
+            ? { ...t, id: m.turnId, startedAt: m.timestamp }
+            : t
+        ),
+      }))
+    case 'tool_decision_applied':
+      // Overwrite the optimistically-set decision on the matching tool
+      // block so other connected tabs converge on the server value.
+      return mutateClaude(prev, m.sessionID, (c) => ({
+        ...c,
+        turns: c.turns.map((t) => ({
+          ...t,
+          blocks: patchToolBlock(t.blocks, m.toolUseId, (tool) => ({ ...tool, decision: m.decision })),
+        })),
+      }))
+    case 'bg_task_stdout_chunk': {
+      // Append base64-decoded bytes to the per-task log buffer, capped
+      // at 64 KB tail. The bytes field MAY be empty (status===
+      // "watcher_unavailable"); atob("") === "" which is harmless.
+      const { taskId, bytes } = m.payload
+      const decoded = bytes ? atob(bytes) : ''
+      // We need a sessionID to route into mutateClaude — this frame
+      // has no sessionID on the wire; iterate all sessions and update
+      // any whose bgTasks map contains this taskId.
+      let next = prev
+      for (const [sid, perSess] of prev) {
+        const c = perSess.claude
+        if (!c || !c.bgTasks[taskId]) continue
+        const existing = c.bgTaskLogs?.[taskId] ?? ''
+        const appended = existing + decoded
+        const BUF_CAP = 65536
+        const newBuf = appended.length > BUF_CAP ? appended.slice(-BUF_CAP) : appended
+        if (next === prev) next = new Map(prev)
+        next.set(sid, {
+          ...perSess,
+          claude: {
+            ...c,
+            bgTaskLogs: { ...c.bgTaskLogs, [taskId]: newBuf },
+          },
+        })
+      }
+      return next === prev ? null : next
+    }
     default:
       return null
   }
@@ -162,6 +221,7 @@ export function applyClaudeEvent(
   prev: ClaudeState,
   kind: string,
   payload: unknown,
+  frameTs?: string,
 ): ClaudeState {
   const turns = [...prev.turns]
   const lastIdx = turns.length - 1
@@ -169,7 +229,6 @@ export function applyClaudeEvent(
 
   switch (kind) {
     case 'system':
-    case 'message_start':
     case 'text_block_end':
     case 'message_stop':
     case 'rate_limit':
@@ -179,6 +238,21 @@ export function applyClaudeEvent(
       // message but a turn may have several when tool use kicks in,
       // so we wait for `result` to mark the turn done.
       return prev
+    case 'message_start': {
+      // Anthropic stream-json resets the content-block `index` to 0 at
+      // the start of every assistant message. A single Alfred turn often
+      // spans multiple assistant messages (text → tool_use → tool_result
+      // → next assistant message). Without clearing the index maps here,
+      // the next message's text_delta(index=0) folds back into the
+      // previous message's first text block and its tool_use(index=1)
+      // pushes to the array tail, collapsing all text on top and sinking
+      // all tools to the bottom.
+      if (!last || last.done) return prev
+      last._blockIndexMap = {}
+      last._thinkingIndexMap = {}
+      turns[lastIdx] = last
+      return { ...prev, turns }
+    }
     case 'text_delta': {
       const p = asTextDelta(payload)
       if (!last || last.done) return prev
@@ -235,7 +309,12 @@ export function applyClaudeEvent(
       positions[p.index] = pos
       blocks.push({
         kind: 'tool',
-        tool: { toolUseId: p.toolUseId, name: p.name, decision: 'pending' },
+        tool: {
+          toolUseId: p.toolUseId,
+          name: p.name,
+          decision: 'pending',
+          startedAt: asTimestamp(frameTs),
+        },
       })
       last.blocks = blocks
       last._blockIndexMap = positions
@@ -256,6 +335,7 @@ export function applyClaudeEvent(
         ...t,
         result: p.content,
         isError: p.isError,
+        finishedAt: asTimestamp(frameTs),
       }))
       turns[lastIdx] = last
       return { ...prev, turns }
@@ -273,6 +353,7 @@ export function applyClaudeEvent(
       last.done = true
       last.isError = p.isError
       last.totalCostUsd = p.totalCostUsd
+      last.finishedAt = asTimestamp(frameTs)
       // If the turn has no assistant text yet (auth failure, etc.),
       // surface the result string as a synthetic final text block so
       // the user sees something.
@@ -281,6 +362,119 @@ export function applyClaudeEvent(
       }
       turns[lastIdx] = last
       return { ...prev, turns, inFlight: false }
+    }
+    case 'task_started': {
+      const p = asTaskPayload('task_started', payload)
+      if (!p.taskId) return prev
+      const bgTasks = {
+        ...prev.bgTasks,
+        [p.taskId]: {
+          taskId: p.taskId,
+          toolUseId: p.toolUseId,
+          description: p.description,
+          taskType: p.taskType,
+          startedAt: asTimestamp(frameTs),
+          status: 'in_progress' as const,
+          notificationCount: 0,
+        },
+      }
+      // If a tool block exists with this tool_use_id, link it via
+      // bgTaskId so the Monitor card can render the task-aware UI.
+      const linkedTurns = prev.turns.map((t) => ({
+        ...t,
+        blocks: patchToolBlock(t.blocks, p.toolUseId, (tool) => ({ ...tool, bgTaskId: p.taskId })),
+      }))
+      return { ...prev, bgTasks, turns: linkedTurns }
+    }
+    case 'task_notification': {
+      const p = asTaskPayload('task_notification', payload)
+      if (!p.taskId || !prev.bgTasks[p.taskId]) return prev
+      const cur = prev.bgTasks[p.taskId]
+      const bgTasks = {
+        ...prev.bgTasks,
+        [p.taskId]: {
+          ...cur,
+          notificationCount: cur.notificationCount + 1,
+          lastEventSummary: p.summary,
+          // Some CLIs emit the final 'completed' status on task_notification
+          // before/instead of task_updated. Mirror it through so the UI
+          // freezes regardless of which arrives first.
+          status: p.status === 'completed' ? 'completed' as const : cur.status,
+          finishedAt: p.status === 'completed' && !cur.finishedAt
+            ? asTimestamp(frameTs)
+            : cur.finishedAt,
+        },
+      }
+      return { ...prev, bgTasks }
+    }
+    case 'task_updated': {
+      const p = asTaskPayload('task_updated', payload)
+      if (!p.taskId || !prev.bgTasks[p.taskId]) return prev
+      const cur = prev.bgTasks[p.taskId]
+      // Accept all terminal statuses from the 5-value enum (ADR-016).
+      if (
+        p.status !== 'completed' &&
+        p.status !== 'failed' &&
+        p.status !== 'killed' &&
+        p.status !== 'stopped'
+      ) return prev
+      const status = p.status as 'completed' | 'failed' | 'killed' | 'stopped'
+      const bgTasks = {
+        ...prev.bgTasks,
+        [p.taskId]: {
+          ...cur,
+          status,
+          finishedAt: p.endTime
+            ? new Date(p.endTime).toISOString()
+            : asTimestamp(frameTs),
+        },
+      }
+      return { ...prev, bgTasks }
+    }
+    case 'bg_task_stdout_chunk': {
+      // Append base64-decoded bytes to the per-task log buffer, capped
+      // at 64 KB tail. bytes MAY be empty (status==="watcher_unavailable");
+      // atob("") === "" which is harmless.
+      const p = asBgTaskStdoutChunk(payload)
+      const decoded = p.bytes ? atob(p.bytes) : ''
+      const existing = prev.bgTaskLogs?.[p.taskId] ?? ''
+      const appended = existing + decoded
+      const BUF_CAP = 65536
+      const newBuf = appended.length > BUF_CAP ? appended.slice(-BUF_CAP) : appended
+      return {
+        ...prev,
+        bgTaskLogs: { ...prev.bgTaskLogs, [p.taskId]: newBuf },
+      }
+    }
+    case 'hook_started': {
+      const p = asHookStarted(payload)
+      if (p.hookEvent !== 'SubagentStart' || !p.hookId) return prev
+      const subagents = {
+        ...prev.subagents,
+        [p.hookId]: {
+          hookId: p.hookId,
+          startedAt: asTimestamp(frameTs),
+        },
+      }
+      return { ...prev, subagents }
+    }
+    case 'hook_response': {
+      const p = asHookResponse(payload)
+      if (p.hookEvent !== 'SubagentStop') return prev
+      // SubagentStop hook_id != SubagentStart hook_id; we mark the
+      // OLDEST in-progress subagent as finished (FIFO pairing).
+      const entries = Object.entries(prev.subagents).filter(
+        ([, e]) => !e.finishedAt,
+      )
+      if (entries.length === 0) return prev
+      // Sort by startedAt ASC; pick the first.
+      entries.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt))
+      const [oldestId, oldest] = entries[0]
+      const subagents = {
+        ...prev.subagents,
+        [oldestId]: { ...oldest, finishedAt: asTimestamp(frameTs) },
+      }
+      return { ...prev, subagents }
     }
     default:
       return prev
@@ -307,13 +501,20 @@ function patchToolBlock(
   return changed ? next : blocks
 }
 
+interface BeginOpts {
+  clientNonce?: string
+}
+
 // beginClaudeTurn registers a fresh turn for the user's outgoing
 // prompt. Called from useSessions when claude_prompt is sent.
-export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState {
+// When `opts.clientNonce` is provided the placeholder turn id is set
+// to `pending:<nonce>` so that the server-broadcast `turn_started`
+// frame can swap it for the authoritative turnId.
+export function beginClaudeTurn(prev: ClaudeState, prompt: string, opts: BeginOpts = {}): ClaudeState {
   const turn: ClaudeTurn = {
-    id: randomId(),
+    id: opts.clientNonce ? `pending:${opts.clientNonce}` : randomId(),
     prompt,
-    startedAt: new Date().toISOString(),
+    startedAt: new Date().toISOString(), // placeholder; reconciled by turn_started
     blocks: [],
     done: false,
   }
@@ -327,11 +528,16 @@ export function beginClaudeTurn(prev: ClaudeState, prompt: string): ClaudeState 
 // per-session error frames as a backstop against the runner dying
 // or the backend rejecting a prompt after beginClaudeTurn already
 // fired optimistically.
-export function finalizeInFlightTurn(prev: ClaudeState, reason?: string): ClaudeState {
+export function finalizeInFlightTurn(prev: ClaudeState, reason?: string, ts?: string): ClaudeState {
   const turns = [...prev.turns]
   const lastIdx = turns.length - 1
   if (lastIdx >= 0 && !turns[lastIdx].done) {
-    const last = { ...turns[lastIdx], done: true, isError: true }
+    const last = {
+      ...turns[lastIdx],
+      done: true,
+      isError: true,
+      finishedAt: ts ?? new Date().toISOString(),
+    }
     // If the turn produced nothing visible yet (auth failure / runner
     // died / 5xx before any block streamed), surface `reason` as a
     // synthetic text block so the user sees something other than a
@@ -401,6 +607,14 @@ export function parseAskUserQuestionInput(input: unknown): ClaudeQuestion[] {
   return out
 }
 
+// asTimestamp picks the best wall-clock string available for an
+// event-derived state field. Server-stamped events always include
+// `frameTs`; only the local-only backstops (runner death, init) need
+// to fall back to client time.
+function asTimestamp(frameTs: string | undefined): string {
+  return frameTs ?? new Date().toISOString()
+}
+
 // ---- payload narrowing ---------------------------------------------------
 
 function asTextDelta(payload: unknown): { index: number; text: string } {
@@ -457,5 +671,126 @@ function asResult(
     isError: !!p?.is_error,
     totalCostUsd: p?.total_cost_usd,
     result: p?.result,
+  }
+}
+
+type TaskPayloadStarted = {
+  kind: 'task_started'
+  taskId: string
+  toolUseId: string
+  description: string
+  taskType: string
+}
+type TaskPayloadNotification = {
+  kind: 'task_notification'
+  taskId: string
+  toolUseId: string
+  status: string
+  summary: string
+}
+type TaskPayloadUpdated = {
+  kind: 'task_updated'
+  taskId: string
+  status: string
+  endTime: number
+}
+type TaskPayload = TaskPayloadStarted | TaskPayloadNotification | TaskPayloadUpdated
+
+function asTaskPayload(kind: 'task_started', payload: unknown): TaskPayloadStarted
+function asTaskPayload(kind: 'task_notification', payload: unknown): TaskPayloadNotification
+function asTaskPayload(kind: 'task_updated', payload: unknown): TaskPayloadUpdated
+function asTaskPayload(kind: TaskPayload['kind'], payload: unknown): TaskPayload {
+  if (kind === 'task_started') {
+    const p = payload as {
+      task_id?: string
+      tool_use_id?: string
+      description?: string
+      task_type?: string
+    } | null
+    return {
+      kind: 'task_started',
+      taskId: p?.task_id ?? '',
+      toolUseId: p?.tool_use_id ?? '',
+      description: p?.description ?? '',
+      taskType: p?.task_type ?? '',
+    }
+  }
+  if (kind === 'task_notification') {
+    const p = payload as {
+      task_id?: string
+      tool_use_id?: string
+      status?: string
+      summary?: string
+    } | null
+    return {
+      kind: 'task_notification',
+      taskId: p?.task_id ?? '',
+      toolUseId: p?.tool_use_id ?? '',
+      status: p?.status ?? '',
+      summary: p?.summary ?? '',
+    }
+  }
+  const p = payload as {
+    task_id?: string
+    patch?: { status?: string; end_time?: number }
+  } | null
+  return {
+    kind: 'task_updated',
+    taskId: p?.task_id ?? '',
+    status: p?.patch?.status ?? '',
+    endTime: p?.patch?.end_time ?? 0,
+  }
+}
+
+
+function asHookStarted(
+  payload: unknown,
+): { hookId: string; hookEvent: string; hookName: string } {
+  const p = payload as {
+    hook_id?: string
+    hook_event?: string
+    hook_name?: string
+  } | null
+  return {
+    hookId: p?.hook_id ?? '',
+    hookEvent: p?.hook_event ?? '',
+    hookName: p?.hook_name ?? '',
+  }
+}
+
+function asHookResponse(
+  payload: unknown,
+): { hookId: string; hookEvent: string; exitCode: number; outcome: string } {
+  const p = payload as {
+    hook_id?: string
+    hook_event?: string
+    exit_code?: number
+    outcome?: string
+  } | null
+  return {
+    hookId: p?.hook_id ?? '',
+    hookEvent: p?.hook_event ?? '',
+    exitCode: p?.exit_code ?? 0,
+    outcome: p?.outcome ?? '',
+  }
+}
+
+function asBgTaskStdoutChunk(
+  payload: unknown,
+): { taskId: string; bytes: string; status?: 'watcher_unavailable' } {
+  // Payload arrives from applyClaudeEvent (camelCase taskId/bytes) when
+  // the frame is re-routed through the claude_event path. The WS-level
+  // handler in reduceClaudeMsg reads directly from m.payload (already
+  // typed). Keep both snake_case and camelCase to be defensive.
+  const p = payload as {
+    taskId?: string
+    task_id?: string
+    bytes?: string
+    status?: string
+  } | null
+  return {
+    taskId: p?.taskId ?? p?.task_id ?? '',
+    bytes: p?.bytes ?? '',
+    status: p?.status === 'watcher_unavailable' ? 'watcher_unavailable' : undefined,
   }
 }

@@ -1,6 +1,7 @@
 # Build artifacts
 /bin/
 /internal/static/dist/
+/alfred-server
 
 # Go
 *.test

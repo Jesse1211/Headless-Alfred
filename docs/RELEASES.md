@@ -7,6 +7,19 @@ Most-recent first.
 
 ---
 
+## v0.4 — Tool-Lifecycle Transparency (2026-06-17)
+
+- **Monitor tasks visible**: dispatched Monitor tools now show their CLI-assigned `task_id`, live notification count, and a ✓ mark once the background polling finishes. No more guessing whether the polling is alive.
+- **Subagent lifecycle**: Agent (Task tool) cards display elapsed time, with the turn-level phase chip showing "Calling Agent" while a subagent runs.
+- **Per-tool elapsed**: every tool call shows how long it's been running (turns amber after 30s, red after 5min).
+- **Turn phase chip**: each turn header shows Initializing / Thinking / Calling X / Done.
+- **Factual turn stats**: a one-line summary under each completed turn reports the actual count of tool calls, Monitor tasks (running/done), and subagents — replaces the "Claude said X but did Y" guesswork with the truth.
+- **Sidebar active-task pill**: an `⏳ N` badge next to a session name when background tasks are still running.
+
+Driven entirely by the CLI's own `--include-hook-events` stream — no jsonl tailing, no heuristics, no text-pattern detection.
+
+---
+
 ## v0.3 — 2026-06-17
 
 UX polish + one v0.2 fix.

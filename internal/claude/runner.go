@@ -105,28 +105,23 @@ type PromptResult struct {
 	Stop func()
 }
 
-// Prompt forks `claude -p ...` with the given options and returns
-// a PromptResult. Errors here mean we couldn't even start the
-// process (binary missing, cwd invalid, etc.). Errors during the
-// conversation surface on the Events channel as UnknownEvents or a
-// Result with IsError=true; the caller must inspect those.
-func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult, error) {
-	if opts.CWD == "" {
-		return nil, fmt.Errorf("PromptOptions.CWD required")
-	}
-	if opts.Prompt == "" {
-		return nil, fmt.Errorf("PromptOptions.Prompt required")
-	}
-
-	bin := r.claudeBin
-	if bin == "" {
-		bin = "claude"
-	}
+// buildPromptArgs assembles the argv passed to `claude -p` for a
+// single prompt invocation. Extracted from Prompt so it's unit
+// testable without spawning a process.
+func buildPromptArgs(opts PromptOptions) []string {
 	args := []string{
 		"-p",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--include-partial-messages",
+		// --include-hook-events emits hook_started / hook_response
+		// AND task_started / task_updated / task_notification
+		// system events in the stdout stream. These are the
+		// ground-truth lifecycle signals the v0.4 UI consumes for
+		// subagent + Monitor task tracking. Without this flag the
+		// UI degrades silently (no bg task tracker, no subagent
+		// counter); other features unaffected.
+		"--include-hook-events",
 	}
 	if opts.BypassPermissions {
 		// Skip the CLI's built-in "Run this Bash command? Y/N" prompts —
@@ -163,6 +158,27 @@ func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult,
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", opts.PermissionMode)
 	}
+	return args
+}
+
+// Prompt forks `claude -p ...` with the given options and returns
+// a PromptResult. Errors here mean we couldn't even start the
+// process (binary missing, cwd invalid, etc.). Errors during the
+// conversation surface on the Events channel as UnknownEvents or a
+// Result with IsError=true; the caller must inspect those.
+func (r *Runner) Prompt(ctx context.Context, opts PromptOptions) (*PromptResult, error) {
+	if opts.CWD == "" {
+		return nil, fmt.Errorf("PromptOptions.CWD required")
+	}
+	if opts.Prompt == "" {
+		return nil, fmt.Errorf("PromptOptions.Prompt required")
+	}
+
+	bin := r.claudeBin
+	if bin == "" {
+		bin = "claude"
+	}
+	args := buildPromptArgs(opts)
 
 	// We pipe the prompt on stdin instead of putting it in argv so
 	// that multi-line prompts and shell-special characters Just Work.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/claudestate"
 	"github.com/jesseliu/headless-alfred/internal/notes"
 	"github.com/jesseliu/headless-alfred/internal/session"
 	"github.com/jesseliu/headless-alfred/internal/shell"
@@ -28,6 +30,45 @@ const (
 	readDeadline      = 60 * time.Second
 	pingInterval      = 20 * time.Second
 )
+
+// errClientGone short-circuits all writes after the first WriteJSON
+// failure on a connection — see guardedWriter. We don't surface this
+// anywhere; it just stops downstream code from pushing more frames
+// onto a dead socket.
+var errClientGone = errors.New("ws: client gone")
+
+// guardedWriter returns a serialized write closure that:
+//   - serializes WriteJSON calls under a single mutex (gorilla
+//     websocket.Conn forbids concurrent writes);
+//   - on the FIRST write failure (TCP drop, half-close, client tab
+//     closed), closes the conn so the reader goroutine's ReadJSON
+//     wakes with an error; that closes inbound, which makes
+//     runClientLoop's main select return, which runs the deferred
+//     claudeRunStates.takeAll() + stopRun() to SIGINT any in-flight
+//     `claude -p` and unblock its forwarder goroutine.
+//
+// Without this, a dead WS connection left runners blocked forever
+// pushing onto the 64-slot claudeEvents channel that nobody was
+// draining — the runner subprocess survived, kept burning the
+// model's tokens, and the server's InFlight stayed true so the next
+// client reconnect saw "Claude still thinking" forever.
+func guardedWriter(writeJSON func(any) error, close func() error) func(OutMsg) error {
+	var mu sync.Mutex
+	var dead bool
+	return func(msg OutMsg) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if dead {
+			return errClientGone
+		}
+		if err := writeJSON(msg); err != nil {
+			dead = true
+			_ = close()
+			return err
+		}
+		return nil
+	}
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -49,7 +90,16 @@ var upgrader = websocket.Upgrader{
 // don't use claude UI; callers that want claude UI must pass both.
 // broadcaster is nil-safe: pass newRecapBroadcaster(nil) or a real
 // broadcaster — the connection loop behaves correctly either way.
-func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *claude.Dispatcher, broadcaster *recapBroadcaster, disk *diskBroadcaster) http.Handler {
+// csMgr may be nil — the dispatch helpers degrade to passthrough when nil.
+func WSHandler(
+	m *session.Manager,
+	a auth.Auth,
+	bridge *claude.Bridge,
+	disp *claude.Dispatcher,
+	broadcaster *recapBroadcaster,
+	disk *diskBroadcaster,
+	csMgr *claudestate.SessionManager,
+) http.Handler {
 	runner := claude.NewRunner()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := r.URL.Query().Get("token")
@@ -62,11 +112,11 @@ func WSHandler(m *session.Manager, a auth.Auth, bridge *claude.Bridge, disp *cla
 			slog.Error("ws upgrade", "err", err)
 			return
 		}
-		runClientLoop(conn, m, bridge, disp, runner, broadcaster, disk)
+		runClientLoop(conn, m, bridge, disp, runner, broadcaster, disk, csMgr)
 	})
 }
 
-func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner, broadcaster *recapBroadcaster, disk *diskBroadcaster) {
+func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Bridge, disp *claude.Dispatcher, runner *claude.Runner, broadcaster *recapBroadcaster, disk *diskBroadcaster, csMgr *claudestate.SessionManager) {
 	defer conn.Close()
 	conn.SetReadLimit(maxInboundMessage)
 	_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
@@ -75,12 +125,21 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 		return nil
 	})
 
-	writeMu := &sync.Mutex{}
-	write := func(msg OutMsg) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return conn.WriteJSON(msg)
-	}
+	write := guardedWriter(conn.WriteJSON, conn.Close)
+
+	// Per-WS bg-task log subscriptions (fsnotify watchers).
+	// Cleaned up on WS disconnect via bgLogSubs.closeAll() in the defer below.
+	bgLogSubs := newBgTaskLogSubs()
+	// connCtx is cancelled when the WS connection closes (via the stop channel).
+	// Goroutines spawned by handleSubscribeBgTaskLog watch ctx.Done() so they
+	// exit automatically on disconnect even without an explicit unsubscribe.
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
+	defer bgLogSubs.closeAll()
+
+	// Resolvers for bg-task log subscriptions.
+	bgMeta := NewSessionMetaResolver(m)
+	bgCWD := NewSessionCWDResolver(m)
 
 	sessions := m.ListAll()
 	subs := make([]NamedSubscriber, 0, len(sessions))
@@ -174,9 +233,17 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 	claudeRunStates := newClaudeRunStateMap()
 	defer func() {
 		// On disconnect, stop any still-running claude prompts so we
-		// don't leak processes.
-		for _, st := range claudeRunStates.takeAll() {
-			stopRun(st)
+		// don't leak processes — AND apply a synthetic
+		// claude_run_ended through server state. Without the Apply
+		// step, the reaper goroutine's own take() would now return
+		// owned=false (we already took the slot), so its run_ended
+		// branch wouldn't fire — and server state would persist
+		// InFlight=true / Done=false on the trailing turn forever.
+		// The next reconnect's /claude-state hydrate would still
+		// show "Claude is thinking…" with no way out.
+		for _, e := range claudeRunStates.takeAll() {
+			stopRun(e.state)
+			applyClaudeRunEnded(e.sessionID, "client disconnected", csMgr)
 		}
 	}()
 
@@ -264,7 +331,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			if !ok {
 				return
 			}
-			handleInbound(msg, m, bridge, runner, claudeEvents, claudeRunStates, write)
+			handleInbound(msg, m, bridge, runner, claudeEvents, claudeRunStates, csMgr, write, connCtx, bgLogSubs, bgMeta, bgCWD)
 		case ev, ok := <-events:
 			if !ok {
 				return
@@ -314,13 +381,10 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			})
 		case fwd := <-claudeEvents:
 			// One stream-json event from an in-flight claude -p
-			// invocation. Push as a claude_event frame.
-			_ = write(OutMsg{
-				Type:      "claude_event",
-				SessionID: fwd.sessionID,
-				EventKind: string(fwd.kind),
-				Payload:   fwd.payload,
-			})
+			// invocation. Route through Apply so server state is the
+			// source of truth, then push as a claude_event frame.
+			cuid := m.GetClaudeSessionID(fwd.sessionID)
+			dispatchClaudeStreamEvent(fwd, cuid, csMgr, write)
 		case sid, ok := <-summaryUpdates:
 			if !ok {
 				continue
@@ -355,6 +419,15 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			duCopy := du
 			_ = write(OutMsg{Type: TypeDiskUsage, DiskUsage: &duCopy})
 		case sid := <-closedCh:
+			// Session was deleted via REST or by another tab. Kill any
+			// in-flight `claude -p` we were holding for it AND apply a
+			// run_ended through server state — the session is going
+			// away but other tabs may still be looking at it during
+			// the brief delete-broadcast window.
+			if st, ok := claudeRunStates.take(sid); ok {
+				stopRun(st)
+				applyClaudeRunEnded(sid, "session closed", csMgr)
+			}
 			_ = write(OutMsg{Type: "session_closed", SessionID: sid})
 		case rn := <-renamedCh:
 			_ = write(OutMsg{Type: "session_renamed", SessionID: rn.ID, Name: rn.Name})
@@ -458,7 +531,20 @@ type namedRename struct {
 	Name string
 }
 
-func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner *claude.Runner, claudeEvents chan<- claudeEventEnvelope, runStates *claudeRunStateMap, write func(OutMsg) error) {
+func handleInbound(
+	msg InMsg,
+	m *session.Manager,
+	bridge *claude.Bridge,
+	runner *claude.Runner,
+	claudeEvents chan<- claudeEventEnvelope,
+	runStates *claudeRunStateMap,
+	csMgr *claudestate.SessionManager,
+	write func(OutMsg) error,
+	connCtx context.Context,
+	bgLogSubs *bgTaskLogSubs,
+	bgMeta MetaResolver,
+	bgCWD CWDResolver,
+) {
 	switch msg.Type {
 	case "ping":
 		_ = write(OutMsg{Type: "pong"})
@@ -468,22 +554,30 @@ func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner 
 		handleEnterClaude(msg, m, write)
 	case "exit_claude":
 		handleExitClaude(msg, m, write)
-		// Interrupt any in-flight claude -p for this session.
+		// Interrupt any in-flight claude -p for this session AND finalize
+		// the trailing turn in server state — otherwise InFlight would
+		// stay true after the user explicitly left claude mode.
 		if st, ok := runStates.take(msg.SessionID); ok {
 			stopRun(st)
+			applyClaudeRunEnded(msg.SessionID, "exited claude mode", csMgr)
 		}
 	case "stdin":
 		handleStdin(msg, m, write)
 	case "claude_prompt":
-		handleClaudePrompt(msg, m, runner, claudeEvents, runStates, write)
+		handleClaudePrompt(msg, m, runner, claudeEvents, runStates, csMgr, write)
 	case "tool_decision":
 		handleToolDecision(msg, bridge, write)
+		dispatchToolDecision(msg.SessionID, msg.ToolUseID, msg.Decision, msg.Reason, csMgr, write)
 	case "interrupt":
 		// Don't take() — keep the state in the map so the reaper
 		// goroutine can clean up after the SIGINT'd process exits.
 		if st, ok := runStates.get(msg.SessionID); ok && st.stop != nil {
 			st.stop()
 		}
+	case "subscribe_bg_task_log":
+		handleSubscribeBgTaskLog(connCtx, SubscribeBgTaskLogPayload{TaskID: msg.TaskID}, bgLogSubs, write, msg.SessionID, bgMeta, bgCWD)
+	case "unsubscribe_bg_task_log":
+		handleUnsubscribeBgTaskLog(UnsubscribeBgTaskLogPayload{TaskID: msg.TaskID}, bgLogSubs)
 	default:
 		_ = write(OutMsg{Type: "error", Code: "bad_type", Message: "unknown message type"})
 	}
@@ -575,4 +669,235 @@ func writeEventToClient(ev FanInEvent, write func(OutMsg) error) {
 			FinishedAt: e.FinishedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
+}
+
+// dispatchClaudeStreamEvent routes one Claude stream-json event
+// through the SessionManager's Apply so server state is the truth
+// source, then emits a claude_event frame to the client. The
+// server's Apply-time wall clock travels INSIDE the Payload (as
+// the Timestamp field of claudestate.Event) — the frontend reducer
+// reads it from there into state fields like StartedAt.
+//
+// claudeUUID is passed in so the first GetOrLoad can attach a jsonl
+// path; subsequent calls for the same session ignore it.
+func dispatchClaudeStreamEvent(env claudeEventEnvelope, claudeUUID string, mgr *claudestate.SessionManager, write func(OutMsg) error) {
+	// Defensive: tests can pass nil to assert the legacy passthrough.
+	// In production main.go wires a non-nil manager.
+	if mgr == nil {
+		_ = write(OutMsg{
+			Type:      "claude_event",
+			SessionID: env.sessionID,
+			EventKind: string(env.kind),
+			Payload:   env.payload,
+		})
+		return
+	}
+	st, err := mgr.GetOrLoad(env.sessionID, claudeUUID)
+	if err != nil {
+		slog.Warn("ws: get state for stream event", "sid", env.sessionID, "err", err)
+		_ = write(OutMsg{Type: "claude_event", SessionID: env.sessionID, EventKind: string(env.kind), Payload: env.payload})
+		return
+	}
+	ev, err := buildEventFromEnvelope(env)
+	if err != nil {
+		slog.Warn("ws: build event", "sid", env.sessionID, "err", err)
+		_ = write(OutMsg{Type: "claude_event", SessionID: env.sessionID, EventKind: string(env.kind), Payload: env.payload})
+		return
+	}
+	if err := st.Apply(ev); err != nil {
+		slog.Warn("ws: apply event", "sid", env.sessionID, "kind", env.kind, "err", err)
+	}
+	// Re-marshal payload to a stable RawMessage. The server-side
+	// timestamp travels in the top-level Timestamp field so the
+	// frontend reducer can read it directly without diving into the
+	// payload variant.
+	out, _ := json.Marshal(ev.Payload)
+	_ = write(OutMsg{
+		Type:      "claude_event",
+		SessionID: env.sessionID,
+		EventKind: string(env.kind),
+		Payload:   json.RawMessage(out),
+		Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
+	})
+}
+
+// dispatchToolDecision applies the user's tool decision to in-memory
+// state and emits a tool_decision_applied frame. The bridge resolution
+// (telling the PreToolUse hook to allow or deny) still happens through
+// the existing bridge path — this helper only owns the state side.
+func dispatchToolDecision(sessionID, toolUseID, decision, reason string, mgr *claudestate.SessionManager, write func(OutMsg) error) {
+	if mgr == nil {
+		return
+	}
+	st, err := mgr.GetOrLoad(sessionID, "")
+	if err != nil {
+		slog.Warn("ws: get state for decision", "sid", sessionID, "err", err)
+		return
+	}
+	ev := claudestate.Event{
+		Kind:      claudestate.EventToolDecision,
+		Timestamp: time.Now().UTC(),
+		Payload: &claudestate.ToolDecisionPayload{
+			ToolUseID: toolUseID,
+			Decision:  decision,
+			Reason:    reason,
+		},
+	}
+	if err := st.Apply(ev); err != nil {
+		slog.Warn("ws: apply decision", "sid", sessionID, "err", err)
+		return
+	}
+	_ = write(OutMsg{
+		Type:      "tool_decision_applied",
+		SessionID: sessionID,
+		ToolUseID: toolUseID,
+		Decision:  decision,
+		Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
+	})
+}
+
+// applyClaudeRunEnded routes a ClaudeRunEnded through Apply so the
+// trailing turn is finalized in server state (Done=true, IsError=
+// true, InFlight=false). Returns the Apply timestamp so the caller
+// can stamp it onto an outgoing claude_run_ended frame and have
+// streaming state match post-refresh hydrate state byte-for-byte.
+// Safe to call with a nil manager (no-op).
+//
+// Used by:
+//   - the reaper goroutine on runner exit (pairs with a frame write
+//     since a live client may still be reading)
+//   - runClientLoop's disconnect defer when SIGINT'ing leaked runners
+//     (no frame — there's no client to read it; we just need server
+//     state to stop saying "thinking…" forever)
+func applyClaudeRunEnded(sessionID, message string, mgr *claudestate.SessionManager) time.Time {
+	now := time.Now().UTC()
+	if mgr == nil {
+		return now
+	}
+	st, err := mgr.GetOrLoad(sessionID, "")
+	if err != nil {
+		slog.Warn("ws: get state for claude_run_ended", "sid", sessionID, "err", err)
+		return now
+	}
+	ev := claudestate.Event{
+		Kind:      claudestate.EventClaudeRunEnded,
+		Timestamp: now,
+		Payload:   &claudestate.ClaudeRunEndedPayload{Message: message},
+	}
+	if applyErr := st.Apply(ev); applyErr != nil {
+		slog.Warn("ws: apply claude_run_ended", "sid", sessionID, "err", applyErr)
+	}
+	return now
+}
+
+// dispatchClaudeRunEnded is the reaper-side helper: Apply + emit the
+// claude_run_ended frame to the client. Use it whenever the runner
+// dies and we still hold a writable conn.
+func dispatchClaudeRunEnded(sessionID, message string, mgr *claudestate.SessionManager, write func(OutMsg) error) {
+	ts := applyClaudeRunEnded(sessionID, message, mgr)
+	_ = write(OutMsg{
+		Type:      "claude_run_ended",
+		SessionID: sessionID,
+		Message:   message,
+		Timestamp: ts.Format(time.RFC3339Nano),
+	})
+}
+
+// dispatchClaudeError applies a ClaudeError event to server state and
+// emits a claude_error frame. Used when the server itself decides a
+// run is over (spawn failure, write-to-dead-client, shutdown, session
+// deletion) — paths where the runner won't emit a result or run_ended
+// of its own. The Apply call finalizes the in-flight turn so the
+// composer unlocks, then the frame fan-outs to the originating client.
+// Safe to call with a nil manager (no-op + frame still flies).
+func dispatchClaudeError(sessionID, code, message string, mgr *claudestate.SessionManager, write func(OutMsg) error) {
+	now := time.Now().UTC()
+	if mgr != nil {
+		if st, err := mgr.GetOrLoad(sessionID, ""); err == nil {
+			ev := claudestate.Event{
+				Kind:      claudestate.EventClaudeError,
+				Timestamp: now,
+				Payload: &claudestate.ClaudeErrorPayload{
+					Code:    code,
+					Message: message,
+				},
+			}
+			if applyErr := st.Apply(ev); applyErr != nil {
+				slog.Warn("ws: apply claude_error", "sid", sessionID, "err", applyErr)
+			}
+		} else {
+			slog.Warn("ws: get state for claude_error", "sid", sessionID, "err", err)
+		}
+	}
+	_ = write(OutMsg{
+		Type:      "claude_error",
+		SessionID: sessionID,
+		Code:      code,
+		Message:   message,
+		Timestamp: now.Format(time.RFC3339Nano),
+	})
+}
+
+// dispatchClaudePromptBegin creates a server-side turn id, registers
+// the turn via BeginTurn on the SessionManager, and emits the
+// turn_started frame so the frontend's optimistic placeholder can be
+// reconciled. Returns the new turn id (or "" on failure).
+//
+// Use it from handleClaudePrompt AFTER the final prompt text has been
+// composed (template-rendered, summary-suffixed, etc.) so the turn's
+// `prompt` field reflects what the user will actually see in the
+// "You" bubble.
+func dispatchClaudePromptBegin(sessionID, clientNonce, prompt string, mgr *claudestate.SessionManager, write func(OutMsg) error) string {
+	if mgr == nil {
+		return ""
+	}
+	st, err := mgr.GetOrLoad(sessionID, "")
+	if err != nil {
+		slog.Warn("ws: get state for prompt", "sid", sessionID, "err", err)
+		return ""
+	}
+	turnID := ulid.Make().String()
+	now := time.Now().UTC()
+	st.BeginTurn(turnID, prompt, now)
+	_ = write(OutMsg{
+		Type:        "turn_started",
+		SessionID:   sessionID,
+		ClientNonce: clientNonce,
+		TurnID:      turnID,
+		Timestamp:   now.Format(time.RFC3339Nano),
+	})
+	return turnID
+}
+
+// buildEventFromEnvelope turns a raw envelope (kind string + payload)
+// into a typed claudestate.Event. The timestamp is generated here —
+// it's the server's Apply-time moment.
+func buildEventFromEnvelope(env claudeEventEnvelope) (claudestate.Event, error) {
+	now := time.Now().UTC()
+	// Marshal the raw payload (which is either json.RawMessage or a
+	// concrete payload struct from the parser) then unmarshal into a
+	// claudestate.Event so the kind-dispatched UnmarshalJSON allocates
+	// the right concrete payload type.
+	payloadBytes, err := json.Marshal(env.payload)
+	if err != nil {
+		return claudestate.Event{}, err
+	}
+	wire := struct {
+		Kind      claudestate.EventKind `json:"kind"`
+		Timestamp time.Time             `json:"timestamp"`
+		Payload   json.RawMessage       `json:"payload"`
+	}{
+		Kind:      claudestate.EventKind(env.kind),
+		Timestamp: now,
+		Payload:   payloadBytes,
+	}
+	envBytes, err := json.Marshal(wire)
+	if err != nil {
+		return claudestate.Event{}, err
+	}
+	var ev claudestate.Event
+	if err := json.Unmarshal(envBytes, &ev); err != nil {
+		return claudestate.Event{}, err
+	}
+	return ev, nil
 }

@@ -21,6 +21,12 @@ export type ClaudeEventKind =
   | 'message_delta'
   | 'message_stop'
   | 'result'
+  // v0.4: CLI lifecycle events (emitted under --include-hook-events).
+  | 'task_started'
+  | 'task_notification'
+  | 'task_updated'
+  | 'hook_started'
+  | 'hook_response'
   | 'unknown'
 
 // DiskUsage payload on the disk_usage WS frame (and the
@@ -46,16 +52,16 @@ export type ServerMsg =
   | { type: 'claude_entered'; sessionID: string; renderer?: ClaudeRenderer }
   | { type: 'claude_exited'; sessionID: string }
   | { type: 'pty_data'; sessionID: string; data: string }
-  | { type: 'claude_event'; sessionID: string; eventKind: ClaudeEventKind; payload: unknown }
+  | { type: 'claude_event'; sessionID: string; eventKind: ClaudeEventKind; payload: unknown; timestamp?: string }
   | { type: 'tool_approval_request'; sessionID: string; toolUseId: string; tool: string; toolInput: unknown }
-  | { type: 'claude_error'; sessionID: string; code: string; message: string }
+  | { type: 'claude_error'; sessionID: string; code: string; message: string; timestamp?: string }
   // claude_run_ended fires when the per-prompt `claude -p` process
   // exits, REGARDLESS of whether a `result` event was emitted first.
   // It's a backstop so the frontend always clears inFlight even if
   // the runner died abnormally (OOM kill, parser bug, etc.). When
   // the run ended cleanly with a `result`, the frame is redundant
   // and the reducer treats it as a no-op for the turn state.
-  | { type: 'claude_run_ended'; sessionID: string; message?: string }
+  | { type: 'claude_run_ended'; sessionID: string; message?: string; timestamp?: string }
   | { type: 'summary_updated'; sessionID: string }
   | { type: 'note_updated'; sessionID: string }
   | { type: 'recap_updated'; date: string }
@@ -63,16 +69,34 @@ export type ServerMsg =
   | { type: 'user_prompt'; sessionID: string; text: string }
   | { type: 'error'; sessionID?: string; code: string; message: string }
   | { type: 'pong' }
+  | {
+      type: 'turn_started'
+      sessionID: string
+      clientNonce: string
+      turnId: string
+      timestamp: string
+    }
+  | {
+      type: 'tool_decision_applied'
+      sessionID: string
+      toolUseId: string
+      decision: 'allow' | 'deny'
+      timestamp?: string
+    }
+  | { type: 'bg_task_stdout_chunk'; payload: { taskId: string; bytes: string; status?: 'watcher_unavailable' } }
 
 export type ClientMsg =
   | { type: 'run'; sessionID: string; command: string }
   | { type: 'enter_claude'; sessionID: string; renderer?: ClaudeRenderer; bypassPermissions?: boolean; templateId?: string }
   | { type: 'exit_claude'; sessionID: string }
   | { type: 'stdin'; sessionID: string; data: string }
-  | { type: 'claude_prompt'; sessionID: string; text: string; renderTemplate?: string; templates?: string[] }
+  | { type: 'claude_prompt'; sessionID: string; text: string; renderTemplate?: string; templates?: string[]; clientNonce?: string }
   | { type: 'tool_decision'; sessionID: string; toolUseId: string; decision: 'allow' | 'deny'; reason?: string }
   | { type: 'interrupt'; sessionID: string }
   | { type: 'ping' }
+  // Background task log streaming (ADR-020).
+  | { type: 'subscribe_bg_task_log'; payload: { taskId: string } }
+  | { type: 'unsubscribe_bg_task_log'; payload: { taskId: string } }
 
 export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed'
 

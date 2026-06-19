@@ -120,6 +120,16 @@ func handleUser(turns *[]Turn, line []byte) {
 	if len(c) == 0 {
 		return
 	}
+	// Any user-line timestamp brackets the end of the preceding turn:
+	// a tool_result row's ts lands mid-turn (turn still in progress
+	// against the next assistant message), and a new prompt's ts is
+	// the closest hard bracket between the previous turn ending and
+	// the next one starting. Both are upper bounds on "when the
+	// previous assistant work finished"; the later one wins because
+	// we keep overwriting as more rows arrive.
+	if full.TS != "" && len(*turns) > 0 {
+		(*turns)[len(*turns)-1].EndedAt = full.TS
+	}
 	// Try string content first.
 	if c[0] == '"' {
 		var s string

@@ -126,3 +126,27 @@ func TestClaudeHistory_LimitClampedTo500(t *testing.T) {
 
 // itoa avoids importing strconv just for tests.
 func itoa(i int) string { return string(rune('0' + i)) }
+
+func TestClaudeHistoryHandler_EmitsDeprecationHeaders(t *testing.T) {
+	// Use the same fakeLookup stub as the other tests in this file.
+	// The sid doesn't need a real session — an empty ClaudeSessionID
+	// just returns [] which is fine; the headers are what we're testing.
+	lookup := &fakeLookup{m: map[string]string{"sid-dep": ""}}
+
+	r := httptest.NewRequest(http.MethodGet,
+		"/api/sessions/sid-dep/claude-history", nil)
+	r = withChiParam(r, "sid", "sid-dep")
+	w := httptest.NewRecorder()
+
+	GetClaudeHistoryHandler(lookup, claudehistory.NewLocator()).ServeHTTP(w, r)
+
+	if got := w.Header().Get("Deprecation"); got != "true" {
+		t.Errorf("Deprecation header: %q, want true", got)
+	}
+	if got := w.Header().Get("Sunset"); got == "" {
+		t.Error("Sunset header missing")
+	}
+	if got := w.Header().Get("Link"); got == "" {
+		t.Error("Link header missing (should point to /claude-state)")
+	}
+}

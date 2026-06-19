@@ -23,6 +23,14 @@ type Turn struct {
 	// hides the "Show full prompt" toggle.
 	ExpandedPrompt string `json:"expandedPrompt,omitempty"`
 	StartedAt      string `json:"startedAt"`
+	// EndedAt is the timestamp of the closest jsonl row that brackets
+	// the end of the turn — either the tool_result user-line ts (mid-
+	// turn) or the next prompt's user-line ts (between turns). Assistant
+	// rows carry no timestamp in the CLI's jsonl, so this is the best
+	// ground-truth bracket available. Empty for the trailing turn
+	// (no successor row); the frontend hides the elapsed display in
+	// that case.
+	EndedAt string `json:"finishedAt,omitempty"`
 	// Blocks is the assistant's reply as an ORDERED list of text and
 	// tool blocks in the exact order Claude streamed them. JSON tag
 	// "blocks" matches the frontend ClaudeTurn.blocks shape.

@@ -1,3 +1,9 @@
+// ClaudeState and its sub-types mirror the Go server's
+// internal/claudestate.ClaudeState exactly. The wire format
+// (HTTP /claude-state, WS frames, on-disk snapshot.json) uses
+// the same camelCase key names — no naming translation between
+// layers. When you change a field here, change the Go side too.
+
 export interface RunningCmd {
   id: string
   command: string
@@ -38,6 +44,13 @@ export interface ClaudeTurn {
   // what they paid tokens for.
   expandedPrompt?: string
   startedAt: string
+  // finishedAt is when the turn ended — set by `result` (success path)
+  // and by finalizeInFlightTurn (error / runner-died backstop). When
+  // restored from jsonl, the backend fills this from the next user
+  // row's timestamp (the closest bracket available, since assistant
+  // jsonl rows carry no ts). The trailing turn in a restored history
+  // may have no finishedAt; the footer hides the elapsed display then.
+  finishedAt?: string
   // The assistant's reply as an ORDERED list of text + tool blocks
   // in the exact order Claude streamed them. Render each one in
   // sequence to faithfully reproduce the "Claude says something, then
@@ -78,10 +91,59 @@ export interface ClaudeToolCall {
   // currently only show it on the approval card.
   input?: unknown
   // What the user decided when the approval card surfaced.
-  decision?: 'allow' | 'deny' | 'pending'
+  // Always present on the wire: 'allow', 'deny', or 'pending'.
+  decision: 'allow' | 'deny' | 'pending'
   // Output from the tool, once it ran. May still be empty if denied.
   result?: string
   isError?: boolean
+  // v0.4 lifecycle: timestamps for the elapsed-timer UI. startedAt is
+  // recorded by the tool_use_start reducer (Date.now()); finishedAt by
+  // tool_result. Undefined when the block was restored from history
+  // without lifecycle events — the elapsed display short-circuits.
+  startedAt?: string
+  finishedAt?: string
+  // CLI background-task id, set when a matching task_started event
+  // arrives. Links this tool block to bgTasks[bgTaskId]. Set for
+  // any tool that emits task_started (Monitor, Bash, future
+  // producers).
+  bgTaskId?: string
+}
+
+// BgTask tracks one Claude-CLI-spawned background task.
+// Producers observed: Monitor's detached bash,
+// Bash(run_in_background=true). Lifecycle is owned exclusively by
+// the CLI: it spawns, monitors, and SIGKILLs in-flight tasks when
+// the parent `claude -p` exits (status="killed"). alfred-server
+// is the observer, not the parent.
+//
+// External-resource reference — not persisted in snapshot.json;
+// re-derived on alfred-server restart from .jsonl replay (every
+// in_progress task is forced to status="killed"). See ADR-001,
+// ADR-018, and DESIGN.md.
+export const BG_TASK_TOOL_NAMES = ['Monitor', 'Bash'] as const
+export type BgTaskToolName = (typeof BG_TASK_TOOL_NAMES)[number]
+
+export interface BgTask {
+  taskId: string
+  toolUseId: string
+  description: string
+  taskType: string
+  startedAt: string
+  finishedAt?: string
+  status: 'in_progress' | 'completed' | 'failed' | 'killed' | 'stopped'
+  lastEventSummary?: string
+  notificationCount: number
+}
+
+// SubagentEntry tracks one in-flight subagent. Keyed by the CLI's
+// hookId (SubagentStart's hook_id pairs with SubagentStop's hook_id).
+// agentType is the subagent kind (e.g. "general-purpose"); we don't
+// always have it on Start, so it's optional.
+export interface SubagentEntry {
+  hookId: string
+  agentType?: string
+  startedAt: string
+  finishedAt?: string
 }
 
 // AssistantBlock is one item in a turn's reply timeline. The two
@@ -107,8 +169,14 @@ export interface ClaudeState {
   // True once useClaudeHistoryLoader has done its one-shot fetch
   // from the backend jsonl-restore endpoint. Cleared on claude_exited
   // so re-entering re-runs the fetch (the underlying uuid may have
-  // rotated). Sticky across WS reconnects within the same page load.
+  // rotated). Cleared on WS reconnect for whichever session is
+  // currently selected (see useSessions wsEpoch handling) so the
+  // user never looks at stale state.
   turnsLoaded?: boolean
+  // The wsEpoch this state was hydrated at. Lets useSessions notice
+  // that a background session loaded before the most recent reconnect
+  // is stale and trigger a refetch when the user finally switches to it.
+  hydrateEpoch?: number
   // True while a claude_prompt is in flight (claude -p running).
   inFlight: boolean
   // Pending tool approvals waiting for the user.
@@ -121,6 +189,15 @@ export interface ClaudeState {
   pendingQuestions: ClaudeQuestionRequest[]
   // Last error returned by the backend (e.g., claude not authenticated).
   lastError?: { code: string; message: string }
+  // v0.4: ground-truth lifecycle tracking. Keyed by taskId / hookId
+  // respectively. Both are session-scoped; cleared on claude_exited.
+  bgTasks: Record<string, BgTask>
+  subagents: Record<string, SubagentEntry>
+  // Live stdout tail for background tasks. Keyed by taskId; value is
+  // decoded text (UTF-8 via atob). Capped at 64KB tail: bytes over
+  // the cap are head-trimmed so the most-recent output is always
+  // preserved. Populated by bg_task_stdout_chunk WS frames.
+  bgTaskLogs: Record<string, string>
 }
 
 export interface ClaudeToolApprovalRequest {
@@ -175,5 +252,5 @@ export function emptyPerSessionState(): PerSessionState {
 }
 
 export function emptyClaudeState(): ClaudeState {
-  return { turns: [], inFlight: false, pending: [], pendingQuestions: [] }
+  return { turns: [], inFlight: false, pending: [], pendingQuestions: [], bgTasks: {}, subagents: {}, bgTaskLogs: {} }
 }

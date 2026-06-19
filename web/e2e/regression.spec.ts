@@ -18,7 +18,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Each test creates its own fresh session via REST to avoid
 // state bleed.
 
-const BACKEND = 'http://localhost:8080'
+const BACKEND = process.env.ALFRED_BACKEND_URL || 'http://localhost:8080'
+const ALFRED_USER = process.env.ALFRED_USER || 'admin'
+const ALFRED_PASSWORD = process.env.ALFRED_PASSWORD || 'admin'
 const SHOTS = path.join(__dirname, '..', '.screenshots')
 fs.mkdirSync(SHOTS, { recursive: true })
 
@@ -29,7 +31,7 @@ let cachedToken = ''
 async function login(page: Page): Promise<string> {
   if (cachedToken) return cachedToken
   const r = await page.request.post(`${BACKEND}/api/login`, {
-    data: { user: 'admin', password: 'admin' },
+    data: { user: ALFRED_USER, password: ALFRED_PASSWORD },
   })
   const { token } = await r.json()
   cachedToken = token
@@ -70,7 +72,7 @@ test.afterEach(async ({ request }) => {
 // Doing it per-test races with the live WS client.
 test.beforeAll(async ({ request }) => {
   const r = await request.post(`${BACKEND}/api/login`, {
-    data: { user: 'admin', password: 'admin' },
+    data: { user: ALFRED_USER, password: ALFRED_PASSWORD },
   })
   const { token } = await r.json()
   const list = await request.get(`${BACKEND}/api/sessions`, {
