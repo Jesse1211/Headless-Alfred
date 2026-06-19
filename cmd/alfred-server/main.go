@@ -18,6 +18,7 @@ import (
 	"github.com/jesseliu/headless-alfred/internal/api"
 	"github.com/jesseliu/headless-alfred/internal/auth"
 	"github.com/jesseliu/headless-alfred/internal/claude"
+	"github.com/jesseliu/headless-alfred/internal/claudebgtasks"
 	"github.com/jesseliu/headless-alfred/internal/claudehistory"
 	"github.com/jesseliu/headless-alfred/internal/claudestate"
 	"github.com/jesseliu/headless-alfred/internal/recap"
@@ -63,6 +64,15 @@ func main() {
 		os.Exit(2)
 	} else if imported {
 		logger.Info("legacy data migrated into 'Imported' session")
+	}
+
+	// Bootstrap bg-task env vars before any claude runner is constructed.
+	// CLAUDE_CODE_TMPDIR tells the CLI where to write per-uid scratch;
+	// ALFRED_CLAUDE_BG_TASK_DIR is read by the path resolver to find
+	// bg-task output files. Both must be consistent (ADR-007).
+	if err := claudebgtasks.Bootstrap(dataDir); err != nil {
+		logger.Error("claudebgtasks bootstrap", "err", err)
+		os.Exit(2)
 	}
 
 	// Tmux socket lives next to sessions.json. Both are inside the PVC.
