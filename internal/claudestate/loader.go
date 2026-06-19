@@ -49,6 +49,11 @@ func Load(snapshotPath, jsonlPath string) (ClaudeState, error) {
 	if staleTrailing {
 		finalizeStaleTrailingTurn(state.Turns)
 	}
+	// Independent of staleTrailing: close any tool block left hanging in
+	// any turn (e.g. a Done turn whose pending tool an earlier restart
+	// never settled). A Done turn must never contain a pending/unfinished
+	// tool, or the frontend freezes it on PENDING with a live timer.
+	finalizeHangingToolBlocks(state.Turns)
 	state.InFlight = computeInFlight(state.Turns)
 
 	// ADR-018: after the turns merge, replay task_started /
@@ -87,10 +92,62 @@ func finalizeStaleTrailingTurn(turns []ClaudeTurn) {
 	last.IsError = true
 	now := time.Now().UTC()
 	last.FinishedAt = &now
+
 	last.Blocks = append(last.Blocks, AssistantBlock{
 		Kind: "text",
 		Text: "Server restarted while this turn was running. The runner was killed; reply was not delivered.",
 	})
+}
+
+// finalizeHangingToolBlocks closes off any tool block — in ANY turn —
+// that was still awaiting approval (Decision=="pending") or still
+// executing (FinishedAt==nil). Without this, the frontend renders a
+// forever-PENDING tool with a live elapsed timer that never stops.
+//
+// This is deliberately NOT gated on staleTrailing. A turn can be marked
+// Done at the turn level (e.g. by an earlier restart's
+// finalizeStaleTrailingTurn) yet still carry a hanging tool block the
+// turn-level finalize didn't touch — on the next Load, staleTrailing is
+// false, so a staleTrailing-gated cleanup would skip it and the frozen
+// PENDING survives forever. A Done turn must never contain a pending or
+// unfinished tool. Mutates in place. Runs over every loaded turn.
+func finalizeHangingToolBlocks(turns []ClaudeTurn) {
+	now := time.Now().UTC()
+	for ti := range turns {
+		turn := &turns[ti]
+		var killed []string
+		for bi := range turn.Blocks {
+			b := &turn.Blocks[bi]
+			if b.Kind != "tool" || b.Tool == nil {
+				continue
+			}
+			t := b.Tool
+			if t.Decision != "pending" && t.FinishedAt != nil {
+				continue // already settled
+			}
+			if t.Decision == "pending" {
+				t.Decision = "deny" // never approved → treat as denied
+			}
+			t.IsError = true
+			if t.FinishedAt == nil {
+				t.FinishedAt = &now
+			}
+			if t.Result == "" {
+				t.Result = "Interrupted: the runner was killed (server restart) before this tool finished."
+			}
+			killed = append(killed, t.Name+"("+t.ToolUseID+")")
+		}
+		if len(killed) > 0 {
+			// Log loudly so this is greppable in production. A hanging tool
+			// means a runner died mid-turn — surface which turn and which
+			// tools, or the bug is invisible.
+			slog.Warn("claudestate: finalized hanging tool blocks after runner death",
+				"turnId", turn.ID,
+				"turnDone", turn.Done,
+				"hangingToolsKilled", len(killed),
+				"tools", killed)
+		}
+	}
 }
 
 // loadSnapshot tries to read + validate the snapshot file. Returns

@@ -704,8 +704,17 @@ function formatJSON(v: unknown): string {
 // whether a result has come back. Order matters — a denied tool
 // never produces a result, and an allowed tool is "running" until
 // the result arrives.
-function toolStatus(tool: ClaudeToolCall): 'pending' | 'denied' | 'running' | 'done' {
-  if (tool.decision === 'deny') return 'denied'
+// Exported for unit tests. The `interrupted` case is the loader's
+// runner-death finalize (decision=deny + isError + an "Interrupted:"
+// result) — distinct from a user-initiated deny so the UI doesn't
+// wrongly imply the user rejected the tool.
+export function toolStatus(
+  tool: ClaudeToolCall,
+): 'pending' | 'denied' | 'interrupted' | 'running' | 'done' {
+  if (tool.decision === 'deny') {
+    if (tool.isError && tool.result?.startsWith('Interrupted')) return 'interrupted'
+    return 'denied'
+  }
   if (tool.result != null) return 'done'
   if (tool.decision === 'allow') return 'running'
   return 'pending'
