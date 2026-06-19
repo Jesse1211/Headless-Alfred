@@ -681,7 +681,6 @@ function asTaskPayload(kind: TaskPayload['kind'], payload: unknown): TaskPayload
       summary: p?.summary ?? '',
     }
   }
-  // kind === 'task_updated'
   const p = payload as {
     task_id?: string
     patch?: { status?: string; end_time?: number }
