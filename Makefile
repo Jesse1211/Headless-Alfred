@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push e2e e2e-setup e2e-teardown local-status local-stop
+.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push e2e e2e-setup e2e-teardown local-status local-stop local-dev
 
 test: test-unit test-integration
 
@@ -56,6 +56,13 @@ local-status:
 	@echo "== kubectl port-forwards to alfred =="; pgrep -fl "kubectl.*port-forward.*alfred" || echo "  (none)"
 	@echo "== ports 8080 / 5173 / 18080 =="; lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -E ':(8080|5173|18080)' || echo "  (none listening)"
 	@echo "== kind clusters =="; kind get clusters 2>/dev/null || echo "  (kind not installed)"
+
+# One-shot: kill any local alfred-server + vite, rebuild frontend +
+# embed, rebuild backend, start both on :8080 and :5173. Use this
+# whenever you want both URLs to reflect the current source tree.
+# Pass FLAGS=--no-build to skip frontend rebuild (Go-only iteration).
+local-dev:
+	@./scripts/local-dev.sh $(FLAGS)
 
 # Stop local alfred-server + kubectl port-forwards. Leaves kind cluster alone.
 # Use `make e2e-teardown` for the kind cluster.
