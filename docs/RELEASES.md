@@ -7,6 +7,18 @@ Most-recent first.
 
 ---
 
+## v0.5 — Background Tasks Panel (2026-06-19)
+
+- **Background tasks panel**: a floating card in the workspace surfaces every live `Bash(run_in_background)` task, Monitor poller, and blocking subagent — grouped into "Background bash", "Subagents (blocking main Claude)", and "Recently finished". Open it from the `⚙ N Background tasks` header badge.
+- **Live task logs**: click a background task to stream its stdout live (fsnotify-backed), with a REST tail endpoint for on-demand inspection. Logs are capped to a 64KB tail.
+- **Survives restarts**: on server restart, background tasks are rebuilt from the session history and any task left mid-run is marked "killed when server restarted" instead of showing a phantom running state.
+- **Honest lifecycle**: the Claude CLI remains the sole owner of background-task lifecycle — Alfred is a pure observer. Tasks killed when a turn ends are shown gray as "(ended with main Claude)"; completed/stopped are green ✓; failed are red.
+- **Truthful turn stats**: the per-turn summary line now counts every background task, not just Monitor, and updates while the turn is still in flight.
+
+Plus the server-as-truth / refresh-parity refactor: every Claude-UI turn terminator now routes through the authoritative state machine, optimistic prompts reconcile against server-allocated turn IDs (multi-tab convergence), and zombie in-flight turns after a server/runner death are finalized as errored instead of spinning forever.
+
+---
+
 ## v0.4 — Tool-Lifecycle Transparency (2026-06-17)
 
 - **Monitor tasks visible**: dispatched Monitor tools now show their CLI-assigned `task_id`, live notification count, and a ✓ mark once the background polling finishes. No more guessing whether the polling is alive.
