@@ -300,6 +300,91 @@ func TestMergeTurns_SnapshotExtraToolDropped(t *testing.T) {
 	}
 }
 
+// TestLoader_RebuildBgTasksFromJsonl_MarksInProgressAsKilled checks that
+// a task_started event with no task_updated terminator results in a BgTask
+// with Status="killed" and LastEventSummary="killed when server restarted"
+// after Load (ADR-018).
+func TestLoader_RebuildBgTasksFromJsonl_MarksInProgressAsKilled(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := filepath.Join(dir, "transcript.jsonl")
+	// A minimal jsonl: one user turn followed by a system task_started event.
+	// No task_updated terminator — task is still "in_progress" at server death.
+	must(t, os.WriteFile(jsonl, []byte(
+		`{"type":"user","message":{"role":"user","content":"run it"},"uuid":"u1","timestamp":"2026-06-18T07:00:00.000Z"}`+"\n"+
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"starting"}]}}`+"\n"+
+			`{"type":"system","subtype":"task_started","task_id":"task1","tool_use_id":"tu_1","description":"bg job","task_type":"local_bash"}`+"\n",
+	), 0o600))
+
+	got, err := Load(filepath.Join(dir, "missing.json"), jsonl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bt, ok := got.BgTasks["task1"]
+	if !ok {
+		t.Fatalf("BgTask 'task1' not found; BgTasks=%+v", got.BgTasks)
+	}
+	if bt.Status != "killed" {
+		t.Errorf("Status: want 'killed', got %q", bt.Status)
+	}
+	if bt.LastEventSummary != "killed when server restarted" {
+		t.Errorf("LastEventSummary: want 'killed when server restarted', got %q", bt.LastEventSummary)
+	}
+	if bt.FinishedAt == nil {
+		t.Error("FinishedAt should be set after force-kill")
+	}
+}
+
+// TestLoader_RebuildBgTasksFromJsonl_PreservesCompletedStatus checks that
+// a task whose jsonl ends with task_updated(status=completed) is NOT
+// overwritten to "killed" — only in_progress tasks get force-killed.
+func TestLoader_RebuildBgTasksFromJsonl_PreservesCompletedStatus(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := filepath.Join(dir, "transcript.jsonl")
+	must(t, os.WriteFile(jsonl, []byte(
+		`{"type":"user","message":{"role":"user","content":"run it"},"uuid":"u1","timestamp":"2026-06-18T07:00:00.000Z"}`+"\n"+
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`+"\n"+
+			`{"type":"system","subtype":"task_started","task_id":"task2","tool_use_id":"tu_2","description":"bg job","task_type":"local_bash"}`+"\n"+
+			`{"type":"system","subtype":"task_updated","task_id":"task2","patch":{"status":"completed","end_time":1781706910801}}`+"\n",
+	), 0o600))
+
+	got, err := Load(filepath.Join(dir, "missing.json"), jsonl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bt, ok := got.BgTasks["task2"]
+	if !ok {
+		t.Fatalf("BgTask 'task2' not found; BgTasks=%+v", got.BgTasks)
+	}
+	if bt.Status != "completed" {
+		t.Errorf("Status: want 'completed', got %q (should not be overwritten to killed)", bt.Status)
+	}
+	if bt.FinishedAt == nil {
+		t.Error("FinishedAt should be set from task_updated end_time")
+	}
+}
+
+// TestLoader_RebuildBgTasks_HonorsSubagentsNoRebuildRule checks that even
+// when the jsonl contains SubagentStart/SubagentStop hook events, the
+// Subagents map is empty after Load (ADR-009).
+func TestLoader_RebuildBgTasks_HonorsSubagentsNoRebuildRule(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := filepath.Join(dir, "transcript.jsonl")
+	must(t, os.WriteFile(jsonl, []byte(
+		`{"type":"user","message":{"role":"user","content":"spawn subagent"},"uuid":"u1","timestamp":"2026-06-18T07:00:00.000Z"}`+"\n"+
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}`+"\n"+
+			`{"type":"system","subtype":"hook_started","hook_id":"h1","hook_event":"SubagentStart","hook_name":"subagent_hook"}`+"\n"+
+			`{"type":"system","subtype":"hook_response","hook_id":"h1","hook_event":"SubagentStop","exit_code":0,"outcome":"success"}`+"\n",
+	), 0o600))
+
+	got, err := Load(filepath.Join(dir, "missing.json"), jsonl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Subagents) != 0 {
+		t.Errorf("Subagents should be empty after Load (ADR-009); got %+v", got.Subagents)
+	}
+}
+
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	b, err := json.Marshal(v)

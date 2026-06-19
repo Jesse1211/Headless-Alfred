@@ -1,6 +1,7 @@
 package claudestate
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -49,6 +50,19 @@ func Load(snapshotPath, jsonlPath string) (ClaudeState, error) {
 		finalizeStaleTrailingTurn(state.Turns)
 	}
 	state.InFlight = computeInFlight(state.Turns)
+
+	// ADR-018: after the turns merge, replay task_started /
+	// task_notification / task_updated events from the jsonl to
+	// populate BgTasks. Hook events (SubagentStart / SubagentStop)
+	// are explicitly skipped per ADR-009 — Subagents are not rebuilt
+	// on restart. Any task still in_progress after replay is
+	// force-killed because the server (and its runner) that was
+	// watching the live task is dead.
+	if jsonlOK {
+		replayBgTasksFromJsonl(jsonlPath, &state)
+		forceKillInProgressBgTasks(&state)
+	}
+
 	return state, nil
 }
 
@@ -298,4 +312,93 @@ func mergeBlocks(jsonl, snap []AssistantBlock) []AssistantBlock {
 func computeInFlight(turns []ClaudeTurn) bool {
 	n := len(turns)
 	return n > 0 && !turns[n-1].Done
+}
+
+// replayBgTasksFromJsonl does a second pass over the jsonl file and
+// feeds every task_started / task_notification / task_updated system
+// event through the existing state reducers. Hook events
+// (hook_started / hook_response) are intentionally ignored so the
+// Subagents map stays empty per ADR-009.
+//
+// This uses the reducers via a temporary SessionState so we don't
+// re-implement the task lifecycle logic. Because Load is single-
+// threaded and we own the ClaudeState, we manipulate SessionState's
+// unexported `state` field directly (same package).
+func replayBgTasksFromJsonl(path string, state *ClaudeState) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	// Create a temporary SessionState seeded with our already-merged
+	// state so applyTaskStarted can link BgTaskID onto tool blocks.
+	ss := &SessionState{state: *state}
+
+	ts := time.Now().UTC() // best-effort timestamp for events lacking one
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1<<20), 4<<20)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var head struct {
+			Type    string `json:"type"`
+			Subtype string `json:"subtype"`
+		}
+		if err := json.Unmarshal(line, &head); err != nil {
+			continue
+		}
+		if head.Type != "system" {
+			continue
+		}
+		switch head.Subtype {
+		case "task_started":
+			var p TaskStartedPayload
+			if err := json.Unmarshal(line, &p); err != nil {
+				slog.Warn("claudestate.replayBgTasksFromJsonl: bad task_started", "err", err)
+				continue
+			}
+			ss.applyTaskStarted(&p, ts)
+		case "task_notification":
+			var p TaskNotificationPayload
+			if err := json.Unmarshal(line, &p); err != nil {
+				slog.Warn("claudestate.replayBgTasksFromJsonl: bad task_notification", "err", err)
+				continue
+			}
+			ss.applyTaskNotification(&p, ts)
+		case "task_updated":
+			var p TaskUpdatedPayload
+			if err := json.Unmarshal(line, &p); err != nil {
+				slog.Warn("claudestate.replayBgTasksFromJsonl: bad task_updated", "err", err)
+				continue
+			}
+			ss.applyTaskUpdated(&p, ts)
+		// hook_started and hook_response are silently skipped (ADR-009):
+		// Subagents are not rebuilt on restart.
+		}
+	}
+
+	// Copy the BgTasks (and the BgTaskID links on tool blocks) back
+	// into the ClaudeState the caller is building. Subagents stay empty.
+	state.BgTasks = ss.state.BgTasks
+	state.Turns = ss.state.Turns
+}
+
+// forceKillInProgressBgTasks iterates BgTasks and sets any entry still
+// in_progress to killed. After a server restart, the live task process
+// is dead (the CLI SIGKILLs its bg tasks on exit); lying to the UI
+// that it's still in_progress would be worse than the truth.
+func forceKillInProgressBgTasks(state *ClaudeState) {
+	now := time.Now().UTC()
+	for id, bt := range state.BgTasks {
+		if bt.Status == "in_progress" {
+			bt.Status = "killed"
+			bt.LastEventSummary = "killed when server restarted"
+			bt.FinishedAt = timePtr(now)
+			state.BgTasks[id] = bt
+		}
+	}
 }
