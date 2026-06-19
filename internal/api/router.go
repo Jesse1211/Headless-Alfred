@@ -107,6 +107,14 @@ func NewRouter(d Deps) http.Handler {
 				NewSessionMetaResolver(d.Manager),
 			).ServeHTTP)
 
+		// Bg-task log tail (T8). Serves the last N bytes of the CLI's
+		// per-task stdout file so the UI can display "View logs".
+		r.Get("/api/sessions/{sid}/bg-tasks/{taskId}/log",
+			GetBgTaskLogHandler(
+				NewSessionMetaResolver(d.Manager),
+				NewSessionCWDResolver(d.Manager),
+			).ServeHTTP)
+
 		// Recap (file content).
 		r.Get("/api/recaps", ListRecapsHandler(d.Manager.DataDir()).ServeHTTP)
 		r.Get("/api/recaps/{date}", GetRecapHandler(d.Manager.DataDir()).ServeHTTP)
