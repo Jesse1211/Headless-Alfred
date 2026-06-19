@@ -122,8 +122,17 @@ type ClaudeError struct {
 	Message string `json:"message"`
 }
 
-// BgTask tracks one CLI background task (Monitor's detached bash).
-// External-resource reference — not persisted.
+// BgTask tracks one Claude-CLI-spawned background task. Producers
+// observed: Monitor's detached bash, Bash(run_in_background=true).
+// Lifecycle is owned exclusively by the CLI: it spawns, monitors,
+// and SIGKILLs in-flight tasks when the parent `claude -p` exits
+// (status="killed"). alfred-server is the observer, not the parent.
+//
+// External-resource reference — not persisted in snapshot.json;
+// re-derived on alfred-server restart from .jsonl replay (every
+// in_progress task is forced to status="killed" with
+// LastEventSummary="killed when server restarted"). See ADR-001,
+// ADR-018, and DESIGN.md.
 type BgTask struct {
 	TaskID            string     `json:"taskId"`
 	ToolUseID         string     `json:"toolUseId"`
@@ -131,7 +140,7 @@ type BgTask struct {
 	TaskType          string     `json:"taskType"`
 	StartedAt         time.Time  `json:"startedAt"`
 	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
-	Status            string     `json:"status"` // "in_progress" | "completed" | "failed"
+	Status            string     `json:"status"` // "in_progress" | "completed" | "failed" | "killed" | "stopped"
 	LastEventSummary  string     `json:"lastEventSummary,omitempty"`
 	NotificationCount int        `json:"notificationCount"`
 }
