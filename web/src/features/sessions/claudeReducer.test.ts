@@ -391,3 +391,56 @@ describe('reduceClaudeMsg: tool_decision_applied', () => {
     if (block.kind === 'tool') expect(block.tool.decision).toBe('deny')
   })
 })
+
+describe('asTaskPayload discriminated union', () => {
+  it('task_started decodes snake_case wire to camelCase state', () => {
+    let s = emptyClaudeState()
+    s = applyClaudeEvent(s, 'task_started', {
+      task_id: 'wire_task',
+      tool_use_id: 'tu_wire',
+      description: 'from wire',
+      task_type: 'local_bash',
+    } as unknown, TS)
+    expect(s.bgTasks['wire_task']).toMatchObject({
+      taskId: 'wire_task',
+      toolUseId: 'tu_wire',
+      description: 'from wire',
+      taskType: 'local_bash',
+    })
+  })
+
+  it('task_notification preserves snake_case → camelCase status mapping', () => {
+    let s = emptyClaudeState()
+    s = applyClaudeEvent(s, 'task_started', {
+      task_id: 'wire_task',
+      tool_use_id: 'tu_wire',
+      description: '',
+      task_type: 'local_bash',
+    } as unknown, TS)
+    s = applyClaudeEvent(s, 'task_notification', {
+      task_id: 'wire_task',
+      tool_use_id: 'tu_wire',
+      status: 'completed',
+      summary: 'wire summary',
+    } as unknown, TS2)
+    expect(s.bgTasks['wire_task'].lastEventSummary).toBe('wire summary')
+    expect(s.bgTasks['wire_task'].status).toBe('completed')
+  })
+
+  it('task_updated decodes nested patch.end_time', () => {
+    let s = emptyClaudeState()
+    s = applyClaudeEvent(s, 'task_started', {
+      task_id: 'wire_task',
+      tool_use_id: 'tu_wire',
+      description: '',
+      task_type: 'local_bash',
+    } as unknown, TS)
+    s = applyClaudeEvent(s, 'task_updated', {
+      task_id: 'wire_task',
+      patch: { status: 'completed', end_time: 1781706910801 },
+    } as unknown, TS2)
+    expect(s.bgTasks['wire_task'].finishedAt).toBe(
+      new Date(1781706910801).toISOString(),
+    )
+  })
+})

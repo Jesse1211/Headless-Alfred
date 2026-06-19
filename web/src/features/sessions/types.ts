@@ -102,14 +102,27 @@ export interface ClaudeToolCall {
   // without lifecycle events — the elapsed display short-circuits.
   startedAt?: string
   finishedAt?: string
-  // For Monitor: the CLI's background task id, set when a matching
-  // task_started event arrives. Links this tool block to bgTasks[bgTaskId].
+  // CLI background-task id, set when a matching task_started event
+  // arrives. Links this tool block to bgTasks[bgTaskId]. Set for
+  // any tool that emits task_started (Monitor, Bash, future
+  // producers).
   bgTaskId?: string
 }
 
-// BgTask tracks one CLI-managed background task (today: Monitor's
-// detached bash process). Created from task_started, updated by
-// task_notification, terminated by task_updated.status=completed.
+// BgTask tracks one Claude-CLI-spawned background task.
+// Producers observed: Monitor's detached bash,
+// Bash(run_in_background=true). Lifecycle is owned exclusively by
+// the CLI: it spawns, monitors, and SIGKILLs in-flight tasks when
+// the parent `claude -p` exits (status="killed"). alfred-server
+// is the observer, not the parent.
+//
+// External-resource reference — not persisted in snapshot.json;
+// re-derived on alfred-server restart from .jsonl replay (every
+// in_progress task is forced to status="killed when server restarted").
+// See ADR-001, ADR-018, and DESIGN.md.
+export const BG_TASK_TOOL_NAMES = ['Monitor', 'Bash'] as const
+export type BgTaskToolName = (typeof BG_TASK_TOOL_NAMES)[number]
+
 export interface BgTask {
   taskId: string
   toolUseId: string
@@ -117,7 +130,7 @@ export interface BgTask {
   taskType: string
   startedAt: string
   finishedAt?: string
-  status: 'in_progress' | 'completed' | 'failed'
+  status: 'in_progress' | 'completed' | 'failed' | 'killed' | 'stopped'
   lastEventSummary?: string
   notificationCount: number
 }
