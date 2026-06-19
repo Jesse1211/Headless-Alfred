@@ -193,6 +193,11 @@ export interface ClaudeState {
   // respectively. Both are session-scoped; cleared on claude_exited.
   bgTasks: Record<string, BgTask>
   subagents: Record<string, SubagentEntry>
+  // Live stdout tail for background tasks. Keyed by taskId; value is
+  // decoded text (UTF-8 via atob). Capped at 64KB tail: bytes over
+  // the cap are head-trimmed so the most-recent output is always
+  // preserved. Populated by bg_task_stdout_chunk WS frames.
+  bgTaskLogs: Record<string, string>
 }
 
 export interface ClaudeToolApprovalRequest {
@@ -247,5 +252,5 @@ export function emptyPerSessionState(): PerSessionState {
 }
 
 export function emptyClaudeState(): ClaudeState {
-  return { turns: [], inFlight: false, pending: [], pendingQuestions: [], bgTasks: {}, subagents: {} }
+  return { turns: [], inFlight: false, pending: [], pendingQuestions: [], bgTasks: {}, subagents: {}, bgTaskLogs: {} }
 }

@@ -392,6 +392,58 @@ describe('reduceClaudeMsg: tool_decision_applied', () => {
   })
 })
 
+describe('bg_task_stdout_chunk: log buffer', () => {
+  it('bg_task_stdout_chunk appends decoded bytes to per-task buffer', () => {
+    let s = emptyClaudeState()
+    s = applyClaudeEvent(s, 'bg_task_stdout_chunk', {
+      taskId: 't1',
+      bytes: btoa('hello'),
+    }, TS)
+    expect(s.bgTaskLogs['t1']).toBe('hello')
+  })
+
+  it('bg_task_stdout_chunk caps buffer at 64KB', () => {
+    let s = emptyClaudeState()
+    const sixtyFourKB = 65536
+    // Build a filler: a distinguishable 8-byte prefix then the rest as 'A's.
+    // Total = 64KB exactly.
+    const prefix = 'PREFIXXX' // 8 bytes
+    const filler = prefix + 'A'.repeat(sixtyFourKB - prefix.length)
+    s = applyClaudeEvent(s, 'bg_task_stdout_chunk', {
+      taskId: 't1',
+      bytes: btoa(filler),
+    }, TS)
+    expect(s.bgTaskLogs['t1'].length).toBe(sixtyFourKB)
+    expect(s.bgTaskLogs['t1'].startsWith(prefix)).toBe(true) // prefix still present
+    // Now push 8 more bytes — total 64KB+8 bytes triggers head-trim.
+    const extra = 'BBBBBBBB' // 8 bytes
+    s = applyClaudeEvent(s, 'bg_task_stdout_chunk', {
+      taskId: 't1',
+      bytes: btoa(extra),
+    }, TS)
+    expect(s.bgTaskLogs['t1'].length).toBe(sixtyFourKB)
+    // New tail has the extra 'B's
+    expect(s.bgTaskLogs['t1'].endsWith(extra)).toBe(true)
+    // Original 8-byte prefix was head-trimmed away
+    expect(s.bgTaskLogs['t1'].startsWith(prefix)).toBe(false)
+  })
+
+  it('task_updated.status=killed lands in bgTasks.status', () => {
+    let s = emptyClaudeState()
+    s = applyClaudeEvent(s, 'task_started', {
+      task_id: 'task_k',
+      tool_use_id: 'tu_k',
+      description: 'bg kill test',
+      task_type: 'local_bash',
+    }, TS)
+    s = applyClaudeEvent(s, 'task_updated', {
+      task_id: 'task_k',
+      patch: { status: 'killed', end_time: 1781706910801 },
+    }, TS2)
+    expect(s.bgTasks['task_k'].status).toBe('killed')
+  })
+})
+
 describe('asTaskPayload discriminated union', () => {
   it('task_started decodes snake_case wire to camelCase state', () => {
     let s = emptyClaudeState()

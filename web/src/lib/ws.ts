@@ -83,6 +83,7 @@ export type ServerMsg =
       decision: 'allow' | 'deny'
       timestamp?: string
     }
+  | { type: 'bg_task_stdout_chunk'; payload: { taskId: string; bytes: string; status?: 'watcher_unavailable' } }
 
 export type ClientMsg =
   | { type: 'run'; sessionID: string; command: string }

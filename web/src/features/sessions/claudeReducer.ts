@@ -165,6 +165,34 @@ export function reduceClaudeMsg(
           blocks: patchToolBlock(t.blocks, m.toolUseId, (tool) => ({ ...tool, decision: m.decision })),
         })),
       }))
+    case 'bg_task_stdout_chunk': {
+      // Append base64-decoded bytes to the per-task log buffer, capped
+      // at 64 KB tail. The bytes field MAY be empty (status===
+      // "watcher_unavailable"); atob("") === "" which is harmless.
+      const { taskId, bytes } = m.payload
+      const decoded = bytes ? atob(bytes) : ''
+      // We need a sessionID to route into mutateClaude — this frame
+      // has no sessionID on the wire; iterate all sessions and update
+      // any whose bgTasks map contains this taskId.
+      let next = prev
+      for (const [sid, perSess] of prev) {
+        const c = perSess.claude
+        if (!c || !c.bgTasks[taskId]) continue
+        const existing = c.bgTaskLogs?.[taskId] ?? ''
+        const appended = existing + decoded
+        const BUF_CAP = 65536
+        const newBuf = appended.length > BUF_CAP ? appended.slice(-BUF_CAP) : appended
+        if (next === prev) next = new Map(prev)
+        next.set(sid, {
+          ...perSess,
+          claude: {
+            ...c,
+            bgTaskLogs: { ...c.bgTaskLogs, [taskId]: newBuf },
+          },
+        })
+      }
+      return next === prev ? null : next
+    }
     default:
       return null
   }
@@ -383,8 +411,14 @@ export function applyClaudeEvent(
       const p = asTaskPayload('task_updated', payload)
       if (!p.taskId || !prev.bgTasks[p.taskId]) return prev
       const cur = prev.bgTasks[p.taskId]
-      if (p.status !== 'completed' && p.status !== 'failed') return prev
-      const status: 'completed' | 'failed' = p.status
+      // Accept all terminal statuses from the 5-value enum (ADR-016).
+      if (
+        p.status !== 'completed' &&
+        p.status !== 'failed' &&
+        p.status !== 'killed' &&
+        p.status !== 'stopped'
+      ) return prev
+      const status = p.status as 'completed' | 'failed' | 'killed' | 'stopped'
       const bgTasks = {
         ...prev.bgTasks,
         [p.taskId]: {
@@ -396,6 +430,21 @@ export function applyClaudeEvent(
         },
       }
       return { ...prev, bgTasks }
+    }
+    case 'bg_task_stdout_chunk': {
+      // Append base64-decoded bytes to the per-task log buffer, capped
+      // at 64 KB tail. bytes MAY be empty (status==="watcher_unavailable");
+      // atob("") === "" which is harmless.
+      const p = asBgTaskStdoutChunk(payload)
+      const decoded = p.bytes ? atob(p.bytes) : ''
+      const existing = prev.bgTaskLogs?.[p.taskId] ?? ''
+      const appended = existing + decoded
+      const BUF_CAP = 65536
+      const newBuf = appended.length > BUF_CAP ? appended.slice(-BUF_CAP) : appended
+      return {
+        ...prev,
+        bgTaskLogs: { ...prev.bgTaskLogs, [p.taskId]: newBuf },
+      }
     }
     case 'hook_started': {
       const p = asHookStarted(payload)
@@ -723,5 +772,25 @@ function asHookResponse(
     hookEvent: p?.hook_event ?? '',
     exitCode: p?.exit_code ?? 0,
     outcome: p?.outcome ?? '',
+  }
+}
+
+function asBgTaskStdoutChunk(
+  payload: unknown,
+): { taskId: string; bytes: string; status?: 'watcher_unavailable' } {
+  // Payload arrives from applyClaudeEvent (camelCase taskId/bytes) when
+  // the frame is re-routed through the claude_event path. The WS-level
+  // handler in reduceClaudeMsg reads directly from m.payload (already
+  // typed). Keep both snake_case and camelCase to be defensive.
+  const p = payload as {
+    taskId?: string
+    task_id?: string
+    bytes?: string
+    status?: string
+  } | null
+  return {
+    taskId: p?.taskId ?? p?.task_id ?? '',
+    bytes: p?.bytes ?? '',
+    status: p?.status === 'watcher_unavailable' ? 'watcher_unavailable' : undefined,
   }
 }
