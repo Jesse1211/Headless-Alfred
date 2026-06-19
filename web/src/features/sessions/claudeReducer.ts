@@ -359,7 +359,7 @@ export function applyClaudeEvent(
       return { ...prev, bgTasks, turns: linkedTurns }
     }
     case 'task_notification': {
-      const p = asTaskNotification(payload)
+      const p = asTaskPayload('task_notification', payload)
       if (!p.taskId || !prev.bgTasks[p.taskId]) return prev
       const cur = prev.bgTasks[p.taskId]
       const bgTasks = {
@@ -693,22 +693,6 @@ function asTaskPayload(kind: TaskPayload['kind'], payload: unknown): TaskPayload
   }
 }
 
-function asTaskNotification(
-  payload: unknown,
-): { taskId: string; toolUseId: string; status: string; summary: string } {
-  const p = payload as {
-    task_id?: string
-    tool_use_id?: string
-    status?: string
-    summary?: string
-  } | null
-  return {
-    taskId: p?.task_id ?? '',
-    toolUseId: p?.tool_use_id ?? '',
-    status: p?.status ?? '',
-    summary: p?.summary ?? '',
-  }
-}
 
 function asTaskUpdated(
   payload: unknown,
