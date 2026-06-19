@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -125,6 +126,20 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 	})
 
 	write := guardedWriter(conn.WriteJSON, conn.Close)
+
+	// Per-WS bg-task log subscriptions (fsnotify watchers).
+	// Cleaned up on WS disconnect via bgLogSubs.closeAll() in the defer below.
+	bgLogSubs := newBgTaskLogSubs()
+	// connCtx is cancelled when the WS connection closes (via the stop channel).
+	// Goroutines spawned by handleSubscribeBgTaskLog watch ctx.Done() so they
+	// exit automatically on disconnect even without an explicit unsubscribe.
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
+	defer bgLogSubs.closeAll()
+
+	// Resolvers for bg-task log subscriptions.
+	bgMeta := NewSessionMetaResolver(m)
+	bgCWD := NewSessionCWDResolver(m)
 
 	sessions := m.ListAll()
 	subs := make([]NamedSubscriber, 0, len(sessions))
@@ -316,7 +331,7 @@ func runClientLoop(conn *websocket.Conn, m *session.Manager, bridge *claude.Brid
 			if !ok {
 				return
 			}
-			handleInbound(msg, m, bridge, runner, claudeEvents, claudeRunStates, csMgr, write)
+			handleInbound(msg, m, bridge, runner, claudeEvents, claudeRunStates, csMgr, write, connCtx, bgLogSubs, bgMeta, bgCWD)
 		case ev, ok := <-events:
 			if !ok {
 				return
@@ -516,7 +531,20 @@ type namedRename struct {
 	Name string
 }
 
-func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner *claude.Runner, claudeEvents chan<- claudeEventEnvelope, runStates *claudeRunStateMap, csMgr *claudestate.SessionManager, write func(OutMsg) error) {
+func handleInbound(
+	msg InMsg,
+	m *session.Manager,
+	bridge *claude.Bridge,
+	runner *claude.Runner,
+	claudeEvents chan<- claudeEventEnvelope,
+	runStates *claudeRunStateMap,
+	csMgr *claudestate.SessionManager,
+	write func(OutMsg) error,
+	connCtx context.Context,
+	bgLogSubs *bgTaskLogSubs,
+	bgMeta MetaResolver,
+	bgCWD CWDResolver,
+) {
 	switch msg.Type {
 	case "ping":
 		_ = write(OutMsg{Type: "pong"})
@@ -546,6 +574,10 @@ func handleInbound(msg InMsg, m *session.Manager, bridge *claude.Bridge, runner 
 		if st, ok := runStates.get(msg.SessionID); ok && st.stop != nil {
 			st.stop()
 		}
+	case "subscribe_bg_task_log":
+		handleSubscribeBgTaskLog(connCtx, SubscribeBgTaskLogPayload{TaskID: msg.TaskID}, bgLogSubs, write, msg.SessionID, bgMeta, bgCWD)
+	case "unsubscribe_bg_task_log":
+		handleUnsubscribeBgTaskLog(UnsubscribeBgTaskLogPayload{TaskID: msg.TaskID}, bgLogSubs)
 	default:
 		_ = write(OutMsg{Type: "error", Code: "bad_type", Message: "unknown message type"})
 	}

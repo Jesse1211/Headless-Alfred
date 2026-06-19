@@ -3,6 +3,34 @@ package api
 // Inbound and Outbound WebSocket message shapes. Exported because the
 // e2e test suite reuses them (no point hand-maintaining two copies).
 
+// SubscribeBgTaskLogPayload is the payload for the inbound
+// "subscribe_bg_task_log" WS frame. The client sends this after
+// mounting the log-view UI to start receiving live appended bytes.
+type SubscribeBgTaskLogPayload struct {
+	TaskID string `json:"taskId"`
+}
+
+// UnsubscribeBgTaskLogPayload is the payload for the inbound
+// "unsubscribe_bg_task_log" WS frame. Sent when the user closes the
+// log view without closing the full WS connection.
+type UnsubscribeBgTaskLogPayload struct {
+	TaskID string `json:"taskId"`
+}
+
+// BgTaskStdoutChunkPayload is the payload for the outbound
+// "bg_task_stdout_chunk" WS frame. Bytes is base64-encoded raw output.
+// Status is set only when the server cannot establish a watcher
+// ("watcher_unavailable"); when Status is set, Bytes is empty.
+type BgTaskStdoutChunkPayload struct {
+	TaskID string `json:"taskId"`
+	Bytes  string `json:"bytes,omitempty"`            // base64-encoded raw bytes
+	Status string `json:"status,omitempty"`           // optional: "watcher_unavailable"
+}
+
+// TypeBgTaskStdoutChunk is the WS frame Type for live stdout chunks
+// streamed from an active bg-task's output file.
+const TypeBgTaskStdoutChunk = "bg_task_stdout_chunk"
+
 // InMsg is a client → server WS frame.
 //
 // Types added incrementally across rollouts:
@@ -10,6 +38,7 @@ package api
 //   - V0 claude (TUI):   "enter_claude", "exit_claude", "stdin"
 //   - V1 claude (UI):    "claude_prompt", "tool_decision", "interrupt"
 //   - Renderer field on "enter_claude"
+//   - V2 bg-task panel:  "subscribe_bg_task_log", "unsubscribe_bg_task_log"
 type InMsg struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID,omitempty"`
@@ -41,6 +70,10 @@ type InMsg struct {
 	// pair the optimistic placeholder turn with the server-side turn
 	// the broadcast turn_started frame announces. Opaque to the server.
 	ClientNonce string `json:"clientNonce,omitempty"`
+
+	// TaskID carries the bg-task identifier on subscribe_bg_task_log
+	// and unsubscribe_bg_task_log frames.
+	TaskID string `json:"taskId,omitempty"`
 }
 
 // OutMsg is a server → client WS frame.
