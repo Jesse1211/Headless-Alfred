@@ -336,7 +336,7 @@ export function applyClaudeEvent(
       return { ...prev, turns, inFlight: false }
     }
     case 'task_started': {
-      const p = asTaskStarted(payload)
+      const p = asTaskPayload('task_started', payload)
       if (!p.taskId) return prev
       const bgTasks = {
         ...prev.bgTasks,
@@ -625,20 +625,72 @@ function asResult(
   }
 }
 
-function asTaskStarted(
-  payload: unknown,
-): { taskId: string; toolUseId: string; description: string; taskType: string } {
+type TaskPayloadStarted = {
+  kind: 'task_started'
+  taskId: string
+  toolUseId: string
+  description: string
+  taskType: string
+}
+type TaskPayloadNotification = {
+  kind: 'task_notification'
+  taskId: string
+  toolUseId: string
+  status: string
+  summary: string
+}
+type TaskPayloadUpdated = {
+  kind: 'task_updated'
+  taskId: string
+  status: string
+  endTime: number
+}
+type TaskPayload = TaskPayloadStarted | TaskPayloadNotification | TaskPayloadUpdated
+
+function asTaskPayload(kind: 'task_started', payload: unknown): TaskPayloadStarted
+function asTaskPayload(kind: 'task_notification', payload: unknown): TaskPayloadNotification
+function asTaskPayload(kind: 'task_updated', payload: unknown): TaskPayloadUpdated
+function asTaskPayload(kind: TaskPayload['kind'], payload: unknown): TaskPayload {
+  if (kind === 'task_started') {
+    const p = payload as {
+      task_id?: string
+      tool_use_id?: string
+      description?: string
+      task_type?: string
+    } | null
+    return {
+      kind: 'task_started',
+      taskId: p?.task_id ?? '',
+      toolUseId: p?.tool_use_id ?? '',
+      description: p?.description ?? '',
+      taskType: p?.task_type ?? '',
+    }
+  }
+  if (kind === 'task_notification') {
+    const p = payload as {
+      task_id?: string
+      tool_use_id?: string
+      status?: string
+      summary?: string
+    } | null
+    return {
+      kind: 'task_notification',
+      taskId: p?.task_id ?? '',
+      toolUseId: p?.tool_use_id ?? '',
+      status: p?.status ?? '',
+      summary: p?.summary ?? '',
+    }
+  }
+  // kind === 'task_updated'
   const p = payload as {
     task_id?: string
-    tool_use_id?: string
-    description?: string
-    task_type?: string
+    patch?: { status?: string; end_time?: number }
   } | null
   return {
+    kind: 'task_updated',
     taskId: p?.task_id ?? '',
-    toolUseId: p?.tool_use_id ?? '',
-    description: p?.description ?? '',
-    taskType: p?.task_type ?? '',
+    status: p?.patch?.status ?? '',
+    endTime: p?.patch?.end_time ?? 0,
   }
 }
 
