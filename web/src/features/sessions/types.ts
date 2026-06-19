@@ -118,8 +118,8 @@ export interface ClaudeToolCall {
 //
 // External-resource reference — not persisted in snapshot.json;
 // re-derived on alfred-server restart from .jsonl replay (every
-// in_progress task is forced to status="killed when server restarted").
-// See ADR-001, ADR-018, and DESIGN.md.
+// in_progress task is forced to status="killed"). See ADR-001,
+// ADR-018, and DESIGN.md.
 export const BG_TASK_TOOL_NAMES = ['Monitor', 'Bash'] as const
 export type BgTaskToolName = (typeof BG_TASK_TOOL_NAMES)[number]
 
