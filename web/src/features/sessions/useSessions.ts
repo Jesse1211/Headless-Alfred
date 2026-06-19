@@ -11,6 +11,7 @@ import {
   stopCommand as apiStopCommand,
   createRecapSession as apiCreateRecapSession,
   getSession as apiGetSession,
+  getBgTaskLogTail,
 } from '../../lib/api'
 import {
   PerSessionState, CompletedMsg, RunningCmd,
@@ -422,6 +423,36 @@ export function useSessions(token: string) {
     [socket],
   )
 
+  // subscribeBgTaskLog / unsubscribeBgTaskLog send WS frames to the
+  // server to start/stop streaming bg_task_stdout_chunk frames for the
+  // given task. The session's WS connection is the one established for
+  // the current token; the server resolves which session to scope the
+  // subscription to via the WS connection's own state (the `sessionID`
+  // field in the frame is advisory — server uses its own context).
+  const subscribeBgTaskLog = useCallback(
+    (sid: string, taskId: string) => {
+      void sid // sid is provided so callers can pass the current session;
+      // the WS is singleton so we just forward the task ID.
+      socket.send({ type: 'subscribe_bg_task_log', payload: { taskId } })
+    },
+    [socket],
+  )
+
+  const unsubscribeBgTaskLog = useCallback(
+    (sid: string, taskId: string) => {
+      void sid
+      socket.send({ type: 'unsubscribe_bg_task_log', payload: { taskId } })
+    },
+    [socket],
+  )
+
+  const fetchBgTaskLogTail = useCallback(
+    (sid: string, taskId: string, tail?: number) => {
+      return getBgTaskLogTail(sid, taskId, tail)
+    },
+    [],
+  )
+
   const clearError = useCallback(() => setLastError(null), [])
 
   const createOrEnterRecap = useCallback(async () => {
@@ -462,6 +493,7 @@ export function useSessions(token: string) {
     lastError, clearError,
     recapFetchCounter, createOrEnterRecap, setSessionMeta,
     diskUsage,
+    subscribeBgTaskLog, unsubscribeBgTaskLog, fetchBgTaskLogTail,
   }
 }
 

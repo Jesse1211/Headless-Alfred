@@ -338,6 +338,28 @@ export async function getRecap(date: string): Promise<string> {
   return res.text()
 }
 
+// getBgTaskLogTail fetches the tail of a background task's log file.
+// Returns either { bytes, size, truncated } on success or
+// { status: 'log_unavailable' } when no log file exists.
+export async function getBgTaskLogTail(
+  sessionID: string,
+  taskId: string,
+  tail?: number,
+): Promise<{ bytes: string; size: number; truncated: boolean } | { status: 'log_unavailable' }> {
+  const qs = tail != null ? `?tail=${encodeURIComponent(String(tail))}` : ''
+  try {
+    const res = await request(
+      `/api/sessions/${encodeURIComponent(sessionID)}/bg-tasks/${encodeURIComponent(taskId)}/log${qs}`,
+    )
+    return res.json()
+  } catch (e: any) {
+    if (e?.status === 404) {
+      return { status: 'log_unavailable' }
+    }
+    throw e
+  }
+}
+
 // getNote fetches the notes body for the session plus the resolved
 // on-disk path. Returns '' for 404 (file never created) — the empty
 // state in the UI — and the path is still set so the UI can show it.

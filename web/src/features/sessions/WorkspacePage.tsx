@@ -16,6 +16,7 @@ import { ClaudeTerminal } from '../claude/ClaudeTerminal'
 import { RightRail } from './RightRail'
 import { RecapSidebar } from './RecapSidebar'
 import { ClaudeChatView } from './ClaudeChatView'
+import { BackgroundTasksPanel } from './BackgroundTasksPanel'
 import { StartClaudeDialog } from './StartClaudeDialog'
 import ChatStream from '../terminal/ChatStream'
 import CommandInput from '../terminal/CommandInput'
@@ -91,6 +92,24 @@ export function WorkspacePage({ token, onLogout }: Props) {
     }
   }, [])
 
+  // Background tasks panel open/close state. Persisted to localStorage per
+  // ADR-017 (key: 'alfred_bg_tasks_panel_open', value: 'true'/'false').
+  // Global, not per-session — matches the pattern of alfred_right_sidebar_hidden.
+  const [bgTasksOpen, setBgTasksOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('alfred_bg_tasks_panel_open') === 'true'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('alfred_bg_tasks_panel_open', String(bgTasksOpen))
+    } catch {
+      // localStorage unavailable
+    }
+  }, [bgTasksOpen])
+
   const selected = s.selectedSessionID
     ? s.sessions.find((x) => x.id === s.selectedSessionID)
     : null
@@ -150,6 +169,17 @@ export function WorkspacePage({ token, onLogout }: Props) {
   const gridTemplateColumns = sidebarShown
     ? `${leftWidthPx}px 1fr ${rightSidebar.width}px`
     : `${leftWidthPx}px 1fr`
+
+  // Badge count: running bg tasks + active subagents (subagent has no finishedAt
+  // AND a turn is in flight). Mirrors the same N formula used inside BackgroundTasksPanel.
+  const claudeState = ps?.claude
+  const bgTaskRunningCount = claudeState
+    ? Object.values(claudeState.bgTasks).filter((t) => t.status === 'in_progress').length
+    : 0
+  const subagentActiveCount = claudeState?.inFlight
+    ? Object.values(claudeState.subagents).filter((sa) => !sa.finishedAt).length
+    : 0
+  const bgTasksBadgeN = bgTaskRunningCount + subagentActiveCount
 
   return (
     <div
@@ -276,6 +306,18 @@ export function WorkspacePage({ token, onLogout }: Props) {
             )}
           </div>
           <div className="workspace__header-right">
+            {selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && (
+              <button
+                type="button"
+                className={`workspace__bg-tasks-btn ${bgTasksBadgeN > 0 ? 'is-active' : 'is-idle'}`}
+                disabled={bgTasksBadgeN === 0}
+                onClick={bgTasksBadgeN > 0 ? () => setBgTasksOpen((v) => !v) : undefined}
+                aria-label={`${bgTasksBadgeN} Background tasks`}
+                data-tooltip={bgTasksBadgeN > 0 ? 'Toggle background tasks panel' : 'No active background tasks'}
+              >
+                ⚙ {bgTasksBadgeN} Background tasks
+              </button>
+            )}
             {selected && ps && !isRecap && (
               <button
                 type="button"
@@ -293,6 +335,24 @@ export function WorkspacePage({ token, onLogout }: Props) {
             )}
           </div>
         </header>
+
+        {selected && ps && ps.mode === 'claude' && ps.renderer === 'ui' && bgTasksOpen && (
+          <div className="workspace__bg-tasks-panel-anchor">
+            <BackgroundTasksPanel
+              bgTasks={claudeState?.bgTasks ?? {}}
+              subagents={claudeState?.subagents ?? {}}
+              inFlight={claudeState?.inFlight ?? false}
+              bgTaskLogs={claudeState?.bgTaskLogs ?? {}}
+              open={bgTasksOpen}
+              onToggle={() => setBgTasksOpen((v) => !v)}
+              connState={s.connState === 'reconnecting' ? 'connecting' : s.connState}
+              turnsLoaded={claudeState?.turnsLoaded ?? false}
+              onSubscribeLog={(taskId) => s.subscribeBgTaskLog(selected.id, taskId)}
+              onUnsubscribeLog={(taskId) => s.unsubscribeBgTaskLog(selected.id, taskId)}
+              onFetchLogTail={(taskId) => s.fetchBgTaskLogTail(selected.id, taskId)}
+            />
+          </div>
+        )}
 
         <DiskUsageBanner usage={s.diskUsage} />
 

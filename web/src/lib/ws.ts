@@ -94,6 +94,9 @@ export type ClientMsg =
   | { type: 'tool_decision'; sessionID: string; toolUseId: string; decision: 'allow' | 'deny'; reason?: string }
   | { type: 'interrupt'; sessionID: string }
   | { type: 'ping' }
+  // Background task log streaming (ADR-020).
+  | { type: 'subscribe_bg_task_log'; payload: { taskId: string } }
+  | { type: 'unsubscribe_bg_task_log'; payload: { taskId: string } }
 
 export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed'
 
