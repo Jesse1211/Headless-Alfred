@@ -380,7 +380,7 @@ export function applyClaudeEvent(
       return { ...prev, bgTasks }
     }
     case 'task_updated': {
-      const p = asTaskUpdated(payload)
+      const p = asTaskPayload('task_updated', payload)
       if (!p.taskId || !prev.bgTasks[p.taskId]) return prev
       const cur = prev.bgTasks[p.taskId]
       if (p.status !== 'completed' && p.status !== 'failed') return prev
@@ -693,20 +693,6 @@ function asTaskPayload(kind: TaskPayload['kind'], payload: unknown): TaskPayload
   }
 }
 
-
-function asTaskUpdated(
-  payload: unknown,
-): { taskId: string; status: string; endTime: number } {
-  const p = payload as {
-    task_id?: string
-    patch?: { status?: string; end_time?: number }
-  } | null
-  return {
-    taskId: p?.task_id ?? '',
-    status: p?.patch?.status ?? '',
-    endTime: p?.patch?.end_time ?? 0,
-  }
-}
 
 function asHookStarted(
   payload: unknown,
