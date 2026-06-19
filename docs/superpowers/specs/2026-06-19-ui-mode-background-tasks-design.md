@@ -217,14 +217,21 @@ For each alive session:
    - claudeuiwindow.ResumeOpenTurns(sid)
      - tmux list-windows -t <sid> → does claude-ui exist?
      - no → user never used UI mode; nothing to resume
-     - yes → for each <dataDir>/sessions/<sid>/claude-ui/turn-*.jsonl:
-       - if matching <turnID>.done file does NOT exist:
-         - StreamReader.Resume reads from persisted offset to EOF
-         - re-emits Apply for any bytes written since shutdown
-         - if no __ALFRED_DONE sentinel observed in pipe-pane buffer:
-           call finalizeStaleTrailingTurn (per invariant #4):
-           Done=true, IsError=true, FinishedAt=now,
-           "Server restarted while this turn was running"
+     - yes:
+       - **Re-issue pipe-pane** to restore the sentinel-capture stream.
+         alfred-server's prior pipe-pane writer died with the process;
+         tmux stops piping when the writer exits. Without this step,
+         the next __ALFRED_DONE sentinel and all subsequent bg-task
+         stdout chunks would be lost. (See CONTEXT.md trap re:
+         pipe-pane + restart, also applies here.)
+       - For each <dataDir>/sessions/<sid>/claude-ui/turn-*.jsonl:
+         - if matching <turnID>.done file does NOT exist:
+           - StreamReader.Resume reads from persisted offset to EOF
+           - re-emits Apply for any bytes written since shutdown
+           - if no __ALFRED_DONE sentinel observed in pipe-pane buffer:
+             call finalizeStaleTrailingTurn (per invariant #4):
+             Done=true, IsError=true, FinishedAt=now,
+             "Server restarted while this turn was running"
    - claudestate.Loader.RebuildBgTasksFromJsonlAndTmux(sid)
      - replay every task_* event in every <turnID>.jsonl → candidate set
      - tmux pane probe: resolve the claude-ui pane's bash PID via
@@ -237,6 +244,21 @@ For each alive session:
        - in live set → BgTasks[id] = {…replayed…, status: "in_progress"}
        - not in live set → BgTasks[id] = {…replayed…, status: "exited",
          lastEventSummary: "(exited during server downtime)"}
+   - **Subagents map is NOT rebuilt.** Subagents require a live main
+     Claude per CLI contract (Task tool is synchronous). After
+     alfred-server restart, every main Claude that was hosting a
+     pending subagent has died, so the subagents are gone too.
+     `Loader.Load` leaves `Subagents` as the empty map. Any historical
+     SubagentStart/Stop events in the .jsonl are not used to seed it.
+
+**Rebuild cost model.** RebuildBgTasksFromJsonlAndTmux runs **exactly
+once per session per alfred-server lifetime**, inside Loader.Load. It
+does NOT run on every `/claude-state` request — `SessionManager.
+GetOrLoad`'s in-memory cache + singleflight guard means subsequent
+hydrate requests for the same session return the same in-memory
+`SessionState.BgTasks`, mutated only by live WS events (`task_started`,
+`task_notification`, `task_updated`, `bg_task_stopped`). Page refreshes,
+WS reconnects, and concurrent client opens all hit the cached state.
    ↓
 WS clients reconnect (existing wsEpoch path) → /claude-state hydrate
 returns the rebuilt BgTasks. Refresh parity holds.
@@ -260,8 +282,22 @@ sidebar-toggle icon:
                           (N=0 → disabled, gray)
 ```
 
-Click toggles the flyout panel. The open state persists per session via
-`localStorage['alfred_bg_tasks_panel:<sid>']`.
+While `claude.turnsLoaded === false` (the existing hydrate gate from
+the refresh-parity spec), the badge renders as `⚙ …` and is
+non-interactive; the panel, if open, shows a `Loading…` placeholder
+instead of an empty list. This prevents the visible flicker of "I had
+3 tasks → I have 0 tasks → I have 3 tasks" during the ~100 ms between
+React mount and the `/claude-state` response. Once `turnsLoaded`
+flips to true (existing `useClaudeStateLoader` machinery), the badge
+and panel switch to the live count.
+
+Click toggles the flyout panel. The open state persists **globally**
+(not per session) via `localStorage['alfred_bg_tasks_panel_open']`,
+matching the pattern of `alfred_right_sidebar_hidden` /
+`alfred_left_sidebar_collapsed`. Rationale: per-session keys would
+leak forever (no cleanup hook on session delete); global state is
+simpler and the user expectation "I closed this panel; it stays
+closed" is more important than per-session memory.
 
 ### Panel
 
@@ -300,20 +336,44 @@ the task's PID via tmux pane introspection (PanePID + child walk) and
 sends SIGINT first; SIGKILL after 5s if still alive. The result is a
 `bg_task_stopped` frame.
 
+Stop button is enabled only when `bgTask.status === 'in_progress'`.
+For tasks rebuilt as `exited` (server-restart recovery), the button
+is hidden — there is no process to kill.
+
 View logs button opens an inline `<pre>` showing the tail of
 `<dataDir>/sessions/<sid>/claude-ui/bgtasks/<taskId>.log`.
 
-The log file is captured by intercepting the Bash tool invocation at
-the bridge layer: the dispatcher, when allowing a `Bash(run_in_background=true)`
-call, mutates the `tool_input.command` to wrap it as
-`{ <original-command>; } >> <log-path> 2>&1` before letting the CLI
-execute it. tool_use_id is known at this point (from PreToolUse hook
-payload), so the log path is deterministic. The CLI fork still happens
-through the CLI itself; only the command text is rewritten.
+Two candidate capture mechanisms; one is chosen by the spike (see
+Spike section, item 2):
 
-Alternative (rejected): tmux pipe-pane filtering by tool_use_id. Rejected
-because pipe-pane captures the whole pane, mixing all background bashes'
-output into one stream; demuxing is brittle.
+- **Preferred — `updatedInput` rewrite at the bridge.** The PreToolUse
+  hook response supports an `updatedInput` field per Anthropic's hook
+  protocol. When dispatching a `Bash(run_in_background=true)` decision,
+  the bridge returns the allow decision along with
+  `updatedInput.command = "{ <original-command>; } >> <log-path> 2>&1"`.
+  tool_use_id is in the hook payload, so the log path is deterministic.
+  Requires confirmation that the installed Claude CLI honors
+  `updatedInput` for the Bash tool (spike item 2).
+
+- **Fallback — pipe-pane demux.** If the CLI does not honor
+  `updatedInput`, capture the whole claude-ui pane via pipe-pane and
+  demultiplex offline by correlating chunks with `task_started`
+  events' time windows. Brittle but works as a degraded mode. The
+  panel surfaces a one-time warning if this path is active.
+
+Frontend retrieves the log via:
+
+- `GET /api/sessions/{sid}/bg-tasks/{taskId}/log?tail=N` — REST tail
+  read, used on panel open and after page reload. Returns up to N
+  bytes from end of file.
+- `bg_task_stdout_chunk` WS frame — incremental tail while the panel
+  is open and the task is running. Reducer appends to a per-task
+  ring buffer capped at 64 KB.
+
+This split mirrors shell mode's REST-tail + WS-incremental pattern
+(see `/api/.../commands/{id}/output`). Refresh parity: the user
+reloads, REST tail re-fetches up to the cap, WS resumes for further
+chunks. Nothing has to survive locally.
 
 ### Reducer changes
 
@@ -337,26 +397,89 @@ A new constant `BG_TASK_TOOL_NAMES` in `types.ts` retains the *set*
 ("Bash", "Monitor") for cosmetic differentiation in the panel (chip
 text), but never gates visibility.
 
-## Spike (pre-implementation, ~10 minutes)
+## Refresh parity audit
 
-Before writing any code: determine the exact send-keys wrapping needed
-for background bashes to survive `claude -p`'s exit.
+Every piece of state visible in the panel is enumerated here with its
+truth source and its survival behavior across page refresh and
+alfred-server restart. This is the contract the implementation must
+preserve.
 
-Steps:
+| State | Truth source | Page refresh (F5) | alfred-server restart |
+|---|---|---|---|
+| `bgTasks[*]` map | `claudestate.SessionState.BgTasks` in alfred-server memory | `/claude-state` REST hydrate ✅ | Rebuilt by `Loader` (jsonl replay ∩ tmux probe) ✅ |
+| `bgTasks[*].status` | live WS events; rebuild for restart | live → stays live; cached → REST returns it ✅ | `in_progress` if PID found, `exited` if not ✅ |
+| `bgTasks[*].lastEventSummary` | `task_notification` WS events; rebuild from jsonl on restart | REST returns whatever is in memory ✅ | replayed from .jsonl up to last persisted event ✅ |
+| `bgTasks[*].notificationCount` | live counter; rebuild = count of `task_notification` events in jsonl | REST returns counter ✅ | replayed (count) ✅ |
+| `bgTasks[*]` log buffer (View logs panel) | log file on disk (mechanism per spike 2) | `GET /api/sessions/{sid}/bg-tasks/{taskId}/log?tail=N` ✅ | file survives in tmux's filesystem ✅ |
+| `subagents[*]` map | `claudestate.SessionState.Subagents` in memory | REST hydrate ✅ | **NOT rebuilt** — main Claude died with the process; subagents necessarily ended too. Empty after restart by design |
+| `inFlight` | derived from trailing turn's `done` | REST hydrate ✅ | `finalizeStaleTrailingTurn` flips it (invariant #4) ✅ |
+| Panel open/closed | `localStorage['alfred_bg_tasks_panel_open']` (global) | localStorage read ✅ | unaffected ✅ |
+| Expanded task rows (which `▸`/`▾` is open) | per-tab `useState`, ephemeral | resets on refresh — accepted (small surface, low value to persist) | unaffected |
+| 60s "Recently finished" fade | derived from `Date.now() - bgTask.finishedAt` | naturally refresh-safe ✅ | naturally refresh-safe ✅ |
+| Badge count N | derived from `bgTasks` + `subagents` | follows hydrate ✅ | follows hydrate ✅ |
+| Loading-shimmer state (`turnsLoaded === false`) | local flag from `useClaudeStateLoader` | resets on mount → shimmer until /claude-state returns → real data | same |
 
-1. Manually `tmux new-session -d -s spike-bg`.
+The single deliberate parity loss is "which rows are currently
+expanded inside the panel". Persisting it across refresh is possible
+but cheap-to-skip; if a user complains, encode it as
+`localStorage['alfred_bg_tasks_expanded:<sid>']` later. Everything
+else holds.
+
+## Spike (pre-implementation)
+
+Three independent technical unknowns must be answered before the
+implementation plan is written. Each is a short manual experiment
+(~15 min total). Results are recorded as a decision note alongside
+the plan.
+
+### Spike 1 — SIGHUP-safe wrapping for claude -p inside a tmux pane
+
+Determine the exact send-keys wrapping needed for background bashes
+to survive `claude -p`'s exit.
+
+1. `tmux new-session -d -s spike-bg`
 2. `tmux send-keys -t spike-bg 'claude -p "Use Bash run_in_background=true to start: sleep 60 && echo done. Then exit." --output-format stream-json --include-hook-events --include-partial-messages --verbose --dangerously-skip-permissions' Enter`
-3. Wait for `claude -p` to exit (visible in pane output).
+3. Wait for claude -p to exit (visible in pane output).
 4. `ps -ef | grep sleep` — is the sleep still running? what's its PPID?
-5. If sleep got SIGHUP'd, re-run with wrapping options, in order:
-   - `nohup claude -p ... &`
-   - `setsid claude -p ...`
-   - `setsid bash -c '...'`
-6. Pick the smallest wrapping that survives. Document the chosen
-   wrapping in the implementation plan and as a CONTEXT.md trap entry.
+5. If sleep was killed, re-run with wrapping options in this order:
+   `nohup claude -p ... &`, `setsid claude -p ...`,
+   `setsid bash -c '...'`.
+6. Pick the smallest wrapping that survives. Record the choice.
 
-The spec assumes a wrapping is needed; if the spike disproves that, the
-implementation simplifies by one step (no wrapper in `StartPrompt`).
+If the spike disproves the need for wrapping, `StartPrompt` simplifies
+by one step.
+
+### Spike 2 — Does the CLI honor `updatedInput` for Bash?
+
+Determines whether the preferred log-capture mechanism works
+(see Frontend → Panel → View logs).
+
+1. Edit `~/.claude/settings.json` PreToolUse hook to point at a tiny
+   shell script that prints
+   `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"echo ALFRED_REWRITTEN; sleep 1"}}}`
+   when matched on Bash.
+2. `claude -p "Run Bash: echo ORIGINAL"`
+3. Observe stream-json: is the actually-executed command `echo
+   ORIGINAL` or `echo ALFRED_REWRITTEN`?
+4. If rewritten → preferred path works. If not → fall back to
+   pipe-pane demux (see View logs section).
+
+### Spike 3 — Does pipe-pane survive alfred-server restart?
+
+Confirms the assumption that the prior pipe-pane writer dies with
+alfred-server and must be re-issued by ResumeOpenTurns.
+
+1. `tmux new-session -d -s spike-pipe`
+2. Start a writer process whose stdout is piped to tmux: `tmux
+   pipe-pane -t spike-pipe -o "cat > /tmp/spike-pipe.log"`
+3. In the pane, `tmux send-keys -t spike-pipe 'echo A' Enter`. Confirm
+   `/tmp/spike-pipe.log` contains `A`.
+4. `tmux send-keys -t spike-pipe 'echo B' Enter`. Confirm log contains
+   `B`.
+5. `kill -KILL` the `cat` writer process.
+6. `tmux send-keys -t spike-pipe 'echo C' Enter`. Does the log contain
+   `C` or stop at `B`? (Expected: stops at B.) Confirms re-issue is
+   required.
 
 ## Error handling
 
@@ -394,10 +517,11 @@ implementation simplifies by one step (no wrapper in `StartPrompt`).
    > in-flight work; the window and its processes survive. Only tmux
    > server death (pod restart) tears them down.**
 
-2. **Non-obvious traps table** — new row:
+2. **Non-obvious traps table** — two new rows:
 
    > | Trap | What happens if you forget | Test |
    > | Background bashes run in `claude-ui` window, parented to that window's bash, NOT to alfred-server. SIGHUP-safety on `claude -p` exit depends on the spike-determined wrapping (`nohup` / `setsid`). | Drop the wrapper and your bg tasks die the instant `claude -p` exits; chat looks fine, ps shows nothing | `TestE2E_BgTaskSurvivesClaudePExit` |
+   > | tmux `pipe-pane` stops writing the moment alfred-server (the writer process) dies. Restart-time recovery MUST re-issue `pipe-pane` for every `claude-ui` window before any new sentinel or bg-task stdout can be observed. The pane's output continues during the gap and is silently lost. | After alfred-server restart, `__ALFRED_DONE` sentinels never fire (turns hang forever) and bg-task log viewer shows truncated tails ending at the restart instant | `TestResumeOpenTurns_ReissuesPipePaneBeforeStreamReader` |
 
 3. **Why these choices table** — new row:
 
