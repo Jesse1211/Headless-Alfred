@@ -358,43 +358,40 @@ function TurnPhaseChip({ turn }: { turn: ClaudeTurn }) {
   return <span className={`turn-phase-chip turn-phase-chip--${phase.toLowerCase().replace(/\s+/g, '-')}`}>{phase}</span>
 }
 
-function TurnStatsLine({ turn, bgTasks, subagents }: {
+export function TurnStatsLine({ turn, bgTasks, subagents }: {
   turn: ClaudeTurn
   bgTasks: Record<string, BgTask>
   subagents: Record<string, SubagentEntry>
 }) {
-  if (!turn.done) return null
   const toolCount = turn.blocks.filter((b) => b.kind === 'tool').length
-  const monitorBlocks = turn.blocks.filter(
-    (b) => b.kind === 'tool' && b.tool.name === 'Monitor' && b.tool.bgTaskId,
+  const bgTaskBlocks = turn.blocks.filter(
+    (b) => b.kind === 'tool' && b.tool.bgTaskId,
   ) as Array<{ kind: 'tool'; tool: ClaudeToolCall }>
-  const monitorTasks = monitorBlocks
+  const bgTaskTotal = bgTaskBlocks.length
+  const bgTaskRunning = bgTaskBlocks
     .map((b) => bgTasks[b.tool.bgTaskId!])
-    .filter((t): t is BgTask => !!t)
-  const monitorTotal = monitorTasks.length
-  const monitorRunning = monitorTasks.filter((t) => t.status === 'in_progress').length
-  const monitorDone = monitorTotal - monitorRunning
-  void monitorDone // reserved for future "X done" detail; suppress unused warn
+    .filter((t): t is BgTask => !!t && t.status === 'in_progress').length
 
   const agentBlocks = turn.blocks.filter(
     (b) => b.kind === 'tool' && b.tool.name === 'Agent',
   )
   const subagentTotal = agentBlocks.length
-  // Best-effort: subagents map values, filter to entries that started during this turn.
-  // For simplicity we count all current subagents map entries here; FIFO pairing
-  // already finalises them as SubagentStop arrives.
   const subagentsList = Object.values(subagents)
   const subagentRunning = subagentsList.filter((s) => !s.finishedAt).length
   const subagentDone = subagentsList.filter((s) => !!s.finishedAt).length
 
-  const parts: string[] = [`${toolCount} tool call${toolCount === 1 ? '' : 's'}`]
-  if (monitorTotal > 0) {
-    parts.push(`${monitorTotal} Monitor task${monitorTotal === 1 ? '' : 's'} (${monitorRunning > 0 ? 'running' : 'done'})`)
+  const parts: string[] = []
+  if (toolCount > 0) {
+    parts.push(`${toolCount} tool call${toolCount === 1 ? '' : 's'}`)
+  }
+  if (bgTaskTotal > 0) {
+    parts.push(`${bgTaskTotal} background task${bgTaskTotal === 1 ? '' : 's'} (${bgTaskRunning > 0 ? 'running' : 'done'})`)
   }
   if (subagentTotal > 0 || subagentRunning > 0 || subagentDone > 0) {
     const total = Math.max(subagentTotal, subagentRunning + subagentDone)
-    parts.push(`${total} subagent${total === 1 ? '' : 's'} (${subagentRunning > 0 ? 'running' : 'done'})`)
+    parts.push(`${total} subagent${total === 1 ? '' : 's'} (${subagentRunning > 0 ? 'blocking' : 'done'})`)
   }
+  if (parts.length === 0) return null
   return <div className="turn-stats">{parts.join(' · ')}</div>
 }
 
