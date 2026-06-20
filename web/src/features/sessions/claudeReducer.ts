@@ -335,6 +335,7 @@ export function applyClaudeEvent(
         ...t,
         result: p.content,
         isError: p.isError,
+        outcome: p.isError ? ('errored' as const) : ('completed' as const),
         finishedAt: asTimestamp(frameTs),
       }))
       turns[lastIdx] = last
@@ -352,6 +353,7 @@ export function applyClaudeEvent(
       if (!last) return { ...prev, inFlight: false }
       last.done = true
       last.isError = p.isError
+      last.outcome = p.isError ? 'errored' : 'completed'
       last.totalCostUsd = p.totalCostUsd
       last.finishedAt = asTimestamp(frameTs)
       // If the turn has no assistant text yet (auth failure, etc.),
@@ -536,6 +538,7 @@ export function finalizeInFlightTurn(prev: ClaudeState, reason?: string, ts?: st
       ...turns[lastIdx],
       done: true,
       isError: true,
+      outcome: 'aborted' as const,
       finishedAt: ts ?? new Date().toISOString(),
     }
     // If the turn produced nothing visible yet (auth failure / runner
