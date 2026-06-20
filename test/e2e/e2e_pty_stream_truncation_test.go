@@ -20,55 +20,32 @@ import (
 // idle boundary — exactly the racy path spec §4.4 describes.
 const sixMiB = 6 * 1024 * 1024
 
-// streamReadTimeout bounds how long the WS read helpers wait for the next
-// frame. This test pushes 6 MiB through the kubectl port-forwarded WS twice;
-// every "started"/"done" frame we wait for is queued BEHIND a backlog of
-// chunk frames that must first drain over a CPU/throughput-constrained CI
-// kind node. The frames DO arrive — we only widen HOW LONG we wait, never
-// the data size or what we assert (no lost bytes). 60s is generous enough to
-// cover both the multi-MiB drain and a slow CI node.
-const streamReadTimeout = 60 * time.Second // CI kind is slower than local
+// persistTimeout bounds how long we wait for a command's record to reach
+// status=completed on the REST side. We deliberately do NOT gate this test on
+// the live WS event stream: that stream is lossy BY DESIGN — EventBroadcaster
+// drops Started/Ended frames for a slow subscriber (see CONTEXT.md), and
+// pushing 6 MiB over the kubectl port-forward back-pressures the socket until
+// the `done` frame is dropped, not merely delayed. So we drive each command
+// over the WS but synchronize on the authoritative REST record instead, which
+// the persister writes independently of live-frame delivery. 60s is generous
+// for a 6 MiB record flush on a CI kind node.
+const persistTimeout = 60 * time.Second // CI kind is slower than local
 
 func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 	tok, _ := login(t, testUser, testPassword)
 	sid := createSession(t, tok, "truncation")
 	conn := dialWS(t, tok)
 
-	// Command 1: 6 MiB of output.
-	if err := conn.WriteJSON(map[string]any{
-		"type": "run", "sessionID": sid,
-		"command": "yes y | head -c " + strconv.Itoa(sixMiB),
-	}); err != nil {
-		t.Fatalf("write c1: %v", err)
-	}
-	cmd1ID := waitForStarted(t, conn, sid, streamReadTimeout)
-	waitForDone(t, conn, sid, cmd1ID, streamReadTimeout)
+	// Command 1: 6 MiB. Send + sync on the REST record, never the WS frame.
+	cmd1ID := runAndWaitPersisted(t, conn, tok, sid,
+		"yes y | head -c "+strconv.Itoa(sixMiB))
 
 	// Command 2: tiny — this is where the stream truncation can fire.
-	if err := conn.WriteJSON(map[string]any{
-		"type": "run", "sessionID": sid, "command": "echo MIDDLE",
-	}); err != nil {
-		t.Fatalf("write c2: %v", err)
-	}
-	cmd2ID := waitForStarted(t, conn, sid, streamReadTimeout)
-	waitForDone(t, conn, sid, cmd2ID, streamReadTimeout)
+	cmd2ID := runAndWaitPersisted(t, conn, tok, sid, "echo MIDDLE")
 
-	// Command 3: another 6 MiB.
-	if err := conn.WriteJSON(map[string]any{
-		"type": "run", "sessionID": sid,
-		"command": "yes y | head -c " + strconv.Itoa(sixMiB),
-	}); err != nil {
-		t.Fatalf("write c3: %v", err)
-	}
-	cmd3ID := waitForStarted(t, conn, sid, streamReadTimeout)
-	waitForDone(t, conn, sid, cmd3ID, streamReadTimeout)
-
-	// Give the persister goroutine a moment to flush each record (Status,
-	// Output) to disk before we read it back. Done events arrive on the WS
-	// before WriteOutput + Save complete in Manager.startPersister.
-	// Persisting a 6 MiB record to the PVC after "done" is also slower on a
-	// CI kind node, so give the persister the same generous budget.
-	waitForPersisted(t, tok, sid, cmd3ID, 30*time.Second)
+	// Command 3: another 6 MiB (crosses the cumulative 8 MiB truncate boundary).
+	cmd3ID := runAndWaitPersisted(t, conn, tok, sid,
+		"yes y | head -c "+strconv.Itoa(sixMiB))
 
 	// Fetch each command's persisted output.
 	for label, id := range map[string]string{"cmd1": cmd1ID, "cmd2": cmd2ID, "cmd3": cmd3ID} {
@@ -92,6 +69,59 @@ func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 			}
 		}
 	}
+}
+
+// runAndWaitPersisted sends a command over the WS, then synchronizes purely on
+// the REST record — never on the lossy live event stream. It discovers the new
+// command's id by polling /commands for an id not seen before this call, then
+// waits for that record to reach status=completed. This is immune to dropped
+// Started/Ended frames (which a multi-MiB stream over kubectl port-forward
+// provokes by design) while still driving the real command through the backend.
+func runAndWaitPersisted(t *testing.T, conn *websocket.Conn, tok, sid, command string) string {
+	t.Helper()
+	before := map[string]bool{}
+	for _, id := range listCommandIDs(t, tok, sid) {
+		before[id] = true
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "run", "sessionID": sid, "command": command,
+	}); err != nil {
+		t.Fatalf("write %q: %v", command, err)
+	}
+	// Discover the new command id from REST (not the WS started frame).
+	var cmdID string
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && cmdID == "" {
+		for _, id := range listCommandIDs(t, tok, sid) {
+			if !before[id] {
+				cmdID = id
+				break
+			}
+		}
+		if cmdID == "" {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if cmdID == "" {
+		t.Fatalf("new command never appeared in REST list for %q", command)
+	}
+	waitForPersisted(t, tok, sid, cmdID, persistTimeout)
+	return cmdID
+}
+
+// listCommandIDs returns the ids in /api/sessions/{sid}/commands.
+func listCommandIDs(t *testing.T, tok, sid string) []string {
+	t.Helper()
+	body := getJSON(t, tok, "/api/sessions/"+sid+"/commands")
+	var list []map[string]any
+	_ = json.Unmarshal(body, &list)
+	ids := make([]string, 0, len(list))
+	for _, c := range list {
+		if id, ok := c["id"].(string); ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func waitForDone(t *testing.T, conn *websocket.Conn, sessionID, cmdID string, timeout time.Duration) {

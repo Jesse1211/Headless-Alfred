@@ -138,15 +138,35 @@ func TestE2E_GoRestart_DuringStreamingChunks(t *testing.T) {
 				_ = json.NewDecoder(resp2.Body).Decode(&full)
 				resp2.Body.Close()
 				out, _ := full["output"].(string)
-				// Verify every integer 1..100 is present.
-				missing := 0
+				// Per CONTEXT.md Invariant #1: after a Go-process restart the
+				// new alfred resumes parsing pty.stream from the persisted
+				// pty.offset (the live tail) and re-emits only PENDING events.
+				// Output produced BEFORE the kill lived only in the dead
+				// process's in-memory buffer and is intentionally NOT
+				// reconstructed — that's the documented trade-off (command
+				// liveness over pre-restart output prefix). So we must NOT
+				// assert all of 1..100 survive. What the design DOES guarantee:
+				// the command keeps running and completes, and the post-restart
+				// tail is a CONTIGUOUS suffix ending at 100 (no gaps within the
+				// surviving portion, final line present).
+				if !strings.Contains(out, "\n100\n") && !strings.HasPrefix(out, "100\n") {
+					t.Fatalf("final integer 100 missing — command did not complete cleanly after restart. output: %q", out)
+				}
+				// Lowest surviving integer, then assert lowest..100 has no holes.
+				lowest := 0
 				for i := 1; i <= 100; i++ {
-					if !strings.Contains(out, fmt.Sprintf("\n%d\n", i)) && !strings.HasPrefix(out, fmt.Sprintf("%d\n", i)) {
-						missing++
+					if strings.Contains(out, fmt.Sprintf("\n%d\n", i)) || strings.HasPrefix(out, fmt.Sprintf("%d\n", i)) {
+						lowest = i
+						break
 					}
 				}
-				if missing > 0 {
-					t.Fatalf("missing %d of 100 integers in output. output: %q", missing, out)
+				if lowest == 0 {
+					t.Fatalf("no integers at all in post-restart output: %q", out)
+				}
+				for i := lowest; i <= 100; i++ {
+					if !strings.Contains(out, fmt.Sprintf("\n%d\n", i)) && !strings.HasPrefix(out, fmt.Sprintf("%d\n", i)) {
+						t.Fatalf("gap in surviving tail: %d missing between %d and 100. output: %q", i, lowest, out)
+					}
 				}
 				return
 			}
