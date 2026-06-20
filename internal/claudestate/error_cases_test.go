@@ -1,8 +1,44 @@
 package claudestate
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 )
+
+// warnCapture is a slog.Handler that records WARN-level records so a test
+// can assert an observability log line fired with the expected attrs.
+type warnCapture struct {
+	records []slog.Record
+}
+
+func (h *warnCapture) Enabled(_ context.Context, lvl slog.Level) bool {
+	return lvl >= slog.LevelWarn
+}
+
+func (h *warnCapture) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *warnCapture) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *warnCapture) WithGroup(_ string) slog.Handler       { return h }
+
+// attr returns the value of the named attr on the record, and whether it
+// was present.
+func recordAttr(r slog.Record, key string) (slog.Value, bool) {
+	var found bool
+	var val slog.Value
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			val = a.Value
+			found = true
+			return false
+		}
+		return true
+	})
+	return val, found
+}
 
 // This file audits how the Claude state machine reacts to error /
 // abnormal-termination inputs. The method is: directly construct the
@@ -139,6 +175,17 @@ func TestApply_ClaudeErrorBadPayload_DoesNotStrandTurn(t *testing.T) {
 //
 // Expected: FAIL against current code (silently dropped, undetectable).
 func TestApply_ToolResult_NoMatchingBlock_IsObservable(t *testing.T) {
+	// ADR-002: a dropped tool_result must be observable. Per ADR-002 the
+	// fix is a pure observability addition (a greppable slog.Warn), NOT a
+	// state mutation — so we capture slog at WARN level and assert the log
+	// fired with the toolUseId field. We also still accept the older
+	// signals (an error or a state mutation) so this test is not weakened:
+	// ANY of these making the drop detectable counts as observable.
+	cap := &warnCapture{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(cap))
+	defer slog.SetDefault(prev)
+
 	s := NewSessionState("sess1", "uuid-1")
 	s.BeginTurn("u1", "prompt", tAt(7, 0, 0))
 
@@ -153,33 +200,41 @@ func TestApply_ToolResult_NoMatchingBlock_IsObservable(t *testing.T) {
 			IsError:   true,
 		},
 	})
-	// Current code returns nil and mutates nothing — the drop is silent.
-	if err != nil {
-		// An error is one acceptable way to make the drop observable.
-		return
+
+	// Signal (a): an error is one acceptable way to make the drop
+	// observable.
+	observable := err != nil
+
+	// Signal (b): a greppable WARN log fired carrying the toolUseId.
+	for _, r := range cap.records {
+		if r.Level != slog.LevelWarn {
+			continue
+		}
+		if v, ok := recordAttr(r, "toolUseId"); ok && v.String() == "orphan-tool-id" {
+			observable = true
+		}
 	}
 
+	// Signal (c): the orphan result landed somewhere we can find, or a
+	// LastError was recorded.
 	s.View(func(st *ClaudeState) {
-		// CORRECT behavior: the dropped result should be observable. The
-		// most natural signals are (a) a recorded LastError, or (b) the
-		// orphan result landing as some block we can find. If neither is
-		// present, the drop was completely silent — the GAP.
-		observable := st.LastError != nil
-		if !observable {
-			for _, turn := range st.Turns {
-				for _, b := range turn.Blocks {
-					if b.Kind == "tool" && b.Tool != nil &&
-						b.Tool.ToolUseID == "orphan-tool-id" {
-						observable = true
-					}
+		if st.LastError != nil {
+			observable = true
+		}
+		for _, turn := range st.Turns {
+			for _, b := range turn.Blocks {
+				if b.Kind == "tool" && b.Tool != nil &&
+					b.Tool.ToolUseID == "orphan-tool-id" {
+					observable = true
 				}
 			}
 		}
-		if !observable {
-			t.Errorf("GAP: tool_result for unknown id was silently dropped — " +
-				"no error, no LastError, no recorded block; the drop is undetectable")
-		}
 	})
+
+	if !observable {
+		t.Errorf("GAP: tool_result for unknown id was silently dropped — " +
+			"no error, no WARN log, no LastError, no recorded block; the drop is undetectable")
+	}
 }
 
 // ---------------------------------------------------------------------
