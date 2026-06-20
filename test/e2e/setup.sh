@@ -52,8 +52,8 @@ kind load docker-image --name "$CLUSTER_NAME" "$IMAGE"
 echo "[setup] applying manifests…"
 kubectl apply -f deploy/manifests/namespace.yaml
 
-kubectl -n "$NS" delete secret alfred-secret --ignore-not-found
-kubectl -n "$NS" create secret generic alfred-secret \
+kubectl -n "$NS" delete secret alfred-auth --ignore-not-found
+kubectl -n "$NS" create secret generic alfred-auth \
   --from-literal=ALFRED_USER="$TEST_USER" \
   --from-literal=ALFRED_PASSWORD="$TEST_PASSWORD" \
   --from-literal=ALFRED_TOKEN="$TEST_TOKEN"

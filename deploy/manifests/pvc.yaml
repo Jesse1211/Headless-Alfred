@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alfred-data
+  namespace: alfred
+  labels:
+    app: alfred
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # No storageClassName: kind ships "standard" (rancher local-path) as
+  # the default StorageClass, which fills this in automatically.

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { TurnStatsLine } from './ClaudeChatView'
-import type { BgTask, ClaudeTurn, SubagentEntry } from './types'
+import { TurnStatsLine, toolStatus, turnPhase } from './ClaudeChatView'
+import type { BgTask, ClaudeToolCall, ClaudeTurn, SubagentEntry } from './types'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -78,6 +78,56 @@ describe('TurnStatsLine', () => {
     // Both bgTaskId-linked tool blocks count, regardless of tool name.
     // "2 background tasks" should appear in the rendered output.
     expect(screen.getByText(/2 background tasks/i)).toBeInTheDocument()
+  })
+
+  it('reports interrupted (not a plain deny) when a tool was killed mid-turn', () => {
+    // The loader finalizes a runner-killed pending tool as decision=deny
+    // + isError + an "Interrupted:" result. The UI must distinguish this
+    // from a user-initiated deny so the chip reads "interrupted", not
+    // "denied" (which would wrongly imply the user rejected it).
+    const killed: ClaudeToolCall = {
+      toolUseId: 't1',
+      name: 'Edit',
+      decision: 'deny',
+      isError: true,
+      result: 'Interrupted: the runner was killed (server restart) before this tool finished.',
+    }
+    expect(toolStatus(killed)).toBe('interrupted')
+  })
+
+  it('reports a real user deny as denied', () => {
+    const denied: ClaudeToolCall = {
+      toolUseId: 't2',
+      name: 'Edit',
+      decision: 'deny',
+    }
+    expect(toolStatus(denied)).toBe('denied')
+  })
+
+  it('toolStatus reads outcome=aborted as interrupted', () => {
+    const tool: ClaudeToolCall = {
+      toolUseId: 't1', name: 'Edit', decision: 'deny', outcome: 'aborted',
+    }
+    expect(toolStatus(tool)).toBe('interrupted')
+  })
+
+  it('toolStatus reads outcome=errored as errored', () => {
+    const tool: ClaudeToolCall = {
+      toolUseId: 't2', name: 'Bash', decision: 'allow', outcome: 'errored',
+    }
+    expect(toolStatus(tool)).toBe('errored')
+  })
+
+  it('turnPhase shows Interrupted for an aborted turn', () => {
+    expect(turnPhase(makeTurn({ done: true, outcome: 'aborted' }))).toBe('Interrupted')
+  })
+
+  it('turnPhase shows Error for an errored turn', () => {
+    expect(turnPhase(makeTurn({ done: true, outcome: 'errored' }))).toBe('Error')
+  })
+
+  it('turnPhase shows Done for a completed turn', () => {
+    expect(turnPhase(makeTurn({ done: true, outcome: 'completed' }))).toBe('Done')
   })
 
   it('still uses subagents (blocking) label for the subagent group', () => {

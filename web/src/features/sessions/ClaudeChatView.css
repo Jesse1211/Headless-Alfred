@@ -361,6 +361,10 @@
 .claude-tool--denied .claude-tool__status { color: #e88c8c; }
 .claude-tool--running .claude-tool__status { color: #7aa2f7; }
 .claude-tool--pending .claude-tool__status { color: #e0c97a; }
+/* runner killed mid-tool (server restart). Distinct orange + bold so it
+   reads as "interrupted by the system", not a user deny. */
+.claude-tool--interrupted .claude-tool__status { color: #f0a35e; font-weight: 600; }
+.claude-tool--errored .claude-tool__status { color: #e88c8c; }
 .claude-tool.is-error .claude-tool__status { color: #e88c8c; }
 
 .claude-tool__body {

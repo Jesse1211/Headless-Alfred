@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: alfred
+  namespace: alfred
+  labels:
+    app: alfred
+spec:
+  type: ClusterIP
+  selector:
+    app: alfred
+  ports:
+  # E2E port-forwards `svc/alfred 18080:8080`, so the Service exposes
+  # 8080 (NOT 80 like the helm chart) targeting the container's http port.
+  - name: http
+    port: 8080
+    targetPort: http
+    protocol: TCP

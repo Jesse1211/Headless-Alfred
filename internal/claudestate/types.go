@@ -46,6 +46,13 @@ type ClaudeTurn struct {
 	Thinking     []string         `json:"thinking,omitempty"`
 	Done         bool             `json:"done"`
 	IsError      bool             `json:"isError,omitempty"`
+	// Outcome is the terminal state and the source of truth; Done and
+	// IsError are derived from it (see outcome.go). "" == in progress.
+	Outcome string `json:"outcome,omitempty"` // "completed" | "errored" | "aborted"
+	// AbortReason is a machine-readable code, non-empty only for
+	// errored/aborted turns. Codes: runner_killed | ws_disconnect |
+	// server_shutdown | server_restart | spawn_failed | rate_limit.
+	AbortReason  string           `json:"abortReason,omitempty"`
 	TotalCostUsd *float64         `json:"totalCostUsd,omitempty"`
 	Usage        *TokenUsage      `json:"usage,omitempty"`
 }
@@ -67,8 +74,11 @@ type ClaudeToolCall struct {
 	Name      string `json:"name"`
 	Input     any    `json:"input,omitempty"`
 	Decision  string `json:"decision"` // "allow" | "deny" | "pending"
-	Result    string `json:"result,omitempty"`
-	IsError   bool   `json:"isError,omitempty"`
+	// Outcome is the tool's terminal state. "" == not terminated.
+	// "completed" | "errored" | "aborted" | "denied".
+	Outcome string `json:"outcome,omitempty"`
+	Result  string `json:"result,omitempty"`
+	IsError bool   `json:"isError,omitempty"`
 	// StartedAt/FinishedAt are pointers so a zero value omits the JSON
 	// key (matching the TS mirror's optional fields). A nil StartedAt
 	// means the snapshot didn't capture the tool's start (e.g. tool

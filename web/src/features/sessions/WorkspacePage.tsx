@@ -312,10 +312,10 @@ export function WorkspacePage({ token, onLogout }: Props) {
                 className={`workspace__bg-tasks-btn ${bgTasksBadgeN > 0 ? 'is-active' : 'is-idle'}`}
                 disabled={bgTasksBadgeN === 0}
                 onClick={bgTasksBadgeN > 0 ? () => setBgTasksOpen((v) => !v) : undefined}
-                aria-label={`${bgTasksBadgeN} Background tasks`}
+                aria-label={`${bgTasksBadgeN} active background tasks`}
                 data-tooltip={bgTasksBadgeN > 0 ? 'Toggle background tasks panel' : 'No active background tasks'}
               >
-                ⚙ {bgTasksBadgeN} Background tasks
+                ⚙ {bgTasksBadgeN} active background tasks
               </button>
             )}
             {selected && ps && !isRecap && (

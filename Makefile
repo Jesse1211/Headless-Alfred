@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push e2e e2e-setup e2e-teardown local-status local-stop local-dev
+.PHONY: test test-unit test-integration tidy build smoke ws-smoke web-build embed-web image image-push e2e e2e-setup e2e-teardown local-status local-stop local-dev sessions
 
 test: test-unit test-integration
 
@@ -63,6 +63,12 @@ local-status:
 # Pass FLAGS=--no-build to skip frontend rebuild (Go-only iteration).
 local-dev:
 	@./scripts/local-dev.sh $(FLAGS)
+
+# List alfred sessions from running resources (tmux + sessions.json),
+# no API/token/server needed. Shows authoritative mode side-by-side with
+# the live tmux pane process. Override data dir with ALFRED_DATA_DIR=...
+sessions:
+	@./scripts/find-sessions.sh
 
 # Stop local alfred-server + kubectl port-forwards. Leaves kind cluster alone.
 # Use `make e2e-teardown` for the kind cluster.

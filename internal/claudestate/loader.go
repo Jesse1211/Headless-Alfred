@@ -49,6 +49,16 @@ func Load(snapshotPath, jsonlPath string) (ClaudeState, error) {
 	if staleTrailing {
 		finalizeStaleTrailingTurn(state.Turns)
 	}
+	// Independent of staleTrailing: close any tool block left hanging in
+	// any turn (e.g. a Done turn whose pending tool an earlier restart
+	// never settled). A Done turn must never contain a pending/unfinished
+	// tool, or the frontend freezes it on PENDING with a live timer.
+	finalizeHangingToolBlocks(state.Turns)
+	// Backfill Outcome on every loaded turn so pre-outcome snapshots get a
+	// derived terminal state (additive + backward-compatible; no version bump).
+	for i := range state.Turns {
+		backfillOutcome(&state.Turns[i])
+	}
 	state.InFlight = computeInFlight(state.Turns)
 
 	// ADR-018: after the turns merge, replay task_started /
@@ -83,14 +93,58 @@ func finalizeStaleTrailingTurn(turns []ClaudeTurn) {
 		return
 	}
 	last := &turns[n-1]
-	last.Done = true
-	last.IsError = true
 	now := time.Now().UTC()
-	last.FinishedAt = &now
+	setTurnOutcome(last, "aborted", "server_restart", now)
+
 	last.Blocks = append(last.Blocks, AssistantBlock{
 		Kind: "text",
 		Text: "Server restarted while this turn was running. The runner was killed; reply was not delivered.",
 	})
+}
+
+// finalizeHangingToolBlocks closes off any tool block — in ANY turn —
+// that was still awaiting approval (Decision=="pending") or still
+// executing (FinishedAt==nil). Without this, the frontend renders a
+// forever-PENDING tool with a live elapsed timer that never stops.
+//
+// This is deliberately NOT gated on staleTrailing. A turn can be marked
+// Done at the turn level (e.g. by an earlier restart's
+// finalizeStaleTrailingTurn) yet still carry a hanging tool block the
+// turn-level finalize didn't touch — on the next Load, staleTrailing is
+// false, so a staleTrailing-gated cleanup would skip it and the frozen
+// PENDING survives forever. A Done turn must never contain a pending or
+// unfinished tool. Mutates in place. Runs over every loaded turn.
+func finalizeHangingToolBlocks(turns []ClaudeTurn) {
+	now := time.Now().UTC()
+	for ti := range turns {
+		turn := &turns[ti]
+		var killed []string
+		for bi := range turn.Blocks {
+			b := &turn.Blocks[bi]
+			if b.Kind != "tool" || b.Tool == nil {
+				continue
+			}
+			t := b.Tool
+			if t.Outcome != "" {
+				continue // already settled
+			}
+			if t.Decision != "pending" && t.FinishedAt != nil {
+				continue // already settled (pre-outcome snapshot)
+			}
+			if t.Decision == "pending" {
+				t.Decision = "deny" // never approved → treat as denied
+			}
+			setToolOutcome(t, "aborted", now)
+			if t.Result == "" {
+				t.Result = "Interrupted: the runner was killed (server restart) before this tool finished."
+			}
+			killed = append(killed, t.Name+"("+t.ToolUseID+")")
+		}
+		if len(killed) > 0 {
+			// One greppable interrupt log for every errored/aborted path.
+			logAbnormalTermination("", turn.ID, "aborted", "server_restart", len(killed))
+		}
+	}
 }
 
 // loadSnapshot tries to read + validate the snapshot file. Returns
@@ -302,6 +356,9 @@ func mergeBlocks(jsonl, snap []AssistantBlock) []AssistantBlock {
 			merged.FinishedAt = sn.FinishedAt
 			merged.Decision = sn.Decision
 			merged.BgTaskID = sn.BgTaskID
+			// Outcome is the source of truth; carry it from the snapshot so
+			// the loaded tool matches what the live reducer produced.
+			merged.Outcome = sn.Outcome
 		}
 		out[i] = AssistantBlock{Kind: "tool", Tool: &merged}
 	}

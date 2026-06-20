@@ -33,6 +33,19 @@ func newTestManager(t *testing.T) *session.Manager {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	// Close every session before t.TempDir's RemoveAll runs. Each Create
+	// starts a per-session persister goroutine that writes under DataDir;
+	// without stopping them first, RemoveAll races their writes and fails
+	// with "directory not empty" (flaky, intermittent — observed in CI).
+	// t.Cleanup is LIFO and runs before the TempDir cleanup registered
+	// earlier, so this drains the goroutines while the dir still exists.
+	t.Cleanup(func() {
+		for _, kind := range []store.SessionKind{store.KindChat, store.KindRecap} {
+			for _, meta := range m.List(kind) {
+				_ = m.Close(meta.ID)
+			}
+		}
+	})
 	return m
 }
 

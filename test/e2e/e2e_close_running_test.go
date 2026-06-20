@@ -19,10 +19,16 @@ func TestE2E_CloseSession_RunningCommandTerminated(t *testing.T) {
 	})
 	_ = waitForStarted(t, conn, sid, 5*time.Second)
 
-	// Capture the bash PID inside the tmux session for later verification.
-	pidsBefore := execInPod(t, "ps -eo pid,comm | awk '$2==\"sleep\" {print $1}' || true")
-	if strings.TrimSpace(pidsBefore) == "" {
-		t.Fatal("sleep 30 process never showed up in pod")
+	// Capture THIS session's sleep PID via its tmux pane, not a pod-global
+	// `comm==sleep` match. Sibling E2E tests spawn their own long sleeps in
+	// the same pod (and Stop/kill paths can orphan a sleep under tini that
+	// lives out its full duration), so a global match would observe an
+	// unrelated process and false-fail. Scope to our pane's child.
+	sleepPID := strings.TrimSpace(execInPod(t,
+		"pgrep -P $(tmux -S /data/alfred-tmux.sock list-panes -t "+sid+
+			" -F '#{pane_pid}') -x sleep | head -1 || true"))
+	if sleepPID == "" {
+		t.Fatal("sleep 30 process never showed up under this session's pane")
 	}
 
 	// DELETE the session.
@@ -38,19 +44,27 @@ func TestE2E_CloseSession_RunningCommandTerminated(t *testing.T) {
 		t.Fatalf("delete: code=%d", resp.StatusCode)
 	}
 
-	// Wait up to 5s for the sleep 30 process to be reaped.
+	// Wait for the sleep 30 process to be reaped. DELETE triggers
+	// tmux kill-session → SIGHUP/SIGTERM of the bash subtree → kernel
+	// reaping. That whole chain is near-instant locally, but in a
+	// resource-constrained CI kind node (shared CPU, slow process
+	// scheduling) it can take several seconds. We only widen HOW LONG we
+	// wait for an outcome that does happen — we still assert the process
+	// is gone.
+	const reapWait = 15 * time.Second // CI kind is slower than local
 	gone := false
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(reapWait)
 	for time.Now().Before(deadline) {
-		pids := strings.TrimSpace(execInPod(t, "ps -eo pid,comm | awk '$2==\"sleep\" {print $1}' || true"))
-		if pids == "" {
+		// Poll ONLY our captured PID — immune to other tests' sleeps.
+		alive := strings.TrimSpace(execInPod(t, "ps -p "+sleepPID+" -o pid= 2>/dev/null || true"))
+		if alive == "" {
 			gone = true
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	if !gone {
-		t.Fatal("sleep 30 still running 5s after DELETE")
+		t.Fatalf("our session's sleep (pid %s) still running %s after DELETE", sleepPID, reapWait)
 	}
 
 	// Session directory under /data/sessions/<sid> must be gone.

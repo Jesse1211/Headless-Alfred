@@ -171,6 +171,145 @@ func TestLoad_StaleTrailingTurn_FinalizedDespiteJsonlDoneTrue(t *testing.T) {
 	}
 }
 
+// When the runner is SIGKILLed mid-turn, the trailing turn can hold a
+// tool block still awaiting approval (Decision="pending") or still
+// executing (FinishedAt==nil). finalizeStaleTrailingTurn must close
+// THOSE blocks too, not just the turn — otherwise the frontend renders
+// a forever-PENDING tool with a live elapsed timer that never stops,
+// even though the turn header already shows "done (error)". Repro of the
+// real bug: an Edit block left at decision=pending after `make local-dev`
+// restarted alfred-server and killed the in-flight runner.
+func TestLoad_StaleTrailingTurn_FinalizesHangingToolBlocks(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := tAt(7, 0, 0)
+	snap := snapshotFile{
+		Version: snapshotVersion, SessionID: "sess1",
+		WrittenAt: tAt(7, 5, 0),
+		Turns: []ClaudeTurn{{
+			ID:        "u1",
+			Prompt:    "edit the file",
+			StartedAt: startedAt,
+			Done:      false,
+			Blocks: []AssistantBlock{
+				{Kind: "text", Text: "Let me update it."},
+				{Kind: "tool", Tool: &ClaudeToolCall{
+					ToolUseID: "toolu_1",
+					Name:      "Edit",
+					Decision:  "pending",   // ← awaiting approval when killed
+					StartedAt: &startedAt,  // ← started, never finished
+					// FinishedAt nil
+				}},
+			},
+		}},
+	}
+	writeJSON(t, filepath.Join(dir, "claude.json"), snap)
+
+	got, err := Load(filepath.Join(dir, "claude.json"), filepath.Join(dir, "missing.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Find the Edit tool block in the finalized turn.
+	var tool *ClaudeToolCall
+	for _, b := range got.Turns[0].Blocks {
+		if b.Kind == "tool" && b.Tool != nil && b.Tool.ToolUseID == "toolu_1" {
+			tool = b.Tool
+		}
+	}
+	if tool == nil {
+		t.Fatalf("Edit tool block missing after finalize: %+v", got.Turns[0].Blocks)
+	}
+	if tool.Decision == "pending" {
+		t.Error("hanging tool block must not stay decision=pending after restart")
+	}
+	if tool.Outcome != "aborted" {
+		t.Errorf("hanging tool should be aborted, got Outcome=%q", tool.Outcome)
+	}
+	if tool.FinishedAt == nil {
+		t.Error("hanging tool block must get a finishedAt so the frontend timer stops")
+	}
+	if !tool.IsError {
+		t.Error("hanging tool block should be flagged isError (it never completed)")
+	}
+	if tool.Result == "" {
+		t.Error("hanging tool block should carry a result explaining the interruption")
+	}
+}
+
+// The real-world case that the staleTrailing-gated finalize MISSED: an
+// earlier restart (with older code) already flipped the turn to Done=true
+// at the turn level, but left a tool block at decision=pending /
+// finishedAt=nil. On the NEXT Load, staleTrailing is false (snapshot says
+// Done=true) so finalizeStaleTrailingTurn never runs — and the hanging
+// tool block survives forever, rendering a frozen PENDING with a live
+// timer. Hanging-tool cleanup must NOT depend on staleTrailing: a Done
+// turn must never contain a pending/unfinished tool block.
+func TestLoad_DoneTurn_WithHangingToolBlock_StillFinalizesTool(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := tAt(7, 0, 0)
+	snap := snapshotFile{
+		Version: snapshotVersion, SessionID: "sess1",
+		WrittenAt: tAt(7, 5, 0),
+		Turns: []ClaudeTurn{{
+			ID:        "u1",
+			Prompt:    "edit the file",
+			StartedAt: startedAt,
+			Done:      true, // ← already finalized at the turn level
+			IsError:   true,
+			Blocks: []AssistantBlock{
+				{Kind: "tool", Tool: &ClaudeToolCall{
+					ToolUseID: "toolu_1",
+					Name:      "Edit",
+					Decision:  "pending", // ← but the tool was left hanging
+					StartedAt: &startedAt,
+				}},
+			},
+		}},
+	}
+	writeJSON(t, filepath.Join(dir, "claude.json"), snap)
+
+	got, err := Load(filepath.Join(dir, "claude.json"), filepath.Join(dir, "missing.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tool *ClaudeToolCall
+	for _, b := range got.Turns[0].Blocks {
+		if b.Kind == "tool" && b.Tool != nil && b.Tool.ToolUseID == "toolu_1" {
+			tool = b.Tool
+		}
+	}
+	if tool == nil {
+		t.Fatalf("Edit tool block missing: %+v", got.Turns[0].Blocks)
+	}
+	if tool.Decision == "pending" {
+		t.Error("hanging tool in an already-Done turn must still be finalized")
+	}
+	if tool.Outcome != "aborted" {
+		t.Errorf("hanging tool should be aborted, got Outcome=%q", tool.Outcome)
+	}
+	if tool.FinishedAt == nil {
+		t.Error("hanging tool must get finishedAt even when the turn was already Done")
+	}
+}
+
+func TestBackfillOutcome_OldSnapshot(t *testing.T) {
+	// A done turn from before the outcome field existed.
+	completed := &ClaudeTurn{ID: "u1", Done: true, IsError: false}
+	errored := &ClaudeTurn{ID: "u2", Done: true, IsError: true}
+	running := &ClaudeTurn{ID: "u3", Done: false}
+	backfillOutcome(completed)
+	backfillOutcome(errored)
+	backfillOutcome(running)
+	if completed.Outcome != "completed" {
+		t.Errorf("completed.Outcome=%q", completed.Outcome)
+	}
+	if errored.Outcome != "errored" {
+		t.Errorf("errored.Outcome=%q", errored.Outcome)
+	}
+	if running.Outcome != "" {
+		t.Errorf("running turn should not get an outcome: %q", running.Outcome)
+	}
+}
+
 func TestLoad_DoneTrailingTurn_Untouched(t *testing.T) {
 	dir := t.TempDir()
 	snap := snapshotFile{

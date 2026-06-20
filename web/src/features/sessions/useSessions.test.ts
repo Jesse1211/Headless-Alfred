@@ -177,6 +177,21 @@ describe('useSessions — WS events', () => {
     act(() => { result.current.enterClaude('sess-A', 'ui', true) })
     expect(result.current.perSession.get('sess-A')?.templateId).toBeUndefined()
   })
+
+  // ADR-005: the manual dismiss button (clearError) must actually clear
+  // the banner state. An `error` WS frame populates lastError; calling
+  // clearError() — the function the WorkspacePage "×" button is wired to —
+  // must reset it to null so the stale red banner disappears on demand.
+  it('clearError dismisses a lastError set by an error frame', async () => {
+    const { result } = renderHook(() => useSessions('TOK'))
+    await waitFor(() => expect(result.current.sessions.length).toBe(2))
+    act(() =>
+      _onMessage!({ type: 'error', code: 'busy', message: 'session is busy' }),
+    )
+    expect(result.current.lastError).toEqual({ code: 'busy', message: 'session is busy' })
+    act(() => result.current.clearError())
+    expect(result.current.lastError).toBeNull()
+  })
 })
 
 describe('useSessions — recap', () => {

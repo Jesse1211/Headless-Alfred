@@ -344,8 +344,13 @@ function TurnView({ turn, bgTasks, subagents }: {
   )
 }
 
-function turnPhase(turn: ClaudeTurn): string {
-  if (turn.done) return 'Done'
+export function turnPhase(turn: ClaudeTurn): string {
+  switch (turn.outcome) {
+    case 'completed': return 'Done'
+    case 'errored':   return 'Error'
+    case 'aborted':   return 'Interrupted'
+  }
+  if (turn.done) return 'Done' // pre-outcome snapshot fallback
   if (turn.blocks.length === 0) return 'Initializing'
   // The last block determines the phase: if it's a still-running tool, "Calling X"; otherwise "Thinking".
   const last = turn.blocks[turn.blocks.length - 1]
@@ -704,8 +709,24 @@ function formatJSON(v: unknown): string {
 // whether a result has come back. Order matters — a denied tool
 // never produces a result, and an allowed tool is "running" until
 // the result arrives.
-function toolStatus(tool: ClaudeToolCall): 'pending' | 'denied' | 'running' | 'done' {
-  if (tool.decision === 'deny') return 'denied'
+// Exported for unit tests. The `interrupted` case is the loader's
+// runner-death finalize (decision=deny + isError + an "Interrupted:"
+// result) — distinct from a user-initiated deny so the UI doesn't
+// wrongly imply the user rejected the tool.
+export function toolStatus(
+  tool: ClaudeToolCall,
+): 'pending' | 'denied' | 'interrupted' | 'errored' | 'running' | 'done' {
+  switch (tool.outcome) {
+    case 'aborted':   return 'interrupted'
+    case 'errored':   return 'errored'
+    case 'denied':    return 'denied'
+    case 'completed': return 'done'
+  }
+  // Not terminated, or a pre-outcome snapshot: fall back to legacy fields.
+  if (tool.decision === 'deny') {
+    if (tool.isError && tool.result?.startsWith('Interrupted')) return 'interrupted'
+    return 'denied'
+  }
   if (tool.result != null) return 'done'
   if (tool.decision === 'allow') return 'running'
   return 'pending'

@@ -1,6 +1,7 @@
 # Build artifacts
 /bin/
-/internal/static/dist/
+/internal/static/dist/*
+!/internal/static/dist/.gitkeep
 /alfred-server
 
 # Go

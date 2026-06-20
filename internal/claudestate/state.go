@@ -3,6 +3,7 @@ package claudestate
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -168,22 +169,35 @@ func (s *SessionState) Apply(ev Event) error {
 	case EventResult:
 		p, ok := ev.Payload.(*ResultPayload)
 		if !ok {
+			// ADR-001: a terminator with a malformed payload must still
+			// finalize the in-flight turn. Returning the error without a
+			// finalize would strand the turn (Done=false, InFlight=true)
+			// forever — a permanent spinner. Synthetically finalize, then
+			// surface the error.
+			s.finalizeInFlight("terminated abnormally: bad result payload", "bad_result_payload", "errored", ev.Timestamp)
 			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
 		}
 		s.applyResult(p, ev.Timestamp)
 	case EventClaudeRunEnded:
 		p, ok := ev.Payload.(*ClaudeRunEndedPayload)
 		if !ok {
+			// ADR-001: synthetic finalize before erroring so a malformed
+			// run-ended terminator still unlocks the composer.
+			s.finalizeInFlight("terminated abnormally: bad run_ended payload", "bad_run_ended_payload", "errored", ev.Timestamp)
 			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
 		}
-		s.finalizeInFlight(p.Message, ev.Timestamp)
+		s.finalizeInFlight(p.Message, "runner_killed", "aborted", ev.Timestamp)
 	case EventClaudeError:
 		p, ok := ev.Payload.(*ClaudeErrorPayload)
 		if !ok {
+			// ADR-001: synthetic finalize before erroring so a malformed
+			// error terminator still unwinds the in-flight turn.
+			s.finalizeInFlight("terminated abnormally: bad claude_error payload", "bad_claude_error_payload", "errored", ev.Timestamp)
 			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
 		}
 		s.state.LastError = &ClaudeError{Code: p.Code, Message: p.Message}
-		s.finalizeInFlight(p.Message, ev.Timestamp)
+		reason, outcome := classifyClaudeError(p.Code)
+		s.finalizeInFlight(p.Message, reason, outcome, ev.Timestamp)
 	case EventTaskStarted:
 		p, _ := ev.Payload.(*TaskStartedPayload)
 		if p != nil {
@@ -266,10 +280,24 @@ func (s *SessionState) applyToolResult(p *ToolResultPayload, ts time.Time) {
 		b := &turn.Blocks[i]
 		if b.Kind == "tool" && b.Tool != nil && b.Tool.ToolUseID == p.ToolUseID {
 			b.Tool.Result = p.Content
-			b.Tool.IsError = p.IsError
-			b.Tool.FinishedAt = timePtr(ts)
+			outcome := "completed"
+			if p.IsError {
+				outcome = "errored"
+			}
+			setToolOutcome(b.Tool, outcome, ts)
 			return
 		}
+	}
+	// ADR-002: a tool_result for a ToolUseID with no matching block is an
+	// anomaly (out-of-order stream, lost tool_use_start). Dropping it
+	// silently is undebuggable, so emit a greppable WARN. Also record a
+	// LastError so the drop is observable from state (not just logs) — a
+	// fail-safe surfacing of otherwise-lost data.
+	slog.Warn("claudestate: tool_result for unknown toolUseId",
+		"toolUseId", p.ToolUseID, "isError", p.IsError)
+	s.state.LastError = &ClaudeError{
+		Code:    "tool_result_unmatched",
+		Message: fmt.Sprintf("tool_result for unknown toolUseId %q had no matching block", p.ToolUseID),
 	}
 }
 
@@ -342,9 +370,11 @@ func (s *SessionState) applyResult(p *ResultPayload, ts time.Time) {
 	if turn.Done {
 		return
 	}
-	turn.Done = true
-	turn.IsError = p.IsError
-	turn.FinishedAt = timePtr(ts)
+	outcome := "completed"
+	if p.IsError {
+		outcome = "errored"
+	}
+	setTurnOutcome(turn, outcome, "", ts)
 	if p.TotalCostUsd != 0 {
 		c := p.TotalCostUsd
 		turn.TotalCostUsd = &c
@@ -357,7 +387,7 @@ func (s *SessionState) applyResult(p *ResultPayload, ts time.Time) {
 // finalizeInFlight closes off an unfinished trailing turn as an
 // error. Called by claude_run_ended and claude_error so the composer
 // unlocks even when no result event arrived.
-func (s *SessionState) finalizeInFlight(reason string, ts time.Time) {
+func (s *SessionState) finalizeInFlight(reason, abortReason, outcome string, ts time.Time) {
 	turn := s.lastTurn()
 	s.state.InFlight = false
 	// Clear but keep non-nil slices — the JSON wire format must
@@ -373,12 +403,11 @@ func (s *SessionState) finalizeInFlight(reason string, ts time.Time) {
 	if turn == nil || turn.Done {
 		return
 	}
-	turn.Done = true
-	turn.IsError = true
-	turn.FinishedAt = timePtr(ts)
+	setTurnOutcome(turn, outcome, abortReason, ts)
 	if len(turn.Blocks) == 0 && reason != "" {
 		turn.Blocks = []AssistantBlock{{Kind: "text", Text: reason}}
 	}
+	logAbnormalTermination(s.SessionID(), turn.ID, outcome, abortReason, 0)
 }
 
 // ---- internal turn bookkeeping ----
