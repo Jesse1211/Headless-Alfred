@@ -174,7 +174,7 @@ func (s *SessionState) Apply(ev Event) error {
 			// finalize would strand the turn (Done=false, InFlight=true)
 			// forever — a permanent spinner. Synthetically finalize, then
 			// surface the error.
-			s.finalizeInFlight("terminated abnormally: bad result payload", ev.Timestamp)
+			s.finalizeInFlight("terminated abnormally: bad result payload", "bad_result_payload", "errored", ev.Timestamp)
 			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
 		}
 		s.applyResult(p, ev.Timestamp)
@@ -183,7 +183,7 @@ func (s *SessionState) Apply(ev Event) error {
 		if !ok {
 			// ADR-001: synthetic finalize before erroring so a malformed
 			// run-ended terminator still unlocks the composer.
-			s.finalizeInFlight("terminated abnormally: bad run_ended payload", ev.Timestamp)
+			s.finalizeInFlight("terminated abnormally: bad run_ended payload", "bad_run_ended_payload", "errored", ev.Timestamp)
 			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
 		}
 		s.finalizeInFlight(p.Message, "runner_killed", "aborted", ev.Timestamp)
@@ -192,7 +192,7 @@ func (s *SessionState) Apply(ev Event) error {
 		if !ok {
 			// ADR-001: synthetic finalize before erroring so a malformed
 			// error terminator still unwinds the in-flight turn.
-			s.finalizeInFlight("terminated abnormally: bad claude_error payload", ev.Timestamp)
+			s.finalizeInFlight("terminated abnormally: bad claude_error payload", "bad_claude_error_payload", "errored", ev.Timestamp)
 			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
 		}
 		s.state.LastError = &ClaudeError{Code: p.Code, Message: p.Message}
