@@ -3,6 +3,7 @@ package claudestate
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -271,6 +272,11 @@ func (s *SessionState) applyToolResult(p *ToolResultPayload, ts time.Time) {
 			return
 		}
 	}
+	// ADR-002: a tool_result with no matching block is a real anomaly
+	// (out-of-order stream, lost tool_use_start). Silently dropping it is
+	// undebuggable, so emit a greppable WARN before returning. This is a
+	// pure observability addition — no state mutation, no behavior change.
+	slog.Warn("claudestate: tool_result for unknown toolUseId", "toolUseId", p.ToolUseID)
 }
 
 func (s *SessionState) applyThinkingDelta(p *ThinkingDeltaPayload) {
