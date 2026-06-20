@@ -38,9 +38,16 @@ func TestE2E_CloseSession_RunningCommandTerminated(t *testing.T) {
 		t.Fatalf("delete: code=%d", resp.StatusCode)
 	}
 
-	// Wait up to 5s for the sleep 30 process to be reaped.
+	// Wait for the sleep 30 process to be reaped. DELETE triggers
+	// tmux kill-session → SIGHUP/SIGTERM of the bash subtree → kernel
+	// reaping. That whole chain is near-instant locally, but in a
+	// resource-constrained CI kind node (shared CPU, slow process
+	// scheduling) it can take several seconds. We only widen HOW LONG we
+	// wait for an outcome that does happen — we still assert the process
+	// is gone.
+	const reapWait = 15 * time.Second // CI kind is slower than local
 	gone := false
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(reapWait)
 	for time.Now().Before(deadline) {
 		pids := strings.TrimSpace(execInPod(t, "ps -eo pid,comm | awk '$2==\"sleep\" {print $1}' || true"))
 		if pids == "" {
@@ -50,7 +57,7 @@ func TestE2E_CloseSession_RunningCommandTerminated(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if !gone {
-		t.Fatal("sleep 30 still running 5s after DELETE")
+		t.Fatalf("sleep 30 still running %s after DELETE", reapWait)
 	}
 
 	// Session directory under /data/sessions/<sid> must be gone.

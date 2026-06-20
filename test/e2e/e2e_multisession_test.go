@@ -100,8 +100,20 @@ func TestE2E_GoRestart_DuringStreamingChunks(t *testing.T) {
 
 	// Re-attach, then poll the REST endpoint until the command shows up
 	// with status completed and the output contains every integer 1..100.
+	//
+	// On a CI kind node this poll has to outlast a chain of slow steps that
+	// run AFTER alfred is killed mid-stream: the command (still alive in
+	// tmux, piped to pty.stream on the PVC) finishing its remaining ~2.5s of
+	// iterations, the entrypoint respawning alfred, the new alfred reattaching
+	// and draining the pty.stream tail, and the persister firing the Ended
+	// event that flips the record to "completed" with the full output. The
+	// persister writes output + status="completed" together (see
+	// Manager.startPersister), so a "completed" record always carries the
+	// full output — the only CI risk is that the whole chain takes longer
+	// than the poll, so we widen the poll, never the data or the assertion.
 	tok2, _ := login(t, testUser, testPassword)
-	pollDeadline := time.Now().Add(30 * time.Second)
+	const restartCompletePoll = 60 * time.Second // CI kind is slower than local
+	pollDeadline := time.Now().Add(restartCompletePoll)
 	for time.Now().Before(pollDeadline) {
 		req, _ := http.NewRequest("GET", baseHTTP+"/api/sessions/"+sid+"/commands", nil)
 		req.Header.Set("Authorization", "Bearer "+tok2)
@@ -141,5 +153,5 @@ func TestE2E_GoRestart_DuringStreamingChunks(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatal("command never completed after restart")
+	t.Fatalf("command never completed within %s after restart", restartCompletePoll)
 }

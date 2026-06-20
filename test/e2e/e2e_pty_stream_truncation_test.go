@@ -20,6 +20,15 @@ import (
 // idle boundary — exactly the racy path spec §4.4 describes.
 const sixMiB = 6 * 1024 * 1024
 
+// streamReadTimeout bounds how long the WS read helpers wait for the next
+// frame. This test pushes 6 MiB through the kubectl port-forwarded WS twice;
+// every "started"/"done" frame we wait for is queued BEHIND a backlog of
+// chunk frames that must first drain over a CPU/throughput-constrained CI
+// kind node. The frames DO arrive — we only widen HOW LONG we wait, never
+// the data size or what we assert (no lost bytes). 60s is generous enough to
+// cover both the multi-MiB drain and a slow CI node.
+const streamReadTimeout = 60 * time.Second // CI kind is slower than local
+
 func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 	tok, _ := login(t, testUser, testPassword)
 	sid := createSession(t, tok, "truncation")
@@ -32,8 +41,8 @@ func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write c1: %v", err)
 	}
-	cmd1ID := waitForStarted(t, conn, sid, 5*time.Second)
-	waitForDone(t, conn, sid, cmd1ID, 60*time.Second)
+	cmd1ID := waitForStarted(t, conn, sid, streamReadTimeout)
+	waitForDone(t, conn, sid, cmd1ID, streamReadTimeout)
 
 	// Command 2: tiny — this is where the stream truncation can fire.
 	if err := conn.WriteJSON(map[string]any{
@@ -41,8 +50,8 @@ func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write c2: %v", err)
 	}
-	cmd2ID := waitForStarted(t, conn, sid, 5*time.Second)
-	waitForDone(t, conn, sid, cmd2ID, 10*time.Second)
+	cmd2ID := waitForStarted(t, conn, sid, streamReadTimeout)
+	waitForDone(t, conn, sid, cmd2ID, streamReadTimeout)
 
 	// Command 3: another 6 MiB.
 	if err := conn.WriteJSON(map[string]any{
@@ -51,13 +60,15 @@ func TestE2E_PtyStream_Truncation_NoLostBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write c3: %v", err)
 	}
-	cmd3ID := waitForStarted(t, conn, sid, 5*time.Second)
-	waitForDone(t, conn, sid, cmd3ID, 60*time.Second)
+	cmd3ID := waitForStarted(t, conn, sid, streamReadTimeout)
+	waitForDone(t, conn, sid, cmd3ID, streamReadTimeout)
 
 	// Give the persister goroutine a moment to flush each record (Status,
 	// Output) to disk before we read it back. Done events arrive on the WS
 	// before WriteOutput + Save complete in Manager.startPersister.
-	waitForPersisted(t, tok, sid, cmd3ID, 5*time.Second)
+	// Persisting a 6 MiB record to the PVC after "done" is also slower on a
+	// CI kind node, so give the persister the same generous budget.
+	waitForPersisted(t, tok, sid, cmd3ID, 30*time.Second)
 
 	// Fetch each command's persisted output.
 	for label, id := range map[string]string{"cmd1": cmd1ID, "cmd2": cmd2ID, "cmd3": cmd3ID} {
