@@ -147,14 +147,42 @@ export function reduceClaudeMsg(
       // Swap the optimistic placeholder turn id (pending:<nonce>) for
       // the server's authoritative turnId, and accept the server's
       // startedAt so all connected tabs converge on the same value.
-      return mutateClaude(prev, m.sessionID, (c) => ({
-        ...c,
-        turns: c.turns.map((t) =>
-          t.id === `pending:${m.clientNonce}`
-            ? { ...t, id: m.turnId, startedAt: m.timestamp }
-            : t
-        ),
-      }))
+      return mutateClaude(prev, m.sessionID, (c) => {
+        const exact = `pending:${m.clientNonce}`
+        if (c.turns.some((t) => t.id === exact)) {
+          return {
+            ...c,
+            turns: c.turns.map((t) =>
+              t.id === exact ? { ...t, id: m.turnId, startedAt: m.timestamp } : t,
+            ),
+          }
+        }
+        // ADR-004: the nonce matched no placeholder (frames raced /
+        // rebroadcast). The server is the source of truth, so never
+        // leave a `pending:` orphan stranded. If there is exactly one
+        // pending placeholder, re-key it to the server's turnId;
+        // otherwise append a fresh turn under the server turnId.
+        const pendingIdxs = c.turns
+          .map((t, i) => (t.id.startsWith('pending:') ? i : -1))
+          .filter((i) => i >= 0)
+        if (pendingIdxs.length === 1) {
+          const idx = pendingIdxs[0]
+          return {
+            ...c,
+            turns: c.turns.map((t, i) =>
+              i === idx ? { ...t, id: m.turnId, startedAt: m.timestamp } : t,
+            ),
+          }
+        }
+        if (c.turns.some((t) => t.id === m.turnId)) return c
+        return {
+          ...c,
+          turns: [
+            ...c.turns,
+            { id: m.turnId, prompt: '', startedAt: m.timestamp, blocks: [], done: false },
+          ],
+        }
+      })
     case 'tool_decision_applied':
       // Overwrite the optimistically-set decision on the matching tool
       // block so other connected tabs converge on the server value.
@@ -363,7 +391,11 @@ export function applyClaudeEvent(
         last.blocks = [{ kind: 'text', text: p.result }]
       }
       turns[lastIdx] = last
-      return { ...prev, turns, inFlight: false }
+      // ADR-005: a clean result (not an error) clears a stale lastError
+      // even when no fresh beginClaudeTurn ran (server-driven / reattach
+      // path), so a recovered session never shows an outdated red banner.
+      const lastError = p.isError ? prev.lastError : undefined
+      return { ...prev, turns, inFlight: false, lastError }
     }
     case 'task_started': {
       const p = asTaskPayload('task_started', payload)
