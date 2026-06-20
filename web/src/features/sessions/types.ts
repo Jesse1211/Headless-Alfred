@@ -73,6 +73,10 @@ export interface ClaudeTurn {
   done: boolean
   // Set by the result event.
   isError?: boolean
+  /** Terminal state, source of truth. "" / undefined = in progress. */
+  outcome?: 'completed' | 'errored' | 'aborted'
+  /** Machine-readable interrupt reason (errored/aborted only). */
+  abortReason?: string
   totalCostUsd?: number
   // Token usage (cumulative if multiple message_delta events).
   usage?: {
@@ -93,6 +97,8 @@ export interface ClaudeToolCall {
   // What the user decided when the approval card surfaced.
   // Always present on the wire: 'allow', 'deny', or 'pending'.
   decision: 'allow' | 'deny' | 'pending'
+  /** Terminal state. undefined = not terminated. */
+  outcome?: 'completed' | 'errored' | 'aborted' | 'denied'
   // Output from the tool, once it ran. May still be empty if denied.
   result?: string
   isError?: boolean
