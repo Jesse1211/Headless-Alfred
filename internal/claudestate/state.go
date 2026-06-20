@@ -3,6 +3,7 @@ package claudestate
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -282,6 +283,17 @@ func (s *SessionState) applyToolResult(p *ToolResultPayload, ts time.Time) {
 			b.Tool.FinishedAt = timePtr(ts)
 			return
 		}
+	}
+	// ADR-002: a tool_result for a ToolUseID with no matching block is an
+	// anomaly (out-of-order stream, lost tool_use_start). Dropping it
+	// silently is undebuggable, so emit a greppable WARN. Also record a
+	// LastError so the drop is observable from state (not just logs) — a
+	// fail-safe surfacing of otherwise-lost data.
+	slog.Warn("claudestate: tool_result for unknown toolUseId",
+		"toolUseId", p.ToolUseID, "isError", p.IsError)
+	s.state.LastError = &ClaudeError{
+		Code:    "tool_result_unmatched",
+		Message: fmt.Sprintf("tool_result for unknown toolUseId %q had no matching block", p.ToolUseID),
 	}
 }
 
