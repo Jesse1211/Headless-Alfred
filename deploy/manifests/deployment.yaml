@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alfred
+  namespace: alfred
+  labels:
+    app: alfred
+spec:
+  replicas: 1
+  strategy:
+    # Recreate, NOT RollingUpdate. The PVC is ReadWriteOnce and the
+    # tmux server inside the pod owns a unix socket on /data; rolling
+    # two pods would race the PVC mount and corrupt session state.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: alfred
+  template:
+    metadata:
+      labels:
+        app: alfred
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+      # subPath mounts are NOT covered by fsGroup recursive chown, so on
+      # a fresh PVC /data and /home/alfred come up root:root and UID 1000
+      # can't write. Fix ownership as root, then exit.
+      - name: chown-volumes
+        image: busybox:1.36
+        command:
+          - sh
+          - -c
+          - 'chown -R 1000:1000 /data /home/alfred && chmod 0700 /home/alfred'
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+          capabilities:
+            drop: ['ALL']
+            add: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE']
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: data
+          mountPath: /home/alfred
+          subPath: home
+      containers:
+      - name: alfred
+        # E2E seds this exact string to the locally-built/loaded tag.
+        image: ghcr.io/jesseliu/headless-alfred:dev
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: ALFRED_ADDR
+          value: ":8080"
+        - name: ALFRED_DATA_DIR
+          value: "/data"
+        - name: ALFRED_PVC_LIMIT
+          value: "5Gi"
+        - name: ALFRED_USER
+          valueFrom:
+            secretKeyRef:
+              name: alfred-auth
+              key: ALFRED_USER
+        - name: ALFRED_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: alfred-auth
+              key: ALFRED_PASSWORD
+        - name: ALFRED_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: alfred-auth
+              key: ALFRED_TOKEN
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        # Persist the whole home directory (git creds, ~/.claude state,
+        # transcripts) on the same PVC via an umbrella subPath.
+        - name: data
+          mountPath: /home/alfred
+          subPath: home
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          readOnlyRootFilesystem: false
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: alfred-data
