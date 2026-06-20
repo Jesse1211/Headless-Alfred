@@ -363,7 +363,7 @@ export function applyClaudeEvent(
         ...t,
         result: p.content,
         isError: p.isError,
-        outcome: p.isError ? ('errored' as const) : ('completed' as const),
+        outcome: outcomeForError(p.isError),
         finishedAt: asTimestamp(frameTs),
       }))
       turns[lastIdx] = last
@@ -381,7 +381,7 @@ export function applyClaudeEvent(
       if (!last) return { ...prev, inFlight: false }
       last.done = true
       last.isError = p.isError
-      last.outcome = p.isError ? 'errored' : 'completed'
+      last.outcome = outcomeForError(p.isError)
       last.totalCostUsd = p.totalCostUsd
       last.finishedAt = asTimestamp(frameTs)
       // If the turn has no assistant text yet (auth failure, etc.),
@@ -648,6 +648,13 @@ export function parseAskUserQuestionInput(input: unknown): ClaudeQuestion[] {
 // to fall back to client time.
 function asTimestamp(frameTs: string | undefined): string {
   return frameTs ?? new Date().toISOString()
+}
+
+// outcomeForError maps the normal completion path's isError flag to its
+// terminal outcome. Shared by the turn `result` and tool `tool_result`
+// reducers (mirrors Go's outcomeForError) so they can't drift apart.
+function outcomeForError(isError: boolean): 'errored' | 'completed' {
+  return isError ? 'errored' : 'completed'
 }
 
 // ---- payload narrowing ---------------------------------------------------

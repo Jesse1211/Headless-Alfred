@@ -11,6 +11,16 @@ func isErrorOutcome(outcome string) bool {
 	return outcome == "errored" || outcome == "aborted"
 }
 
+// outcomeForError maps the normal completion path's isError flag to its
+// terminal outcome. The single derivation used by both the turn `result`
+// and tool `tool_result` reducers so they can't drift apart.
+func outcomeForError(isError bool) string {
+	if isError {
+		return "errored"
+	}
+	return "completed"
+}
+
 // setTurnOutcome is the SOLE writer of a turn's terminal state.
 // Done/IsError/FinishedAt are derived from outcome so the 12 termination
 // paths can never disagree. First terminator wins (an already-terminated
