@@ -148,14 +148,17 @@ func TestE2E_GoRestart_DuringStreamingChunks(t *testing.T) {
 				// assert all of 1..100 survive. What the design DOES guarantee:
 				// the command keeps running and completes, and the post-restart
 				// tail is a CONTIGUOUS suffix ending at 100 (no gaps within the
-				// surviving portion, final line present).
-				if !strings.Contains(out, "\n100\n") && !strings.HasPrefix(out, "100\n") {
+				// surviving portion, final line present). The pty emits CRLF
+				// (\r\n), so normalize to \n before line-matching — otherwise
+				// "\n100\n" never matches "99\r\n100\r\n".
+				norm := strings.ReplaceAll(out, "\r\n", "\n")
+				if !strings.Contains(norm, "\n100\n") && !strings.HasPrefix(norm, "100\n") {
 					t.Fatalf("final integer 100 missing — command did not complete cleanly after restart. output: %q", out)
 				}
 				// Lowest surviving integer, then assert lowest..100 has no holes.
 				lowest := 0
 				for i := 1; i <= 100; i++ {
-					if strings.Contains(out, fmt.Sprintf("\n%d\n", i)) || strings.HasPrefix(out, fmt.Sprintf("%d\n", i)) {
+					if strings.Contains(norm, fmt.Sprintf("\n%d\n", i)) || strings.HasPrefix(norm, fmt.Sprintf("%d\n", i)) {
 						lowest = i
 						break
 					}
@@ -164,7 +167,7 @@ func TestE2E_GoRestart_DuringStreamingChunks(t *testing.T) {
 					t.Fatalf("no integers at all in post-restart output: %q", out)
 				}
 				for i := lowest; i <= 100; i++ {
-					if !strings.Contains(out, fmt.Sprintf("\n%d\n", i)) && !strings.HasPrefix(out, fmt.Sprintf("%d\n", i)) {
+					if !strings.Contains(norm, fmt.Sprintf("\n%d\n", i)) && !strings.HasPrefix(norm, fmt.Sprintf("%d\n", i)) {
 						t.Fatalf("gap in surviving tail: %d missing between %d and 100. output: %q", i, lowest, out)
 					}
 				}

@@ -206,13 +206,20 @@ func killTmuxServerInPod(t *testing.T) {
 // stdout. Used to inspect bash process state and filesystem during E2E.
 func execInPod(t *testing.T, script string) string {
 	t.Helper()
-	cmd := exec.Command("kubectl", "-n", "alfred", "exec", "deployment/alfred", "--",
-		"sh", "-c", script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("execInPod %q: %v output=%s", script, err, out)
+	// -c alfred is REQUIRED: the pod has an init container (chown-volumes),
+	// so without an explicit container kubectl prints a "Defaulted container
+	// ... out of: alfred, chown-volumes (init)" warning to stderr, which
+	// CombinedOutput folds into the result and corrupts any parsed value
+	// (e.g. a PID). Pin the container and capture stdout only.
+	cmd := exec.Command("kubectl", "-n", "alfred", "exec", "-c", "alfred",
+		"deployment/alfred", "--", "sh", "-c", script)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("execInPod %q: %v stderr=%s", script, err, stderr.String())
 	}
-	return string(out)
+	return stdout.String()
 }
 
 // waitForStarted blocks until a 'started' frame for sessionID arrives,
