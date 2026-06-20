@@ -44,7 +44,11 @@ func TestRunner_Prompt_HappyPath(t *testing.T) {
 	}
 	defer pr.Stop()
 
-	events := drain(t, pr.Events, 3*time.Second)
+	// 10s, not 3s: the fake claude binary is a shell script whose startup +
+	// output can lag past a few seconds on a slow/contended CI node, which
+	// flaked this as "got 0 events". The events DO arrive — only widen the
+	// wait. (Local is near-instant.)
+	events := drain(t, pr.Events, 10*time.Second)
 	if len(events) < 5 {
 		t.Fatalf("got %d events, want at least 5; events=%v", len(events), kinds(events))
 	}
