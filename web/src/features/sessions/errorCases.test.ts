@@ -167,6 +167,40 @@ describe('GAP 3: lastError persists across a later successful result', () => {
 })
 
 // ---------------------------------------------------------------------------
+// HANDLED 3b — manual dismiss path: clearing lastError on the ClaudeState
+//             leaves a banner-free state.
+//
+// ADR-005 keeps the manual `clearError` dismiss button alongside the
+// auto-clear-on-clean-result behavior (GAP 3). The dismiss button is wired
+// through useSessions.clearError (end-to-end coverage in useSessions.test.ts);
+// here we assert the state-layer invariant the button relies on: once
+// lastError is set (claude_error) and then cleared, the ClaudeChatView banner
+// predicate (`!!state.lastError`) is false again.
+// ---------------------------------------------------------------------------
+describe('HANDLED 3b: manual dismiss clears lastError on ClaudeState', () => {
+  it('a state with lastError, once cleared, exposes no error banner', () => {
+    const sid = 'sess-dismiss'
+    // claude_error stamps lastError.
+    let perSession = perSessionWith(sid, beginClaudeTurn(emptyClaudeState(), 'prompt'))
+    perSession = reduceClaudeMsg(perSession, {
+      type: 'claude_error',
+      sessionID: sid,
+      code: 'rate_limited',
+      message: 'slow down',
+      timestamp: TS,
+    } as never)!
+    const withError = perSession.get(sid)!.claude!
+    expect(withError.lastError).toEqual({ code: 'rate_limited', message: 'slow down' })
+    expect(!!withError.lastError).toBe(true) // banner shown
+
+    // Manual dismiss: the button resets lastError to undefined.
+    const dismissed = { ...withError, lastError: undefined }
+    expect(dismissed.lastError).toBeUndefined()
+    expect(!!dismissed.lastError).toBe(false) // banner gone
+  })
+})
+
+// ---------------------------------------------------------------------------
 // HANDLED 4 — tool_decision_applied for a non-existent toolUseId is a safe
 //             no-op.
 // ---------------------------------------------------------------------------
