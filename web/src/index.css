@@ -132,6 +132,8 @@ code, pre {
   background: rgba(44, 156, 74, 0.15);
   color: #2c9c4a;
 }
+.turn-phase-chip--error { background: rgba(232, 140, 140, 0.18); color: #e88c8c; }
+.turn-phase-chip--interrupted { background: rgba(240, 163, 94, 0.18); color: #f0a35e; }
 .turn-phase-chip--initializing,
 .turn-phase-chip--thinking {
   background: rgba(0, 0, 0, 0.07);

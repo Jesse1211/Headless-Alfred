@@ -344,8 +344,13 @@ function TurnView({ turn, bgTasks, subagents }: {
   )
 }
 
-function turnPhase(turn: ClaudeTurn): string {
-  if (turn.done) return 'Done'
+export function turnPhase(turn: ClaudeTurn): string {
+  switch (turn.outcome) {
+    case 'completed': return 'Done'
+    case 'errored':   return 'Error'
+    case 'aborted':   return 'Interrupted'
+  }
+  if (turn.done) return 'Done' // pre-outcome snapshot fallback
   if (turn.blocks.length === 0) return 'Initializing'
   // The last block determines the phase: if it's a still-running tool, "Calling X"; otherwise "Thinking".
   const last = turn.blocks[turn.blocks.length - 1]
@@ -710,7 +715,14 @@ function formatJSON(v: unknown): string {
 // wrongly imply the user rejected the tool.
 export function toolStatus(
   tool: ClaudeToolCall,
-): 'pending' | 'denied' | 'interrupted' | 'running' | 'done' {
+): 'pending' | 'denied' | 'interrupted' | 'errored' | 'running' | 'done' {
+  switch (tool.outcome) {
+    case 'aborted':   return 'interrupted'
+    case 'errored':   return 'errored'
+    case 'denied':    return 'denied'
+    case 'completed': return 'done'
+  }
+  // Not terminated, or a pre-outcome snapshot: fall back to legacy fields.
   if (tool.decision === 'deny') {
     if (tool.isError && tool.result?.startsWith('Interrupted')) return 'interrupted'
     return 'denied'

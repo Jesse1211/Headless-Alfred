@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { TurnStatsLine, toolStatus } from './ClaudeChatView'
+import { TurnStatsLine, toolStatus, turnPhase } from './ClaudeChatView'
 import type { BgTask, ClaudeToolCall, ClaudeTurn, SubagentEntry } from './types'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -102,6 +102,32 @@ describe('TurnStatsLine', () => {
       decision: 'deny',
     }
     expect(toolStatus(denied)).toBe('denied')
+  })
+
+  it('toolStatus reads outcome=aborted as interrupted', () => {
+    const tool: ClaudeToolCall = {
+      toolUseId: 't1', name: 'Edit', decision: 'deny', outcome: 'aborted',
+    }
+    expect(toolStatus(tool)).toBe('interrupted')
+  })
+
+  it('toolStatus reads outcome=errored as errored', () => {
+    const tool: ClaudeToolCall = {
+      toolUseId: 't2', name: 'Bash', decision: 'allow', outcome: 'errored',
+    }
+    expect(toolStatus(tool)).toBe('errored')
+  })
+
+  it('turnPhase shows Interrupted for an aborted turn', () => {
+    expect(turnPhase(makeTurn({ done: true, outcome: 'aborted' }))).toBe('Interrupted')
+  })
+
+  it('turnPhase shows Error for an errored turn', () => {
+    expect(turnPhase(makeTurn({ done: true, outcome: 'errored' }))).toBe('Error')
+  })
+
+  it('turnPhase shows Done for a completed turn', () => {
+    expect(turnPhase(makeTurn({ done: true, outcome: 'completed' }))).toBe('Done')
   })
 
   it('still uses subagents (blocking) label for the subagent group', () => {
