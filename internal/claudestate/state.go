@@ -280,8 +280,11 @@ func (s *SessionState) applyToolResult(p *ToolResultPayload, ts time.Time) {
 		b := &turn.Blocks[i]
 		if b.Kind == "tool" && b.Tool != nil && b.Tool.ToolUseID == p.ToolUseID {
 			b.Tool.Result = p.Content
-			b.Tool.IsError = p.IsError
-			b.Tool.FinishedAt = timePtr(ts)
+			outcome := "completed"
+			if p.IsError {
+				outcome = "errored"
+			}
+			setToolOutcome(b.Tool, outcome, ts)
 			return
 		}
 	}

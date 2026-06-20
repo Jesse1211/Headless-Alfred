@@ -54,6 +54,11 @@ func Load(snapshotPath, jsonlPath string) (ClaudeState, error) {
 	// never settled). A Done turn must never contain a pending/unfinished
 	// tool, or the frontend freezes it on PENDING with a live timer.
 	finalizeHangingToolBlocks(state.Turns)
+	// Backfill Outcome on every loaded turn so pre-outcome snapshots get a
+	// derived terminal state (additive + backward-compatible; no version bump).
+	for i := range state.Turns {
+		backfillOutcome(&state.Turns[i])
+	}
 	state.InFlight = computeInFlight(state.Turns)
 
 	// ADR-018: after the turns merge, replay task_started /
@@ -88,10 +93,8 @@ func finalizeStaleTrailingTurn(turns []ClaudeTurn) {
 		return
 	}
 	last := &turns[n-1]
-	last.Done = true
-	last.IsError = true
 	now := time.Now().UTC()
-	last.FinishedAt = &now
+	setTurnOutcome(last, "aborted", "server_restart", now)
 
 	last.Blocks = append(last.Blocks, AssistantBlock{
 		Kind: "text",
@@ -122,30 +125,24 @@ func finalizeHangingToolBlocks(turns []ClaudeTurn) {
 				continue
 			}
 			t := b.Tool
-			if t.Decision != "pending" && t.FinishedAt != nil {
+			if t.Outcome != "" {
 				continue // already settled
+			}
+			if t.Decision != "pending" && t.FinishedAt != nil {
+				continue // already settled (pre-outcome snapshot)
 			}
 			if t.Decision == "pending" {
 				t.Decision = "deny" // never approved → treat as denied
 			}
-			t.IsError = true
-			if t.FinishedAt == nil {
-				t.FinishedAt = &now
-			}
+			setToolOutcome(t, "aborted", now)
 			if t.Result == "" {
 				t.Result = "Interrupted: the runner was killed (server restart) before this tool finished."
 			}
 			killed = append(killed, t.Name+"("+t.ToolUseID+")")
 		}
 		if len(killed) > 0 {
-			// Log loudly so this is greppable in production. A hanging tool
-			// means a runner died mid-turn — surface which turn and which
-			// tools, or the bug is invisible.
-			slog.Warn("claudestate: finalized hanging tool blocks after runner death",
-				"turnId", turn.ID,
-				"turnDone", turn.Done,
-				"hangingToolsKilled", len(killed),
-				"tools", killed)
+			// One greppable interrupt log for every errored/aborted path.
+			logAbnormalTermination("", turn.ID, "aborted", "server_restart", len(killed))
 		}
 	}
 }
@@ -359,6 +356,9 @@ func mergeBlocks(jsonl, snap []AssistantBlock) []AssistantBlock {
 			merged.FinishedAt = sn.FinishedAt
 			merged.Decision = sn.Decision
 			merged.BgTaskID = sn.BgTaskID
+			// Outcome is the source of truth; carry it from the snapshot so
+			// the loaded tool matches what the live reducer produced.
+			merged.Outcome = sn.Outcome
 		}
 		out[i] = AssistantBlock{Kind: "tool", Tool: &merged}
 	}

@@ -221,6 +221,9 @@ func TestLoad_StaleTrailingTurn_FinalizesHangingToolBlocks(t *testing.T) {
 	if tool.Decision == "pending" {
 		t.Error("hanging tool block must not stay decision=pending after restart")
 	}
+	if tool.Outcome != "aborted" {
+		t.Errorf("hanging tool should be aborted, got Outcome=%q", tool.Outcome)
+	}
 	if tool.FinishedAt == nil {
 		t.Error("hanging tool block must get a finishedAt so the frontend timer stops")
 	}
@@ -280,8 +283,30 @@ func TestLoad_DoneTurn_WithHangingToolBlock_StillFinalizesTool(t *testing.T) {
 	if tool.Decision == "pending" {
 		t.Error("hanging tool in an already-Done turn must still be finalized")
 	}
+	if tool.Outcome != "aborted" {
+		t.Errorf("hanging tool should be aborted, got Outcome=%q", tool.Outcome)
+	}
 	if tool.FinishedAt == nil {
 		t.Error("hanging tool must get finishedAt even when the turn was already Done")
+	}
+}
+
+func TestBackfillOutcome_OldSnapshot(t *testing.T) {
+	// A done turn from before the outcome field existed.
+	completed := &ClaudeTurn{ID: "u1", Done: true, IsError: false}
+	errored := &ClaudeTurn{ID: "u2", Done: true, IsError: true}
+	running := &ClaudeTurn{ID: "u3", Done: false}
+	backfillOutcome(completed)
+	backfillOutcome(errored)
+	backfillOutcome(running)
+	if completed.Outcome != "completed" {
+		t.Errorf("completed.Outcome=%q", completed.Outcome)
+	}
+	if errored.Outcome != "errored" {
+		t.Errorf("errored.Outcome=%q", errored.Outcome)
+	}
+	if running.Outcome != "" {
+		t.Errorf("running turn should not get an outcome: %q", running.Outcome)
 	}
 }
 
