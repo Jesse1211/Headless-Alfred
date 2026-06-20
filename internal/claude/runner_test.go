@@ -28,11 +28,22 @@ func TestRunner_Prompt_HappyPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-based fake claude binary; skip on Windows")
 	}
-	bin := writeFakeClaude(t, fakeClaudeScript(`cat $FIXTURE`))
 	fixture := absFixture(t, "simple_text_response.jsonl")
+	// Bake the fixture path directly into the script rather than passing
+	// it through the child's environment. The previous version did
+	// `cat $FIXTURE` and relied on t.Setenv("FIXTURE") propagating into
+	// the spawned process via cmd.Env = os.Environ(). When FIXTURE did
+	// not reach the child (env not propagated on some CI runners, or lost
+	// to a t.Setenv / os.Environ scheduling race), `cat $FIXTURE`
+	// degenerated to a bare `cat`, which silently reads the prompt off
+	// stdin and echoes one non-JSON line — closing the events channel
+	// with 0-1 events and a nil Wait error. That is the exact CI-only
+	// "got 0 events, want at least 5" fast-flake. Baking the absolute
+	// fixture path in (and `exit 1` if it's missing) removes the env
+	// dependency and makes any real failure loud instead of empty.
+	bin := writeFakeClaude(t, fakeClaudeCat(fixture))
 
 	r := &Runner{claudeBin: bin}
-	t.Setenv("FIXTURE", fixture)
 
 	pr, err := r.Prompt(context.Background(), PromptOptions{
 		SessionUUID: "fake-uuid",
@@ -184,6 +195,24 @@ func writeFakeClaude(t *testing.T, body string) string {
 // fakeClaudeScript wraps a body with the standard shebang.
 func fakeClaudeScript(body string) string {
 	return "#!/bin/sh\n" + body + "\n"
+}
+
+// fakeClaudeCat builds a fake-claude body that cats a specific fixture
+// file whose absolute path is baked into the script at write time. It
+// does NOT depend on any environment variable reaching the child, and
+// it fails loudly (exit 1, message on stderr) if the fixture is missing
+// — so a misconfigured test surfaces as a non-nil Wait()/empty stream
+// with a diagnostic instead of a silent zero-event close. The path is
+// single-quoted with embedded single quotes escaped, so paths with
+// spaces or shell metacharacters are safe.
+func fakeClaudeCat(fixturePath string) string {
+	q := "'" + strings.ReplaceAll(fixturePath, "'", `'\''`) + "'"
+	return fakeClaudeScript(
+		"if [ ! -f " + q + " ]; then\n" +
+			"  echo 'fake-claude: fixture not found: ' " + q + " >&2\n" +
+			"  exit 1\n" +
+			"fi\n" +
+			"cat " + q)
 }
 
 func absFixture(t *testing.T, name string) string {
