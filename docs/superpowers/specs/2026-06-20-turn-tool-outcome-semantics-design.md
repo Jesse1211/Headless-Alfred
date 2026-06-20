@@ -1,7 +1,7 @@
 # Turn/Tool Outcome Semantics — Design
 
 **Date:** 2026-06-20
-**Status:** Approved, ready for implementation plan
+**Status:** Implemented (next branch, merged to main 2026-06-20 via PR #7)
 **Branch:** `next`
 
 ## Problem

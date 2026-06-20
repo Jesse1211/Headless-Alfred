@@ -7,6 +7,18 @@ Most-recent first.
 
 ---
 
+## v0.6 — Honest Error & Interrupt States (2026-06-20)
+
+- **No more "Done" lies**: a Claude turn that was interrupted (server restart, runner killed, connection drop) no longer shows a green "Done" — it shows **Interrupted** (orange), distinct from a real **Error** (red) and a successful **Done** (green). Same for individual tool calls.
+- **No more frozen spinners**: turns and tools that were running when the runner died are now reliably finalized on reload — the elapsed timer stops and the composer unlocks, instead of spinning "Claude is thinking…" forever.
+- **Interrupts are debuggable**: every abnormal termination writes one greppable log line with a machine-readable reason (`runner_killed`, `ws_disconnect`, `server_shutdown`, `server_restart`, `spawn_failed`, `rate_limit`), so "it got interrupted a few times — why?" has an answer.
+- **Stale error banners clear**: a successful reply now dismisses a leftover error banner automatically (and the manual dismiss button still works).
+- **Sturdier state machine**: seven edge-case gaps in error handling closed — malformed terminator events no longer strand a turn, dropped tool results are logged instead of lost, and an out-of-order turn-start no longer orphans a placeholder.
+
+Under the hood: a single explicit `outcome` enum (completed / errored / aborted) is now the source of truth for how a turn or tool ended, replacing the ambiguous two-boolean encoding. Delivered via a multi-agent build with independent test + review gates.
+
+---
+
 ## v0.5 — Background Tasks Panel (2026-06-19)
 
 - **Background tasks panel**: a floating card in the workspace surfaces every live `Bash(run_in_background)` task, Monitor poller, and blocking subagent — grouped into "Background bash", "Subagents (blocking main Claude)", and "Recently finished". Open it from the `⚙ N Background tasks` header badge.

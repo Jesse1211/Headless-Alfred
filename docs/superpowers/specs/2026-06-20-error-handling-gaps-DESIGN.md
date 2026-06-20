@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-20
 **Branch:** `next`
-**Status:** Phase 1 complete — ready for hands-off build
+**Status:** Implemented (all 6 tasks merged; 7 gap tests green; PR #7 → main 2026-06-20)
 **Source audit:** two parallel code sweeps (backend Apply layer + frontend reducer) cataloged ~20 error cases; 7 confirmed real GAPs, each pinned by a failing test in `internal/claudestate/error_cases_test.go` and `web/src/features/sessions/errorCases.test.ts`.
 
 ## Context
