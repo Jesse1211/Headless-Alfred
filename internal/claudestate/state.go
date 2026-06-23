@@ -479,7 +479,7 @@ func (s *SessionState) applyTaskStarted(p *TaskStartedPayload, ts time.Time) {
 		Description: p.Description,
 		TaskType:    p.TaskType,
 		StartedAt:   ts, // BgTask.StartedAt stays non-optional — task only exists once it started
-		Status:      "in_progress",
+		Status:      BgTaskInProgress,
 	}
 	// Link the matching tool block.
 	for ti := range s.state.Turns {
@@ -500,7 +500,7 @@ func (s *SessionState) applyTaskNotification(p *TaskNotificationPayload, ts time
 	bt.NotificationCount++
 	bt.LastEventSummary = p.Summary
 	if p.Status == "completed" {
-		bt.Status = "completed"
+		bt.Status = BgTaskCompleted
 		if bt.FinishedAt == nil {
 			bt.FinishedAt = timePtr(ts)
 		}
@@ -518,7 +518,7 @@ func (s *SessionState) applyTaskUpdated(p *TaskUpdatedPayload, ts time.Time) {
 		status != "killed" && status != "stopped" {
 		return
 	}
-	bt.Status = status
+	bt.Status = BgTaskStatus(status)
 	if et, ok := p.Patch["end_time"].(float64); ok && et > 0 {
 		bt.FinishedAt = timePtr(time.Unix(0, int64(et)*int64(time.Millisecond)).UTC())
 	} else {
