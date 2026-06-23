@@ -225,6 +225,23 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 	if !requireSessionID(msg, "enter_claude", write) {
 		return
 	}
+	renderer, sh, ok := validateEnterClaude(msg, m, write)
+	if !ok {
+		return
+	}
+	if !enterClaudeRenderer(msg, renderer, sh, write) {
+		return
+	}
+	persistEnterClaude(msg, m, renderer)
+	_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID, Renderer: string(renderer)})
+}
+
+// validateEnterClaude resolves the renderer and the target shell,
+// running every precondition check. On any failure it writes the
+// appropriate error frame and returns ok=false. The idempotent
+// "already in claude mode, same renderer" case writes claude_entered
+// itself and also returns ok=false (nothing left to do).
+func validateEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) (store.ClaudeRenderer, session.Shell, bool) {
 	// Renderer selects between V0 TUI (xterm.js + raw PTY passthrough)
 	// and V1 UI (React chat + claude -p stream-json). Empty defaults to
 	// "tui" for backward compat with V0 clients that don't send the
@@ -235,7 +252,7 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 	}
 	if renderer != store.RendererTUI && renderer != store.RendererUI {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "bad_request", Message: "renderer must be 'tui' or 'ui'"})
-		return
+		return "", nil, false
 	}
 	if m.GetMode(msg.SessionID) == store.ModeClaude {
 		// Idempotent: if the session is already in claude mode with the
@@ -246,23 +263,23 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 		// Exit Claude first.
 		if m.GetRenderer(msg.SessionID) == renderer {
 			_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID, Renderer: string(renderer)})
-			return
+			return "", nil, false
 		}
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "renderer_mismatch", Message: "session is already in claude mode with a different renderer"})
-		return
+		return "", nil, false
 	}
 	sh, err := m.Get(msg.SessionID)
 	if errors.Is(err, session.ErrSessionNotFound) {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "unknown_session", Message: "no such session"})
-		return
+		return "", nil, false
 	}
 	if err != nil {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
-		return
+		return "", nil, false
 	}
 	if sh.CurrentCommand() != nil {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "session_busy", Message: "let the current command finish first"})
-		return
+		return "", nil, false
 	}
 
 	// Ensure the per-session Claude conversation UUID exists. Both
@@ -270,16 +287,22 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 	// renderer choices, Exit/re-enter, and Pod restart.
 	if _, err := m.EnsureClaudeConvoID(msg.SessionID); err != nil {
 		_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "manager_error", Message: err.Error()})
-		return
+		return "", nil, false
 	}
+	return renderer, sh, true
+}
 
+// enterClaudeRenderer performs the renderer-specific side effect. The
+// TUI path can hard-fail (returns false after writing enter_failed);
+// the UI path only ever soft-warns, so it always returns true.
+func enterClaudeRenderer(msg InMsg, renderer store.ClaudeRenderer, sh session.Shell, write func(OutMsg) error) bool {
 	switch renderer {
 	case store.RendererTUI:
 		// V0 path: send-keys `claude` into the tmux pane and let the
 		// TUI take over the bytes that flow through pty_data.
 		if err := sh.EnterClaude(); err != nil {
 			_ = write(OutMsg{Type: "error", SessionID: msg.SessionID, Code: "enter_failed", Message: err.Error()})
-			return
+			return false
 		}
 	case store.RendererUI:
 		// V1 path: do NOT touch the tmux pane. The pane stays at bash
@@ -300,7 +323,13 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 			}
 		}
 	}
+	return true
+}
 
+// persistEnterClaude commits the session's claude-mode metadata. Each
+// setter only soft-warns on failure (the in-memory transition already
+// happened); none abort the enter.
+func persistEnterClaude(msg InMsg, m *session.Manager, renderer store.ClaudeRenderer) {
 	if err := m.SetMode(msg.SessionID, store.ModeClaude); err != nil {
 		slog.Warn("SetMode(claude) failed", "session", msg.SessionID, "err", err)
 	}
@@ -320,7 +349,6 @@ func handleEnterClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) 
 	if err := m.SetTemplateID(msg.SessionID, msg.TemplateID); err != nil {
 		slog.Warn("SetTemplateID failed", "session", msg.SessionID, "err", err)
 	}
-	_ = write(OutMsg{Type: "claude_entered", SessionID: msg.SessionID, Renderer: string(renderer)})
 }
 
 func handleExitClaude(msg InMsg, m *session.Manager, write func(OutMsg) error) {

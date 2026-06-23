@@ -451,8 +451,8 @@ func replayBgTasksFromJsonl(path string, state *ClaudeState) {
 func forceKillInProgressBgTasks(state *ClaudeState) {
 	now := time.Now().UTC()
 	for id, bt := range state.BgTasks {
-		if bt.Status == "in_progress" {
-			bt.Status = "killed"
+		if bt.Status == BgTaskInProgress {
+			bt.Status = BgTaskKilled
 			bt.LastEventSummary = "killed when server restarted"
 			bt.FinishedAt = timePtr(now)
 			state.BgTasks[id] = bt

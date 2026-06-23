@@ -117,6 +117,31 @@ func (s *SessionState) BeginTurn(id, prompt string, startedAt time.Time) {
 	s.state.InFlight = true
 }
 
+// badPayloadErr is the uniform error returned when an event's payload
+// is wrong-typed for its kind.
+func badPayloadErr(kind EventKind) error {
+	return fmt.Errorf("claudestate.Apply: bad payload for %s", kind)
+}
+
+// strictPayload narrows ev.Payload to *T, returning an error if the
+// type doesn't match. Used by non-terminating events where a bad
+// payload is simply dropped with an error (no state mutation needed).
+func strictPayload[T any](ev Event) (*T, error) {
+	p, ok := ev.Payload.(*T)
+	if !ok {
+		return nil, badPayloadErr(ev.Kind)
+	}
+	return p, nil
+}
+
+// lenientPayload narrows ev.Payload to *T, returning nil (no error)
+// when the type doesn't match. Used by hook/task/decision events where
+// a missing or malformed payload is benign and simply skips the reducer.
+func lenientPayload[T any](ev Event) *T {
+	p, _ := ev.Payload.(*T)
+	return p
+}
+
 // Apply folds one Event into the in-memory state under the write
 // lock. Single mutation entry point. Returns an error only when the
 // payload is wrong-typed for its kind — silently no-ops on benign
@@ -131,39 +156,39 @@ func (s *SessionState) Apply(ev Event) error {
 	case EventMessageStart:
 		s.applyMessageStart()
 	case EventTextDelta:
-		p, ok := ev.Payload.(*TextDeltaPayload)
-		if !ok {
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		p, err := strictPayload[TextDeltaPayload](ev)
+		if err != nil {
+			return err
 		}
 		s.applyTextDelta(p)
 	case EventThinkingDelta:
-		p, ok := ev.Payload.(*ThinkingDeltaPayload)
-		if !ok {
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		p, err := strictPayload[ThinkingDeltaPayload](ev)
+		if err != nil {
+			return err
 		}
 		s.applyThinkingDelta(p)
 	case EventToolUseStart:
-		p, ok := ev.Payload.(*ToolUseStartPayload)
-		if !ok {
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		p, err := strictPayload[ToolUseStartPayload](ev)
+		if err != nil {
+			return err
 		}
 		s.applyToolUseStart(p, ev.Timestamp)
 	case EventToolResult:
-		p, ok := ev.Payload.(*ToolResultPayload)
-		if !ok {
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		p, err := strictPayload[ToolResultPayload](ev)
+		if err != nil {
+			return err
 		}
 		s.applyToolResult(p, ev.Timestamp)
 	case EventToolUseEnd:
-		p, ok := ev.Payload.(*ToolUseEndPayload)
-		if !ok {
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		p, err := strictPayload[ToolUseEndPayload](ev)
+		if err != nil {
+			return err
 		}
 		s.applyToolUseEnd(p)
 	case EventMessageDelta:
-		p, ok := ev.Payload.(*MessageDeltaPayload)
-		if !ok {
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+		p, err := strictPayload[MessageDeltaPayload](ev)
+		if err != nil {
+			return err
 		}
 		s.applyMessageDelta(p)
 	case EventResult:
@@ -175,7 +200,7 @@ func (s *SessionState) Apply(ev Event) error {
 			// forever — a permanent spinner. Synthetically finalize, then
 			// surface the error.
 			s.finalizeInFlight("terminated abnormally: bad result payload", "bad_result_payload", "errored", ev.Timestamp)
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+			return badPayloadErr(ev.Kind)
 		}
 		s.applyResult(p, ev.Timestamp)
 	case EventClaudeRunEnded:
@@ -184,7 +209,7 @@ func (s *SessionState) Apply(ev Event) error {
 			// ADR-001: synthetic finalize before erroring so a malformed
 			// run-ended terminator still unlocks the composer.
 			s.finalizeInFlight("terminated abnormally: bad run_ended payload", "bad_run_ended_payload", "errored", ev.Timestamp)
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+			return badPayloadErr(ev.Kind)
 		}
 		s.finalizeInFlight(p.Message, "runner_killed", "aborted", ev.Timestamp)
 	case EventClaudeError:
@@ -193,39 +218,33 @@ func (s *SessionState) Apply(ev Event) error {
 			// ADR-001: synthetic finalize before erroring so a malformed
 			// error terminator still unwinds the in-flight turn.
 			s.finalizeInFlight("terminated abnormally: bad claude_error payload", "bad_claude_error_payload", "errored", ev.Timestamp)
-			return fmt.Errorf("claudestate.Apply: bad payload for %s", ev.Kind)
+			return badPayloadErr(ev.Kind)
 		}
 		s.state.LastError = &ClaudeError{Code: p.Code, Message: p.Message}
 		reason, outcome := classifyClaudeError(p.Code)
 		s.finalizeInFlight(p.Message, reason, outcome, ev.Timestamp)
 	case EventTaskStarted:
-		p, _ := ev.Payload.(*TaskStartedPayload)
-		if p != nil {
+		if p := lenientPayload[TaskStartedPayload](ev); p != nil {
 			s.applyTaskStarted(p, ev.Timestamp)
 		}
 	case EventTaskNotification:
-		p, _ := ev.Payload.(*TaskNotificationPayload)
-		if p != nil {
+		if p := lenientPayload[TaskNotificationPayload](ev); p != nil {
 			s.applyTaskNotification(p, ev.Timestamp)
 		}
 	case EventTaskUpdated:
-		p, _ := ev.Payload.(*TaskUpdatedPayload)
-		if p != nil {
+		if p := lenientPayload[TaskUpdatedPayload](ev); p != nil {
 			s.applyTaskUpdated(p, ev.Timestamp)
 		}
 	case EventHookStarted:
-		p, _ := ev.Payload.(*HookStartedPayload)
-		if p != nil {
+		if p := lenientPayload[HookStartedPayload](ev); p != nil {
 			s.applyHookStarted(p, ev.Timestamp)
 		}
 	case EventHookResponse:
-		p, _ := ev.Payload.(*HookResponsePayload)
-		if p != nil {
+		if p := lenientPayload[HookResponsePayload](ev); p != nil {
 			s.applyHookResponse(p, ev.Timestamp)
 		}
 	case EventToolDecision:
-		p, _ := ev.Payload.(*ToolDecisionPayload)
-		if p != nil {
+		if p := lenientPayload[ToolDecisionPayload](ev); p != nil {
 			s.applyToolDecision(p)
 		}
 	default:
@@ -460,7 +479,7 @@ func (s *SessionState) applyTaskStarted(p *TaskStartedPayload, ts time.Time) {
 		Description: p.Description,
 		TaskType:    p.TaskType,
 		StartedAt:   ts, // BgTask.StartedAt stays non-optional — task only exists once it started
-		Status:      "in_progress",
+		Status:      BgTaskInProgress,
 	}
 	// Link the matching tool block.
 	for ti := range s.state.Turns {
@@ -481,7 +500,7 @@ func (s *SessionState) applyTaskNotification(p *TaskNotificationPayload, ts time
 	bt.NotificationCount++
 	bt.LastEventSummary = p.Summary
 	if p.Status == "completed" {
-		bt.Status = "completed"
+		bt.Status = BgTaskCompleted
 		if bt.FinishedAt == nil {
 			bt.FinishedAt = timePtr(ts)
 		}
@@ -499,7 +518,7 @@ func (s *SessionState) applyTaskUpdated(p *TaskUpdatedPayload, ts time.Time) {
 		status != "killed" && status != "stopped" {
 		return
 	}
-	bt.Status = status
+	bt.Status = BgTaskStatus(status)
 	if et, ok := p.Patch["end_time"].(float64); ok && et > 0 {
 		bt.FinishedAt = timePtr(time.Unix(0, int64(et)*int64(time.Millisecond)).UTC())
 	} else {

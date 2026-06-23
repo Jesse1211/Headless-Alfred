@@ -132,6 +132,20 @@ type ClaudeError struct {
 	Message string `json:"message"`
 }
 
+// BgTaskStatus is the lifecycle state of a background task. The five
+// values match the wire strings the CLI emits (ADR-010). External
+// wire input (TaskNotificationPayload.Status, TaskUpdatedPayload patch)
+// stays plain string and is converted at the reducer boundary.
+type BgTaskStatus string
+
+const (
+	BgTaskInProgress BgTaskStatus = "in_progress"
+	BgTaskCompleted  BgTaskStatus = "completed"
+	BgTaskFailed     BgTaskStatus = "failed"
+	BgTaskKilled     BgTaskStatus = "killed"
+	BgTaskStopped    BgTaskStatus = "stopped"
+)
+
 // BgTask tracks one Claude-CLI-spawned background task. Producers
 // observed: Monitor's detached bash, Bash(run_in_background=true).
 // Lifecycle is owned exclusively by the CLI: it spawns, monitors,
@@ -150,7 +164,7 @@ type BgTask struct {
 	TaskType          string     `json:"taskType"`
 	StartedAt         time.Time  `json:"startedAt"`
 	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
-	Status            string     `json:"status"` // "in_progress" | "completed" | "failed" | "killed" | "stopped"
+	Status            BgTaskStatus `json:"status"`
 	LastEventSummary  string     `json:"lastEventSummary,omitempty"`
 	NotificationCount int        `json:"notificationCount"`
 }
